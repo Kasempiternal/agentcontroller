@@ -31,8 +31,7 @@ struct InspectionTools {
                 let maxDepth = args?["maxDepth"]?.intValue ?? 5
                 let detail = AXTreeDetail.from(args?["detail"]?.stringValue)
                 let tree = await MainActor.run {
-                    let appElement = AXElement.application(pid: pid)
-                    _ = AXUIElementSetMessagingTimeout(appElement.ref, 2.0)
+                    let appElement = AXElement.application(pid: pid, timeout: 2.0)
                     return AXElementTree.buildTree(root: appElement, maxDepth: maxDepth, detail: detail)
                 }
                 return ToolResult.json(tree)
@@ -88,7 +87,7 @@ struct InspectionTools {
                 )
 
                 let results = await MainActor.run {
-                    let appElement = AXElement.application(pid: pid)
+                    let appElement = AXElement.application(pid: pid, timeout: 2.0)
                     return AXElementSearch.find(root: appElement, criteria: criteria)
                 }
 
@@ -154,7 +153,7 @@ struct InspectionTools {
                 )
 
                 let result = await MainActor.run {
-                    let appElement = AXElement.application(pid: pid)
+                    let appElement = AXElement.application(pid: pid, timeout: 2.0)
                     let results = AXElementSearch.find(root: appElement, criteria: criteria)
                     guard let first = results.first else { return JSONValue.null }
 

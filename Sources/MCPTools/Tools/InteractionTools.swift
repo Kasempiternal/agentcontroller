@@ -65,7 +65,7 @@ struct InteractionTools {
                 )
 
                 let result = await MainActor.run {
-                    let appElement = AXElement.application(pid: pid)
+                    let appElement = AXElement.application(pid: pid, timeout: 2.0)
                     let results = AXElementSearch.find(root: appElement, criteria: criteria)
                     guard let first = results.first else { return false }
                     return first.element.press()
@@ -107,7 +107,7 @@ struct InteractionTools {
 
                 // AX path: no activate needed. Two presses usually satisfy "double click" semantics.
                 let axResult = await MainActor.run { () -> (found: Bool, center: CGPoint?) in
-                    let appElement = AXElement.application(pid: pid)
+                    let appElement = AXElement.application(pid: pid, timeout: 2.0)
                     let criteria = AXElementSearchCriteria(
                         role: args?["role"]?.stringValue,
                         title: args?["title"]?.stringValue,
@@ -171,7 +171,7 @@ struct InteractionTools {
                 }
                 // AX showMenu action
                 let result = await MainActor.run {
-                    let appElement = AXElement.application(pid: pid)
+                    let appElement = AXElement.application(pid: pid, timeout: 2.0)
                     let criteria = AXElementSearchCriteria(
                         role: args?["role"]?.stringValue,
                         title: args?["title"]?.stringValue,
@@ -218,7 +218,7 @@ struct InteractionTools {
                         identifier: args?["identifier"]?.stringValue,
                         maxResults: 1
                     )
-                    let appElement = AXElement.application(pid: pid)
+                    let appElement = AXElement.application(pid: pid, timeout: 2.0)
                     guard let r = AXElementSearch.find(root: appElement, criteria: criteria).first else {
                         return nil
                     }
@@ -250,7 +250,7 @@ struct InteractionTools {
                             identifier: args?["identifier"]?.stringValue,
                             maxResults: 1
                         )
-                        let appElement = AXElement.application(pid: pid)
+                        let appElement = AXElement.application(pid: pid, timeout: 2.0)
                         if let r = AXElementSearch.find(root: appElement, criteria: criteria).first {
                             _ = r.element.setAttribute(kAXFocusedAttribute, value: kCFBooleanTrue)
                         }

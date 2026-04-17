@@ -1,6 +1,7 @@
 import Foundation
 import MCPServer
 import AccessibilityEngine
+import ScreenCapture
 
 struct AppTools {
     static func register(in registry: ToolRegistry) {
@@ -44,6 +45,7 @@ struct AppTools {
                     throw ToolError.missingParameter("bundleId")
                 }
                 let app = try await AppManager.launch(bundleIdentifier: bundleId)
+                await ShareableContentCache.shared.invalidate()
                 return ToolResult.json(.object([
                     "name": .string(app.name),
                     "bundleId": .string(app.bundleIdentifier ?? bundleId),
@@ -72,6 +74,7 @@ struct AppTools {
                 let success: Bool
                 if let pid = AppManager.resolvePID(from: appStr) {
                     success = await MainActor.run { AppManager.quit(pid: pid) }
+                    await ShareableContentCache.shared.invalidate()
                 } else {
                     success = false
                 }
@@ -99,6 +102,7 @@ struct AppTools {
                 let success: Bool
                 if let pid = AppManager.resolvePID(from: appStr) {
                     success = await MainActor.run { AppManager.activate(pid: pid) }
+                    await ShareableContentCache.shared.invalidate()
                 } else {
                     success = false
                 }

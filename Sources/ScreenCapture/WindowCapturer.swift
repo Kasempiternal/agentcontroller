@@ -2,9 +2,35 @@ import Foundation
 import ScreenCaptureKit
 import AppKit
 
+/// Caches SCShareableContent for a short window so rapid-fire screenshot calls
+/// don't re-enumerate every system window on each invocation. The enumeration
+/// itself is ~50-200ms; caching for 100ms lets a burst of captures reuse it.
+public actor ShareableContentCache {
+    public static let shared = ShareableContentCache()
+
+    private var cached: SCShareableContent?
+    private var timestamp: Date?
+    private let ttl: TimeInterval = 0.1 // 100ms
+
+    public func current() async throws -> SCShareableContent {
+        if let cached, let ts = timestamp, Date().timeIntervalSince(ts) < ttl {
+            return cached
+        }
+        let fresh = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+        cached = fresh
+        timestamp = Date()
+        return fresh
+    }
+
+    public func invalidate() {
+        cached = nil
+        timestamp = nil
+    }
+}
+
 public struct WindowCapturer {
     public static func captureWindow(pid: pid_t, windowTitle: String? = nil, scale: CGFloat = 2.0) async throws -> Data {
-        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+        let content = try await ShareableContentCache.shared.current()
 
         guard let window = content.windows.first(where: {
             $0.owningApplication?.processID == pid &&
@@ -26,7 +52,7 @@ public struct WindowCapturer {
     }
 
     public static func captureScreen(screenIndex: Int = 0, scale: CGFloat = 1.0) async throws -> Data {
-        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+        let content = try await ShareableContentCache.shared.current()
 
         guard screenIndex < content.displays.count else {
             throw CaptureError.displayNotFound
@@ -43,25 +69,27 @@ public struct WindowCapturer {
         return ImageEncoder.pngData(from: image)
     }
 
+    /// Captures a specific region within a window. Uses SCStreamConfiguration.sourceRect
+    /// to crop at capture time rather than decode the full window PNG and re-crop —
+    /// saves an NSImage↔CGImage roundtrip and typically 5-10x less GPU work for small
+    /// elements.
     public static func captureRegion(pid: pid_t, region: CGRect, scale: CGFloat = 2.0) async throws -> Data {
-        let fullCapture = try await captureWindow(pid: pid, scale: scale)
-        guard let fullImage = NSImage(data: fullCapture),
-              let cgImage = fullImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
-            throw CaptureError.captureFailure
+        let content = try await ShareableContentCache.shared.current()
+        guard let window = content.windows.first(where: { $0.owningApplication?.processID == pid }) else {
+            throw CaptureError.windowNotFound
         }
 
-        let scaledRegion = CGRect(
-            x: region.origin.x * scale,
-            y: region.origin.y * scale,
-            width: region.width * scale,
-            height: region.height * scale
-        )
+        let filter = SCContentFilter(desktopIndependentWindow: window)
+        let config = SCStreamConfiguration()
+        config.scalesToFit = true
+        config.width = Int(region.width * scale)
+        config.height = Int(region.height * scale)
+        config.sourceRect = region
+        config.showsCursor = false
+        config.captureResolution = .best
 
-        guard let cropped = cgImage.cropping(to: scaledRegion) else {
-            throw CaptureError.captureFailure
-        }
-
-        return ImageEncoder.pngData(from: cropped)
+        let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+        return ImageEncoder.pngData(from: image)
     }
 }
 

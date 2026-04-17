@@ -12,6 +12,14 @@ public final class AXElement: @unchecked Sendable {
         AXElement(AXUIElementCreateApplication(pid))
     }
 
+    /// Convenience: create an app element and set its AX messaging timeout.
+    /// Prevents a hung target app from blocking Macoestro's MCP server for 6s default.
+    public static func application(pid: pid_t, timeout: Float) -> AXElement {
+        let element = AXElement(AXUIElementCreateApplication(pid))
+        _ = AXUIElementSetMessagingTimeout(element.ref, timeout)
+        return element
+    }
+
     public static func systemWide() -> AXElement {
         AXElement(AXUIElementCreateSystemWide())
     }
