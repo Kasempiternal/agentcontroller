@@ -24,13 +24,7 @@ struct WaitTools {
                 let pid = try args!.resolvePID()
                 let timeout = args?["timeout"]?.doubleValue ?? 10.0
                 let pollInterval = args?["pollInterval"]?.doubleValue ?? 0.5
-                let criteria = AXElementSearchCriteria(
-                    role: args?["role"]?.stringValue,
-                    title: args?["title"]?.stringValue,
-                    titleContains: args?["titleContains"]?.stringValue,
-                    identifier: args?["identifier"]?.stringValue,
-                    maxResults: 1
-                )
+                let criteria = AXElementSearchCriteria(from: args, maxResults: 1)
 
                 let start = Date()
                 while Date().timeIntervalSince(start) < timeout {

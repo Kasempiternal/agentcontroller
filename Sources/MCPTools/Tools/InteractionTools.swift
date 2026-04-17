@@ -7,38 +7,20 @@ struct InteractionTools {
     static func register(in registry: ToolRegistry) {
         registry.register(.init(
             name: "click",
-            description: "Click on a UI element by searching for it (role/title/identifier), or click at specific coordinates. Prefers AX press action for reliability.",
+            description: "Click a UI element (AX action, background-safe) or at screen coordinates (CGEvent, requires focus). For element matching, use role+title/identifier when known; use labelContains when you see the text on-screen but don't know which AX attribute carries it (common with SwiftUI buttons that stash labels in AXDescription).",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
-                    "app": .object([
-                        "type": .string("string"),
-                        "description": .string("Bundle ID, app name, or PID"),
-                    ]),
-                    "role": .object([
-                        "type": .string("string"),
-                        "description": .string("AX role (e.g. 'AXButton')"),
-                    ]),
-                    "title": .object([
-                        "type": .string("string"),
-                        "description": .string("Element title to click"),
-                    ]),
-                    "titleContains": .object([
-                        "type": .string("string"),
-                        "description": .string("Partial title match"),
-                    ]),
-                    "identifier": .object([
-                        "type": .string("string"),
-                        "description": .string("Accessibility identifier"),
-                    ]),
-                    "x": .object([
-                        "type": .string("number"),
-                        "description": .string("X coordinate (screen points) for coordinate-based click"),
-                    ]),
-                    "y": .object([
-                        "type": .string("number"),
-                        "description": .string("Y coordinate (screen points) for coordinate-based click"),
-                    ]),
+                    "app": .object(["type": .string("string"), "description": .string("Bundle ID, app name, or PID")]),
+                    "role": .object(["type": .string("string"), "description": .string("AX role (e.g. 'AXButton')")]),
+                    "title": .object(["type": .string("string"), "description": .string("Exact AXTitle match")]),
+                    "titleContains": .object(["type": .string("string"), "description": .string("Partial AXTitle match (case-insensitive)")]),
+                    "identifier": .object(["type": .string("string"), "description": .string("Accessibility identifier")]),
+                    "description": .object(["type": .string("string"), "description": .string("Exact AXDescription match (SwiftUI Button labels often land here)")]),
+                    "descriptionContains": .object(["type": .string("string"), "description": .string("Partial AXDescription match")]),
+                    "labelContains": .object(["type": .string("string"), "description": .string("Substring across title/description/help/value — preferred when unsure")]),
+                    "x": .object(["type": .string("number"), "description": .string("X coordinate (screen points) for coordinate click")]),
+                    "y": .object(["type": .string("number"), "description": .string("Y coordinate (screen points) for coordinate click")]),
                 ]),
                 "required": .array([.string("app")]),
             ]),
@@ -55,14 +37,7 @@ struct InteractionTools {
                     return ToolResult.json(.object(["success": .bool(true), "method": .string("coordinate")]))
                 }
 
-                // Element-based click via AX
-                let criteria = AXElementSearchCriteria(
-                    role: args?["role"]?.stringValue,
-                    title: args?["title"]?.stringValue,
-                    titleContains: args?["titleContains"]?.stringValue,
-                    identifier: args?["identifier"]?.stringValue,
-                    maxResults: 1
-                )
+                let criteria = AXElementSearchCriteria(from: args, maxResults: 1)
 
                 let result = await MainActor.run {
                     let appElement = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
@@ -80,15 +55,19 @@ struct InteractionTools {
 
         registry.register(.init(
             name: "double_click",
-            description: "Double-click at coordinates or on a UI element. AX-targeted double-click first tries two press actions (no activation, works in background); falls back to coordinate-based CGEvent if needed.",
+            description: "Double-click a UI element or at coordinates. AX path (two press actions, background-safe) preferred; falls back to coordinate CGEvent if AX press fails. Accepts the same matchers as click (role/title/identifier/description/labelContains).",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
                     "app": .object(["type": .string("string"), "description": .string("Bundle ID, app name, or PID")]),
                     "x": .object(["type": .string("number"), "description": .string("X coordinate")]),
                     "y": .object(["type": .string("number"), "description": .string("Y coordinate")]),
-                    "title": .object(["type": .string("string"), "description": .string("Element title")]),
                     "role": .object(["type": .string("string"), "description": .string("AX role")]),
+                    "title": .object(["type": .string("string"), "description": .string("Exact AXTitle")]),
+                    "titleContains": .object(["type": .string("string"), "description": .string("Partial AXTitle")]),
+                    "identifier": .object(["type": .string("string"), "description": .string("Accessibility identifier")]),
+                    "description": .object(["type": .string("string"), "description": .string("Exact AXDescription")]),
+                    "labelContains": .object(["type": .string("string"), "description": .string("Substring across title/description/help/value")]),
                 ]),
                 "required": .array([.string("app")]),
             ]),
@@ -105,14 +84,9 @@ struct InteractionTools {
                     return ToolResult.json(.object(["success": .bool(true), "method": .string("coordinate")]))
                 }
 
-                // AX path: no activate needed. Two presses usually satisfy "double click" semantics.
                 let axResult = await MainActor.run { () -> (found: Bool, center: CGPoint?) in
                     let appElement = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
-                    let criteria = AXElementSearchCriteria(
-                        role: args?["role"]?.stringValue,
-                        title: args?["title"]?.stringValue,
-                        maxResults: 1
-                    )
+                    let criteria = AXElementSearchCriteria(from: args, maxResults: 1)
                     guard let r = AXElementSearch.find(root: appElement, criteria: criteria).first else {
                         return (false, nil)
                     }
@@ -147,15 +121,19 @@ struct InteractionTools {
 
         registry.register(.init(
             name: "right_click",
-            description: "Right-click at coordinates or on a UI element to open context menu",
+            description: "Right-click a UI element (AX showMenu, background-safe) or at coordinates to open a context menu. Accepts the same matchers as click.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
                     "app": .object(["type": .string("string"), "description": .string("Bundle ID, app name, or PID")]),
                     "x": .object(["type": .string("number"), "description": .string("X coordinate")]),
                     "y": .object(["type": .string("number"), "description": .string("Y coordinate")]),
-                    "title": .object(["type": .string("string"), "description": .string("Element title")]),
                     "role": .object(["type": .string("string"), "description": .string("AX role")]),
+                    "title": .object(["type": .string("string"), "description": .string("Exact AXTitle")]),
+                    "titleContains": .object(["type": .string("string"), "description": .string("Partial AXTitle")]),
+                    "identifier": .object(["type": .string("string"), "description": .string("Accessibility identifier")]),
+                    "description": .object(["type": .string("string"), "description": .string("Exact AXDescription")]),
+                    "labelContains": .object(["type": .string("string"), "description": .string("Substring across title/description/help/value")]),
                 ]),
                 "required": .array([.string("app")]),
             ]),
@@ -169,14 +147,9 @@ struct InteractionTools {
                     }
                     return ToolResult.json(.object(["success": .bool(true)]))
                 }
-                // AX showMenu action
                 let result = await MainActor.run {
                     let appElement = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
-                    let criteria = AXElementSearchCriteria(
-                        role: args?["role"]?.stringValue,
-                        title: args?["title"]?.stringValue,
-                        maxResults: 1
-                    )
+                    let criteria = AXElementSearchCriteria(from: args, maxResults: 1)
                     guard let r = AXElementSearch.find(root: appElement, criteria: criteria).first else { return false }
                     return r.element.showMenu()
                 }
@@ -216,12 +189,7 @@ struct InteractionTools {
                 }
                 let outcome: TypeOutcome = await MainActor.run {
                     guard hasTarget else { return .noTarget }
-                    let criteria = AXElementSearchCriteria(
-                        role: args?["role"]?.stringValue,
-                        title: args?["title"]?.stringValue,
-                        identifier: args?["identifier"]?.stringValue,
-                        maxResults: 1
-                    )
+                    let criteria = AXElementSearchCriteria(from: args, maxResults: 1)
                     let appElement = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
                     guard let r = AXElementSearch.find(root: appElement, criteria: criteria).first else {
                         return .noTarget

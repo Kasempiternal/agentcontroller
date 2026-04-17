@@ -6,15 +6,27 @@ public struct AXElementSearchCriteria: Sendable {
     public var titleContains: String?
     public var identifier: String?
     public var value: String?
+    public var description: String?
+    public var descriptionContains: String?
+    /// Case-insensitive substring match across `title`, `description`, `help`, and `value`.
+    /// Use when you see visible text on screen but don't know which AX attribute carries it
+    /// (SwiftUI puts labels in different attributes depending on Button/Text/Image variants).
+    public var labelContains: String?
     public var maxResults: Int
 
     public init(role: String? = nil, title: String? = nil, titleContains: String? = nil,
-                identifier: String? = nil, value: String? = nil, maxResults: Int = 20) {
+                identifier: String? = nil, value: String? = nil,
+                description: String? = nil, descriptionContains: String? = nil,
+                labelContains: String? = nil,
+                maxResults: Int = 20) {
         self.role = role
         self.title = title
         self.titleContains = titleContains
         self.identifier = identifier
         self.value = value
+        self.description = description
+        self.descriptionContains = descriptionContains
+        self.labelContains = labelContains
         self.maxResults = maxResults
     }
 }
@@ -62,11 +74,18 @@ public struct AXElementSearch {
         }
         if let identifier = criteria.identifier, element.identifier != identifier { return false }
         if let value = criteria.value, element.stringValue != value { return false }
-        // At least one criterion must be specified
-        if criteria.role == nil && criteria.title == nil && criteria.titleContains == nil
-            && criteria.identifier == nil && criteria.value == nil {
-            return false
+        if let description = criteria.description, element.label != description { return false }
+        if let contains = criteria.descriptionContains {
+            guard let d = element.label, d.localizedCaseInsensitiveContains(contains) else { return false }
         }
-        return true
+        if let contains = criteria.labelContains {
+            let haystacks = [element.title, element.label, element.help, element.stringValue].compactMap { $0 }
+            guard haystacks.contains(where: { $0.localizedCaseInsensitiveContains(contains) }) else { return false }
+        }
+        let anyCriterion = criteria.role != nil || criteria.title != nil || criteria.titleContains != nil
+            || criteria.identifier != nil || criteria.value != nil
+            || criteria.description != nil || criteria.descriptionContains != nil
+            || criteria.labelContains != nil
+        return anyCriterion
     }
 }

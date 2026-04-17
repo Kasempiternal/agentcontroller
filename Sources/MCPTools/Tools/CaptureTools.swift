@@ -49,12 +49,7 @@ struct CaptureTools {
                 // Find the element and get its bounds relative to the window
                 let elementFrame = await MainActor.run { () -> (elementFrame: CGRect, windowOrigin: CGPoint)? in
                     let appElement = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
-                    let criteria = AXElementSearchCriteria(
-                        role: args?["role"]?.stringValue,
-                        title: args?["title"]?.stringValue,
-                        identifier: args?["identifier"]?.stringValue,
-                        maxResults: 1
-                    )
+                    let criteria = AXElementSearchCriteria(from: args, maxResults: 1)
                     guard let result = AXElementSearch.find(root: appElement, criteria: criteria).first,
                           let pos = result.element.position,
                           let size = result.element.size else { return nil }

@@ -39,7 +39,7 @@ struct InspectionTools {
 
         registry.register(.init(
             name: "find_elements",
-            description: "Search for UI elements matching criteria (role, title, identifier). Returns matching elements with their paths for use with interaction tools.",
+            description: "Search for UI elements by role, title, identifier, description, or visible label text. Returns matches with their paths for use with interaction tools. Use labelContains when you can see the text on screen but don't know which AX attribute carries it (SwiftUI varies).",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
@@ -53,19 +53,31 @@ struct InspectionTools {
                     ]),
                     "title": .object([
                         "type": .string("string"),
-                        "description": .string("Exact title match"),
+                        "description": .string("Exact AXTitle match"),
                     ]),
                     "titleContains": .object([
                         "type": .string("string"),
-                        "description": .string("Partial title match (case-insensitive)"),
+                        "description": .string("Partial AXTitle match (case-insensitive)"),
                     ]),
                     "identifier": .object([
                         "type": .string("string"),
-                        "description": .string("Accessibility identifier"),
+                        "description": .string("Accessibility identifier (.accessibilityIdentifier in SwiftUI)"),
                     ]),
                     "value": .object([
                         "type": .string("string"),
-                        "description": .string("Element value"),
+                        "description": .string("Element AXValue"),
+                    ]),
+                    "description": .object([
+                        "type": .string("string"),
+                        "description": .string("Exact AXDescription match (SwiftUI Button labels often land here)"),
+                    ]),
+                    "descriptionContains": .object([
+                        "type": .string("string"),
+                        "description": .string("Partial AXDescription match (case-insensitive)"),
+                    ]),
+                    "labelContains": .object([
+                        "type": .string("string"),
+                        "description": .string("Substring match across title/description/help/value — use when you see the text but don't know where SwiftUI put it"),
                     ]),
                     "maxResults": .object([
                         "type": .string("integer"),
@@ -76,14 +88,7 @@ struct InspectionTools {
             ]),
             handler: { args in
                 let pid = try args!.resolvePID()
-                let criteria = AXElementSearchCriteria(
-                    role: args?["role"]?.stringValue,
-                    title: args?["title"]?.stringValue,
-                    titleContains: args?["titleContains"]?.stringValue,
-                    identifier: args?["identifier"]?.stringValue,
-                    value: args?["value"]?.stringValue,
-                    maxResults: args?["maxResults"]?.intValue ?? 20
-                )
+                let criteria = AXElementSearchCriteria(from: args, maxResults: args?["maxResults"]?.intValue ?? 20)
 
                 let results = await MainActor.run {
                     let appElement = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
@@ -96,9 +101,10 @@ struct InspectionTools {
                         "depth": .int(r.depth),
                         "role": .string(r.element.role ?? "unknown"),
                     ]
-                    if let t = r.element.title { fields["title"] = .string(t) }
-                    if let id = r.element.identifier { fields["identifier"] = .string(id) }
-                    if let v = r.element.stringValue { fields["value"] = .string(v) }
+                    if let t = r.element.title, !t.isEmpty { fields["title"] = .string(t) }
+                    if let id = r.element.identifier, !id.isEmpty { fields["identifier"] = .string(id) }
+                    if let v = r.element.stringValue, !v.isEmpty { fields["value"] = .string(v) }
+                    if let d = r.element.label, !d.isEmpty { fields["description"] = .string(d) }
                     if let pos = r.element.position {
                         fields["position"] = .object(["x": .double(pos.x), "y": .double(pos.y)])
                     }
@@ -144,12 +150,7 @@ struct InspectionTools {
             ]),
             handler: { args in
                 let pid = try args!.resolvePID()
-                let criteria = AXElementSearchCriteria(
-                    role: args?["role"]?.stringValue,
-                    title: args?["title"]?.stringValue,
-                    identifier: args?["identifier"]?.stringValue,
-                    maxResults: 1
-                )
+                let criteria = AXElementSearchCriteria(from: args, maxResults: 1)
 
                 let result = await MainActor.run {
                     let appElement = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
