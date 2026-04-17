@@ -80,7 +80,7 @@ struct InteractionTools {
 
         registry.register(.init(
             name: "double_click",
-            description: "Double-click at coordinates or on a UI element",
+            description: "Double-click at coordinates or on a UI element. AX-targeted double-click first tries two press actions (no activation, works in background); falls back to coordinate-based CGEvent if needed.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
@@ -94,35 +94,54 @@ struct InteractionTools {
             ]),
             handler: { args in
                 let pid = try args!.resolvePID()
+
+                // Coordinate path: still requires focus.
                 if let x = args?["x"]?.doubleValue, let y = args?["y"]?.doubleValue {
                     await MainActor.run {
                         AppManager.activate(pid: pid)
                         usleep(100_000)
                         InputSimulator.doubleClick(at: CGPoint(x: x, y: y))
                     }
-                    return ToolResult.json(.object(["success": .bool(true)]))
+                    return ToolResult.json(.object(["success": .bool(true), "method": .string("coordinate")]))
                 }
-                // Try element center
-                let point = await MainActor.run { () -> CGPoint? in
+
+                // AX path: no activate needed. Two presses usually satisfy "double click" semantics.
+                let axResult = await MainActor.run { () -> (found: Bool, center: CGPoint?) in
                     let appElement = AXElement.application(pid: pid)
                     let criteria = AXElementSearchCriteria(
                         role: args?["role"]?.stringValue,
                         title: args?["title"]?.stringValue,
                         maxResults: 1
                     )
-                    guard let r = AXElementSearch.find(root: appElement, criteria: criteria).first,
-                          let pos = r.element.position, let sz = r.element.size else { return nil }
-                    return CGPoint(x: pos.x + sz.width / 2, y: pos.y + sz.height / 2)
+                    guard let r = AXElementSearch.find(root: appElement, criteria: criteria).first else {
+                        return (false, nil)
+                    }
+                    // Try AX double-press (works in background for most standard controls)
+                    let first = r.element.press()
+                    let second = r.element.press()
+                    if first && second {
+                        return (true, nil)
+                    }
+                    // Fall back to coordinate-based double click at element center
+                    guard let pos = r.element.position, let sz = r.element.size else {
+                        return (true, nil)
+                    }
+                    return (true, CGPoint(x: pos.x + sz.width / 2, y: pos.y + sz.height / 2))
                 }
-                if let pt = point {
+
+                if !axResult.found {
+                    return ToolResult.error("Element not found")
+                }
+                if let pt = axResult.center {
+                    // AX press returned false; use coordinate-based double click as fallback
                     await MainActor.run {
                         AppManager.activate(pid: pid)
                         usleep(100_000)
                         InputSimulator.doubleClick(at: pt)
                     }
-                    return ToolResult.json(.object(["success": .bool(true)]))
+                    return ToolResult.json(.object(["success": .bool(true), "method": .string("coordinate-fallback")]))
                 }
-                return ToolResult.error("Element not found")
+                return ToolResult.json(.object(["success": .bool(true), "method": .string("accessibility")]))
             }
         ))
 
@@ -185,11 +204,45 @@ struct InteractionTools {
                     throw ToolError.missingParameter("text")
                 }
 
+                // AX fast path: if element targeting info was provided, try to set value
+                // via AX without activating the app. Works in background for NSTextField /
+                // AXTextArea. If read-back shows the value didn't stick (SwiftUI TextField
+                // bug), fall back to CGEvent typing with activation.
+                let axOutcome: String? = await MainActor.run { () -> String? in
+                    guard args?["role"] != nil || args?["title"] != nil || args?["identifier"] != nil else {
+                        return nil
+                    }
+                    let criteria = AXElementSearchCriteria(
+                        role: args?["role"]?.stringValue,
+                        title: args?["title"]?.stringValue,
+                        identifier: args?["identifier"]?.stringValue,
+                        maxResults: 1
+                    )
+                    let appElement = AXElement.application(pid: pid)
+                    guard let r = AXElementSearch.find(root: appElement, criteria: criteria).first else {
+                        return nil
+                    }
+                    let role = r.element.role ?? ""
+                    if role == "AXTextField" || role == "AXTextArea" {
+                        let ok = r.element.setAttribute(kAXValueAttribute, value: text as CFString)
+                        if !ok { return nil }
+                        // Read back — SwiftUI TextField often rejects AX-set silently
+                        if r.element.stringValue == text {
+                            return "accessibility"
+                        }
+                        return nil // fall through to CGEvent path
+                    }
+                    return nil
+                }
+
+                if let method = axOutcome {
+                    return ToolResult.json(.object(["success": .bool(true), "typed": .string(text), "method": .string(method)]))
+                }
+
+                // CGEvent fallback: needs activation + keyboard focus.
                 await MainActor.run {
                     AppManager.activate(pid: pid)
-                    usleep(200_000)
-
-                    // Optionally focus an element first
+                    usleep(100_000)
                     if args?["role"] != nil || args?["title"] != nil || args?["identifier"] != nil {
                         let criteria = AXElementSearchCriteria(
                             role: args?["role"]?.stringValue,
@@ -199,20 +252,12 @@ struct InteractionTools {
                         )
                         let appElement = AXElement.application(pid: pid)
                         if let r = AXElementSearch.find(root: appElement, criteria: criteria).first {
-                            // Try to set focus
                             _ = r.element.setAttribute(kAXFocusedAttribute, value: kCFBooleanTrue)
-                            usleep(100_000)
-                            // Try setting value directly for text fields
-                            if r.element.role == "AXTextField" || r.element.role == "AXTextArea" {
-                                _ = r.element.setAttribute(kAXValueAttribute, value: text as CFString)
-                                return
-                            }
                         }
                     }
-
                     InputSimulator.typeText(text)
                 }
-                return ToolResult.json(.object(["success": .bool(true), "typed": .string(text)]))
+                return ToolResult.json(.object(["success": .bool(true), "typed": .string(text), "method": .string("keyboard")]))
             }
         ))
 

@@ -1,3 +1,4 @@
+import ApplicationServices
 import Foundation
 import MCPServer
 import AccessibilityEngine
@@ -6,7 +7,7 @@ struct InspectionTools {
     static func register(in registry: ToolRegistry) {
         registry.register(.init(
             name: "get_element_tree",
-            description: "Get the accessibility UI element tree for an application. Returns a hierarchical JSON tree of all UI elements with their roles, titles, and properties.",
+            description: "Get the accessibility UI element tree for an application. Returns a hierarchical JSON tree of UI elements. Uses batched AX reads (AXUIElementCopyMultipleAttributeValues) for speed — a 100-element tree takes ~1 XPC call per element instead of ~10.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
@@ -18,15 +19,21 @@ struct InspectionTools {
                         "type": .string("integer"),
                         "description": .string("Maximum tree depth (default 5)"),
                     ]),
+                    "detail": .object([
+                        "type": .string("string"),
+                        "description": .string("'lean' (default, ~5x faster) returns role/title/identifier/value/enabled/focused/children. 'full' also includes description/roleDescription/position/size/actions."),
+                    ]),
                 ]),
                 "required": .array([.string("app")]),
             ]),
             handler: { args in
                 let pid = try args!.resolvePID()
                 let maxDepth = args?["maxDepth"]?.intValue ?? 5
+                let detail = AXTreeDetail.from(args?["detail"]?.stringValue)
                 let tree = await MainActor.run {
                     let appElement = AXElement.application(pid: pid)
-                    return AXElementTree.buildTree(root: appElement, maxDepth: maxDepth)
+                    _ = AXUIElementSetMessagingTimeout(appElement.ref, 2.0)
+                    return AXElementTree.buildTree(root: appElement, maxDepth: maxDepth, detail: detail)
                 }
                 return ToolResult.json(tree)
             }

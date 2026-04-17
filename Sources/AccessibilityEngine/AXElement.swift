@@ -29,6 +29,29 @@ public final class AXElement: @unchecked Sendable {
         AXUIElementSetAttributeValue(ref, name as CFString, value) == .success
     }
 
+    /// Batched read — single XPC round-trip for N attributes instead of N.
+    /// Returns a dict keyed by attribute name; missing/unsupported attributes are absent.
+    public func readAttributes(_ names: [String]) -> [String: CFTypeRef] {
+        var values: CFArray?
+        let result = AXUIElementCopyMultipleAttributeValues(
+            ref,
+            names as CFArray,
+            AXCopyMultipleAttributeOptions(rawValue: 0), // don't stop on error; return markers
+            &values
+        )
+        guard result == .success, let values else { return [:] }
+        let count = CFArrayGetCount(values)
+        var out: [String: CFTypeRef] = [:]
+        for i in 0..<min(count, names.count) {
+            guard let ptr = CFArrayGetValueAtIndex(values, i) else { continue }
+            let value = Unmanaged<CFTypeRef>.fromOpaque(ptr).takeUnretainedValue()
+            // Skip AXValueAttributeUnsupported / AXValueIllegalArgument markers (they're CFError)
+            if CFGetTypeID(value) == CFErrorGetTypeID() { continue }
+            out[names[i]] = value
+        }
+        return out
+    }
+
     public var role: String? { attribute(kAXRoleAttribute) }
     public var subrole: String? { attribute(kAXSubroleAttribute) }
     public var title: String? { attribute(kAXTitleAttribute) }
