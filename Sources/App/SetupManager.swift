@@ -23,39 +23,28 @@ struct SetupManager {
     }
 
     private static func installBridgeScript() {
+        // Only install on first run — the deploy script (Scripts/macoestro-mcp-bridge.sh)
+        // is the canonical source and is copied to ~/.macoestro/ during build-deploy.
+        // Don't overwrite it on every launch or we'll destroy the deployed version.
+        guard !FileManager.default.fileExists(atPath: bridgeScript.path) else { return }
+
+        // Minimal bootstrap for first-run (before the user has deployed via the build script)
         let script = """
         #!/bin/bash
         PORT_FILE="$HOME/.macoestro/mcp-port"
-        WAITED=0
-        while [ ! -f "$PORT_FILE" ] && [ "$WAITED" -lt 10 ]; do
-            sleep 1
-            WAITED=$((WAITED + 1))
-        done
-        if [ ! -f "$PORT_FILE" ]; then
-            echo '{"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":"Macoestro is not running."}}' >&2
-            exit 1
-        fi
+        while [ ! -f "$PORT_FILE" ]; do sleep 1; done
         PORT=$(cat "$PORT_FILE")
-        WAITED=0
-        while ! curl -s -o /dev/null -w '' "http://127.0.0.1:${PORT}/mcp" 2>/dev/null && [ "$WAITED" -lt 5 ]; do
-            sleep 1
-            WAITED=$((WAITED + 1))
-        done
         while IFS= read -r line; do
             [ -z "$line" ] && continue
-            response=$(curl -s -X POST "http://127.0.0.1:${PORT}/mcp" \\
+            resp=$(curl -s -o - -w '\\n%{http_code}' -X POST "http://127.0.0.1:${PORT}/mcp" \
                 -H "Content-Type: application/json" -d "$line" 2>/dev/null)
-            if [ $? -ne 0 ]; then
-                echo '{"jsonrpc":"2.0","id":null,"error":{"code":-1,"message":"Cannot connect to Macoestro."}}' >&2
-                exit 1
-            fi
-            echo "$response"
+            code=$(echo "$resp" | tail -1); body=$(echo "$resp" | sed '$d')
+            [ "$code" = "204" ] && continue
+            [ -n "$body" ] && echo "$body"
         done
         """
 
         try? script.write(to: bridgeScript, atomically: true, encoding: .utf8)
-
-        // Make executable
         let attrs: [FileAttributeKey: Any] = [.posixPermissions: 0o755]
         try? FileManager.default.setAttributes(attrs, ofItemAtPath: bridgeScript.path)
     }

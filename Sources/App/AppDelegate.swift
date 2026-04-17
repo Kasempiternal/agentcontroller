@@ -1,4 +1,5 @@
 import AppKit
+import AccessibilityEngine
 import Foundation
 import MCPServer
 import MCPTools
@@ -12,8 +13,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Setup directories and bridge script
         SetupManager.setup()
 
-        // Check permissions
         appState.updatePermissions()
+        if !appState.accessibilityGranted {
+            PermissionChecker.requestAccessibility()
+        }
+        appState.startPermissionPolling()
 
         // Start MCP server
         Task {
@@ -26,6 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        appState.stopPermissionPolling()
         SetupManager.removePort()
         Task { await httpServer?.stop() }
     }
@@ -34,7 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let toolRegistry = ToolRegistry()
         let protocolHandler = MCPProtocolHandler(toolProvider: toolRegistry)
 
-        let server = HTTPServer { data in
+        let server = HTTPServer { data -> Data? in
             await protocolHandler.handleRequest(data)
         }
         self.httpServer = server

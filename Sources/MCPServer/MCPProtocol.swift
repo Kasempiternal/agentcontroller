@@ -17,13 +17,19 @@ public struct MCPProtocolHandler: Sendable {
         ])
     }
 
-    public func handleRequest(_ data: Data) async -> Data {
+    /// Returns nil for notifications (no `id`) — caller must not send a response.
+    public func handleRequest(_ data: Data) async -> Data? {
         let decoder = JSONDecoder()
         let encoder = JSONEncoder()
 
         guard let request = try? decoder.decode(JSONRPCRequest.self, from: data) else {
             let response = JSONRPCResponse.failure(.parseError, id: nil)
             return (try? encoder.encode(response)) ?? Data()
+        }
+
+        // MCP spec: notifications (no id) MUST NOT receive a response
+        if request.id == nil {
+            return nil
         }
 
         let response = await dispatch(request)
@@ -34,8 +40,6 @@ public struct MCPProtocolHandler: Sendable {
         switch request.method {
         case "initialize":
             return handleInitialize(request)
-        case "notifications/initialized", "initialized":
-            return JSONRPCResponse.success(.object([:]), id: request.id)
         case "tools/list":
             return handleToolsList(request)
         case "tools/call":

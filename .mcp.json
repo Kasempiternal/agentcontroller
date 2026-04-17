@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "macoestro": {
+      "command": "/Users/izotz.cristobal/.macoestro/macoestro-mcp-bridge.sh"
+    }
+  }
+}

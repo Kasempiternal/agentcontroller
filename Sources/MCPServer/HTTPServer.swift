@@ -3,12 +3,12 @@ import Network
 
 public actor HTTPServer {
     private var listener: NWListener?
-    private let handler: @Sendable (Data) async -> Data
+    private let handler: @Sendable (Data) async -> Data?
     private var port: UInt16 = 0
 
     public var assignedPort: UInt16 { port }
 
-    public init(handler: @escaping @Sendable (Data) async -> Data) {
+    public init(handler: @escaping @Sendable (Data) async -> Data?) {
         self.handler = handler
     }
 
@@ -60,7 +60,7 @@ public actor HTTPServer {
 
     private static func handleConnection(
         _ connection: NWConnection,
-        handler: @escaping @Sendable (Data) async -> Data
+        handler: @escaping @Sendable (Data) async -> Data?
     ) async {
         connection.start(queue: DispatchQueue(label: "macoestro.http.conn"))
 
@@ -71,7 +71,13 @@ public actor HTTPServer {
 
         let body = extractBody(from: requestData)
         let responseBody = await handler(body)
-        let httpResponse = buildHTTPResponse(body: responseBody)
+
+        let httpResponse: Data
+        if let responseBody {
+            httpResponse = buildHTTPResponse(body: responseBody)
+        } else {
+            httpResponse = Data("HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n".utf8)
+        }
 
         await sendResponse(connection, data: httpResponse)
         connection.cancel()

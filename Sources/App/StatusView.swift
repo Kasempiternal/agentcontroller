@@ -14,7 +14,7 @@ struct StatusView: View {
                 Text("Macoestro")
                     .font(.title2.bold())
                 Spacer()
-                Text("v1.0.0")
+                Text("v1.1.0")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
