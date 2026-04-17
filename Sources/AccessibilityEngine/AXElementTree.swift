@@ -3,14 +3,11 @@ import MCPServer
 import ApplicationServices
 
 public enum AXTreeDetail: String {
-    case lean   // role, title, identifier, value, enabled, focused, children
-    case full   // everything above + description, roleDescription, position, size, actionNames
+    case lean
+    case full
 
-    public static func from(_ raw: String?) -> AXTreeDetail {
-        switch raw?.lowercased() {
-        case "full": return .full
-        default: return .lean
-        }
+    public init(raw: String?) {
+        self = AXTreeDetail(rawValue: raw?.lowercased() ?? "") ?? .lean
     }
 }
 
@@ -64,23 +61,11 @@ public struct AXElementTree {
             if let rd = attrs[kAXRoleDescriptionAttribute as String] as? String, !rd.isEmpty {
                 fields["roleDescription"] = .string(rd)
             }
-            if let posValue = attrs[kAXPositionAttribute as String],
-               CFGetTypeID(posValue) == AXValueGetTypeID() {
-                let axValue = posValue as! AXValue
-                var point = CGPoint.zero
-                if AXValueGetType(axValue) == .cgPoint {
-                    AXValueGetValue(axValue, .cgPoint, &point)
-                    fields["position"] = .object(["x": .double(point.x), "y": .double(point.y)])
-                }
+            if let pos = AXValueExtract.point(attrs[kAXPositionAttribute as String]) {
+                fields["position"] = .object(["x": .double(pos.x), "y": .double(pos.y)])
             }
-            if let szValue = attrs[kAXSizeAttribute as String],
-               CFGetTypeID(szValue) == AXValueGetTypeID() {
-                let axValue = szValue as! AXValue
-                var size = CGSize.zero
-                if AXValueGetType(axValue) == .cgSize {
-                    AXValueGetValue(axValue, .cgSize, &size)
-                    fields["size"] = .object(["width": .double(size.width), "height": .double(size.height)])
-                }
+            if let sz = AXValueExtract.size(attrs[kAXSizeAttribute as String]) {
+                fields["size"] = .object(["width": .double(sz.width), "height": .double(sz.height)])
             }
             let actions = element.actionNames
             if !actions.isEmpty {
@@ -88,20 +73,7 @@ public struct AXElementTree {
             }
         }
 
-        // Children: safely unwrap CFArray; bail gracefully on type mismatch.
-        let kidArray: [AXElement]
-        if let childrenCF = attrs[kAXChildrenAttribute as String],
-           CFGetTypeID(childrenCF) == CFArrayGetTypeID() {
-            let array = childrenCF as! CFArray
-            let count = CFArrayGetCount(array)
-            kidArray = (0..<count).compactMap { i in
-                guard let ptr = CFArrayGetValueAtIndex(array, i) else { return nil }
-                let ref = Unmanaged<AXUIElement>.fromOpaque(ptr).takeUnretainedValue()
-                return AXElement(ref)
-            }
-        } else {
-            kidArray = []
-        }
+        let kidArray = AXElement.elements(fromCFArray: attrs[kAXChildrenAttribute as String])
 
         if !kidArray.isEmpty {
             if depth < maxDepth {

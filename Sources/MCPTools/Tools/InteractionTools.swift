@@ -65,7 +65,7 @@ struct InteractionTools {
                 )
 
                 let result = await MainActor.run {
-                    let appElement = AXElement.application(pid: pid, timeout: 2.0)
+                    let appElement = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
                     let results = AXElementSearch.find(root: appElement, criteria: criteria)
                     guard let first = results.first else { return false }
                     return first.element.press()
@@ -107,7 +107,7 @@ struct InteractionTools {
 
                 // AX path: no activate needed. Two presses usually satisfy "double click" semantics.
                 let axResult = await MainActor.run { () -> (found: Bool, center: CGPoint?) in
-                    let appElement = AXElement.application(pid: pid, timeout: 2.0)
+                    let appElement = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
                     let criteria = AXElementSearchCriteria(
                         role: args?["role"]?.stringValue,
                         title: args?["title"]?.stringValue,
@@ -171,7 +171,7 @@ struct InteractionTools {
                 }
                 // AX showMenu action
                 let result = await MainActor.run {
-                    let appElement = AXElement.application(pid: pid, timeout: 2.0)
+                    let appElement = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
                     let criteria = AXElementSearchCriteria(
                         role: args?["role"]?.stringValue,
                         title: args?["title"]?.stringValue,
@@ -203,57 +203,47 @@ struct InteractionTools {
                 guard let text = args?["text"]?.stringValue else {
                     throw ToolError.missingParameter("text")
                 }
+                let hasTarget = args?["role"] != nil || args?["title"] != nil || args?["identifier"] != nil
 
-                // AX fast path: if element targeting info was provided, try to set value
-                // via AX without activating the app. Works in background for NSTextField /
-                // AXTextArea. If read-back shows the value didn't stick (SwiftUI TextField
-                // bug), fall back to CGEvent typing with activation.
-                let axOutcome: String? = await MainActor.run { () -> String? in
-                    guard args?["role"] != nil || args?["title"] != nil || args?["identifier"] != nil else {
-                        return nil
-                    }
+                // Try AX set-value first. For AXTextField / AXTextArea this works in the
+                // background. SwiftUI TextField often rejects AX-set silently (its
+                // @Binding only fires on NSTextDidChangeNotification, not AX), so we
+                // read back and fall through to CGEvent if the value didn't stick.
+                enum TypeOutcome {
+                    case axSuccess
+                    case axFocusedFallback(AXElement)
+                    case noTarget
+                }
+                let outcome: TypeOutcome = await MainActor.run {
+                    guard hasTarget else { return .noTarget }
                     let criteria = AXElementSearchCriteria(
                         role: args?["role"]?.stringValue,
                         title: args?["title"]?.stringValue,
                         identifier: args?["identifier"]?.stringValue,
                         maxResults: 1
                     )
-                    let appElement = AXElement.application(pid: pid, timeout: 2.0)
+                    let appElement = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
                     guard let r = AXElementSearch.find(root: appElement, criteria: criteria).first else {
-                        return nil
+                        return .noTarget
                     }
                     let role = r.element.role ?? ""
-                    if role == "AXTextField" || role == "AXTextArea" {
-                        let ok = r.element.setAttribute(kAXValueAttribute, value: text as CFString)
-                        if !ok { return nil }
-                        // Read back — SwiftUI TextField often rejects AX-set silently
-                        if r.element.stringValue == text {
-                            return "accessibility"
-                        }
-                        return nil // fall through to CGEvent path
+                    if role == "AXTextField" || role == "AXTextArea",
+                       r.element.setAttribute(kAXValueAttribute, value: text as CFString),
+                       r.element.stringValue == text {
+                        return .axSuccess
                     }
-                    return nil
+                    return .axFocusedFallback(r.element)
                 }
 
-                if let method = axOutcome {
-                    return ToolResult.json(.object(["success": .bool(true), "typed": .string(text), "method": .string(method)]))
+                if case .axSuccess = outcome {
+                    return ToolResult.json(.object(["success": .bool(true), "typed": .string(text), "method": .string("accessibility")]))
                 }
 
-                // CGEvent fallback: needs activation + keyboard focus.
                 await MainActor.run {
                     AppManager.activate(pid: pid)
                     usleep(100_000)
-                    if args?["role"] != nil || args?["title"] != nil || args?["identifier"] != nil {
-                        let criteria = AXElementSearchCriteria(
-                            role: args?["role"]?.stringValue,
-                            title: args?["title"]?.stringValue,
-                            identifier: args?["identifier"]?.stringValue,
-                            maxResults: 1
-                        )
-                        let appElement = AXElement.application(pid: pid, timeout: 2.0)
-                        if let r = AXElementSearch.find(root: appElement, criteria: criteria).first {
-                            _ = r.element.setAttribute(kAXFocusedAttribute, value: kCFBooleanTrue)
-                        }
+                    if case .axFocusedFallback(let element) = outcome {
+                        _ = element.setAttribute(kAXFocusedAttribute, value: kCFBooleanTrue)
                     }
                     InputSimulator.typeText(text)
                 }

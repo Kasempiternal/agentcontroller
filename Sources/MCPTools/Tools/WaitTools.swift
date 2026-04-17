@@ -35,7 +35,7 @@ struct WaitTools {
                 let start = Date()
                 while Date().timeIntervalSince(start) < timeout {
                     let found = await MainActor.run {
-                        let appElement = AXElement.application(pid: pid, timeout: 2.0)
+                        let appElement = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
                         return AXElementSearch.find(root: appElement, criteria: criteria).first
                     }
                     if let r = found {

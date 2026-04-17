@@ -1,6 +1,7 @@
 import Foundation
 import MCPServer
 import AccessibilityEngine
+import ScreenCapture
 
 struct WindowTools {
     static func register(in registry: ToolRegistry) {
@@ -96,6 +97,7 @@ struct WindowTools {
                 let success = await MainActor.run {
                     WindowManager.setWindowBounds(pid: pid, windowIndex: index, position: position, size: size)
                 }
+                if success { await ShareableContentCache.shared.invalidate() }
                 return ToolResult.json(.object(["success": .bool(success)]))
             }
         ))
@@ -115,6 +117,7 @@ struct WindowTools {
                 let pid = try args!.resolvePID()
                 let index = args?["windowIndex"]?.intValue ?? 0
                 let success = await MainActor.run { WindowManager.minimize(pid: pid, windowIndex: index) }
+                if success { await ShareableContentCache.shared.invalidate() }
                 return ToolResult.json(.object(["success": .bool(success)]))
             }
         ))
@@ -134,6 +137,7 @@ struct WindowTools {
                 let pid = try args!.resolvePID()
                 let index = args?["windowIndex"]?.intValue ?? 0
                 let success = await MainActor.run { WindowManager.restore(pid: pid, windowIndex: index) }
+                if success { await ShareableContentCache.shared.invalidate() }
                 return ToolResult.json(.object(["success": .bool(success)]))
             }
         ))

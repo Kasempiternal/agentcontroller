@@ -17,11 +17,6 @@ public struct PermissionChecker {
         CGPreflightScreenCaptureAccess()
     }
 
-    /// Triggers the system Screen Recording prompt if not yet granted.
-    /// For notarized builds, CGRequestScreenCaptureAccess is sufficient to register
-    /// the app in Settings > Privacy > Screen Recording. (Non-notarized builds also
-    /// need an SCShareableContent call, but we're notarized so we skip that —
-    /// it was causing a deadlock against MainActor-bound tool handlers.)
     @discardableResult
     public static func requestScreenRecording() -> Bool {
         CGRequestScreenCaptureAccess()

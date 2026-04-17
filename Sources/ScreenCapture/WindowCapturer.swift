@@ -2,29 +2,27 @@ import Foundation
 import ScreenCaptureKit
 import AppKit
 
-/// Caches SCShareableContent for a short window so rapid-fire screenshot calls
-/// don't re-enumerate every system window on each invocation. The enumeration
-/// itself is ~50-200ms; caching for 100ms lets a burst of captures reuse it.
+/// Short-lived cache for SCShareableContent so bursts of screenshots share one
+/// system-wide window enumeration. Enumeration costs 50-200ms; 100ms TTL keeps
+/// staleness bounded. Invalidated on any window-affecting tool (activate, launch,
+/// quit, set/minimize/restore window).
 public actor ShareableContentCache {
     public static let shared = ShareableContentCache()
 
-    private var cached: SCShareableContent?
-    private var timestamp: Date?
-    private let ttl: TimeInterval = 0.1 // 100ms
+    private var entry: (content: SCShareableContent, at: Date)?
+    private let ttl: TimeInterval = 0.1
 
     public func current() async throws -> SCShareableContent {
-        if let cached, let ts = timestamp, Date().timeIntervalSince(ts) < ttl {
-            return cached
+        if let entry, Date().timeIntervalSince(entry.at) < ttl {
+            return entry.content
         }
         let fresh = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
-        cached = fresh
-        timestamp = Date()
+        entry = (fresh, Date())
         return fresh
     }
 
     public func invalidate() {
-        cached = nil
-        timestamp = nil
+        entry = nil
     }
 }
 
@@ -69,10 +67,8 @@ public struct WindowCapturer {
         return ImageEncoder.pngData(from: image)
     }
 
-    /// Captures a specific region within a window. Uses SCStreamConfiguration.sourceRect
-    /// to crop at capture time rather than decode the full window PNG and re-crop —
-    /// saves an NSImage↔CGImage roundtrip and typically 5-10x less GPU work for small
-    /// elements.
+    /// Captures a sub-rect of a window. `sourceRect` crops at capture time so no
+    /// separate decode/crop pass is needed.
     public static func captureRegion(pid: pid_t, region: CGRect, scale: CGFloat = 2.0) async throws -> Data {
         let content = try await ShareableContentCache.shared.current()
         guard let window = content.windows.first(where: { $0.owningApplication?.processID == pid }) else {

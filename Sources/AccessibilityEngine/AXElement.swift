@@ -2,26 +2,39 @@ import ApplicationServices
 import Foundation
 
 public final class AXElement: @unchecked Sendable {
+    /// Default AX messaging timeout for tool-handler app elements. Low enough that a
+    /// hung target app fails fast instead of blocking the MCP server at the 6s default.
+    public static let defaultToolTimeout: Float = 2.0
+
     public let ref: AXUIElement
 
     public init(_ ref: AXUIElement) {
         self.ref = ref
     }
 
-    public static func application(pid: pid_t) -> AXElement {
-        AXElement(AXUIElementCreateApplication(pid))
-    }
-
-    /// Convenience: create an app element and set its AX messaging timeout.
-    /// Prevents a hung target app from blocking Macoestro's MCP server for 6s default.
-    public static func application(pid: pid_t, timeout: Float) -> AXElement {
+    public static func application(pid: pid_t, timeout: Float? = nil) -> AXElement {
         let element = AXElement(AXUIElementCreateApplication(pid))
-        _ = AXUIElementSetMessagingTimeout(element.ref, timeout)
+        if let timeout {
+            _ = AXUIElementSetMessagingTimeout(element.ref, timeout)
+        }
         return element
     }
 
     public static func systemWide() -> AXElement {
         AXElement(AXUIElementCreateSystemWide())
+    }
+
+    /// Unwrap a CF array of AXUIElement refs into Swift `AXElement` wrappers.
+    /// Shared helper for `children`, `windows`, and batched tree reads.
+    static func elements(fromCFArray cf: CFTypeRef?) -> [AXElement] {
+        guard let cf, CFGetTypeID(cf) == CFArrayGetTypeID() else { return [] }
+        let array = cf as! CFArray
+        let count = CFArrayGetCount(array)
+        return (0..<count).compactMap { i in
+            guard let ptr = CFArrayGetValueAtIndex(array, i) else { return nil }
+            let ref = Unmanaged<AXUIElement>.fromOpaque(ptr).takeUnretainedValue()
+            return AXElement(ref)
+        }
     }
 
     // MARK: - Attributes
@@ -37,15 +50,13 @@ public final class AXElement: @unchecked Sendable {
         AXUIElementSetAttributeValue(ref, name as CFString, value) == .success
     }
 
-    /// Batched read — single XPC round-trip for N attributes instead of N.
-    /// Returns a dict keyed by attribute name; missing/unsupported attributes are absent.
+    /// Batched multi-attribute read via AXUIElementCopyMultipleAttributeValues.
+    /// Missing and unsupported attributes are absent from the returned dict.
     public func readAttributes(_ names: [String]) -> [String: CFTypeRef] {
         var values: CFArray?
+        // rawValue 0: return CFError markers for missing attrs instead of bailing on first error
         let result = AXUIElementCopyMultipleAttributeValues(
-            ref,
-            names as CFArray,
-            AXCopyMultipleAttributeOptions(rawValue: 0), // don't stop on error; return markers
-            &values
+            ref, names as CFArray, AXCopyMultipleAttributeOptions(rawValue: 0), &values
         )
         guard result == .success, let values else { return [:] }
         let count = CFArrayGetCount(values)
@@ -53,7 +64,6 @@ public final class AXElement: @unchecked Sendable {
         for i in 0..<min(count, names.count) {
             guard let ptr = CFArrayGetValueAtIndex(values, i) else { continue }
             let value = Unmanaged<CFTypeRef>.fromOpaque(ptr).takeUnretainedValue()
-            // Skip AXValueAttributeUnsupported / AXValueIllegalArgument markers (they're CFError)
             if CFGetTypeID(value) == CFErrorGetTypeID() { continue }
             out[names[i]] = value
         }
@@ -106,13 +116,7 @@ public final class AXElement: @unchecked Sendable {
     // MARK: - Children
 
     public var children: [AXElement] {
-        guard let children: CFArray = attribute(kAXChildrenAttribute) else { return [] }
-        let count = CFArrayGetCount(children)
-        return (0..<count).compactMap { i in
-            guard let ptr = CFArrayGetValueAtIndex(children, i) else { return nil }
-            let element = Unmanaged<AXUIElement>.fromOpaque(ptr).takeUnretainedValue()
-            return AXElement(element)
-        }
+        Self.elements(fromCFArray: attribute(kAXChildrenAttribute) as CFTypeRef?)
     }
 
     public var parent: AXElement? {
@@ -121,13 +125,7 @@ public final class AXElement: @unchecked Sendable {
     }
 
     public var windows: [AXElement] {
-        guard let windows: CFArray = attribute(kAXWindowsAttribute) else { return [] }
-        let count = CFArrayGetCount(windows)
-        return (0..<count).compactMap { i in
-            guard let ptr = CFArrayGetValueAtIndex(windows, i) else { return nil }
-            let element = Unmanaged<AXUIElement>.fromOpaque(ptr).takeUnretainedValue()
-            return AXElement(element)
-        }
+        Self.elements(fromCFArray: attribute(kAXWindowsAttribute) as CFTypeRef?)
     }
 
     public var focusedWindow: AXElement? {
@@ -194,5 +192,28 @@ public final class AXElement: @unchecked Sendable {
         }
 
         return dict
+    }
+}
+
+/// Extract `CGPoint` / `CGSize` from raw AXValue CFTypeRefs returned by batched
+/// reads. Swift rejects `as? AXValue` (CF downcasts always succeed syntactically),
+/// so the guard uses `CFGetTypeID`.
+public enum AXValueExtract {
+    public static func point(_ cf: CFTypeRef?) -> CGPoint? {
+        guard let cf, CFGetTypeID(cf) == AXValueGetTypeID() else { return nil }
+        let ax = cf as! AXValue
+        guard AXValueGetType(ax) == .cgPoint else { return nil }
+        var p = CGPoint.zero
+        AXValueGetValue(ax, .cgPoint, &p)
+        return p
+    }
+
+    public static func size(_ cf: CFTypeRef?) -> CGSize? {
+        guard let cf, CFGetTypeID(cf) == AXValueGetTypeID() else { return nil }
+        let ax = cf as! AXValue
+        guard AXValueGetType(ax) == .cgSize else { return nil }
+        var s = CGSize.zero
+        AXValueGetValue(ax, .cgSize, &s)
+        return s
     }
 }

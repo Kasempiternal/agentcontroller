@@ -46,13 +46,10 @@ public struct InputSimulator {
     // MARK: - Keyboard
 
     public static func typeText(_ text: String) {
-        // Send the entire string in one keydown/keyup pair — supported on AppKit/SwiftUI
-        // text fields that handle keyboardSetUnicodeString atomically. Falls back to
-        // per-char posting is unnecessary here because most macOS text targets accept
-        // bursts fine. Leaving a tiny 1ms pacer for defensive measure with legacy apps.
+        // Per-char posting because some text targets (Electron, legacy Carbon) drop
+        // bursts of Unicode events. 1ms pacer is defensive; modern AppKit handles zero-gap.
         for char in text {
-            let str = String(char)
-            let chars = Array(str.utf16)
+            let chars = Array(String(char).utf16)
             guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
                   let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false) else { continue }
             down.keyboardSetUnicodeString(stringLength: chars.count, unicodeString: chars)

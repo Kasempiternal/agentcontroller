@@ -1,4 +1,3 @@
-import ApplicationServices
 import Foundation
 import MCPServer
 import AccessibilityEngine
@@ -7,7 +6,7 @@ struct InspectionTools {
     static func register(in registry: ToolRegistry) {
         registry.register(.init(
             name: "get_element_tree",
-            description: "Get the accessibility UI element tree for an application. Returns a hierarchical JSON tree of UI elements. Uses batched AX reads (AXUIElementCopyMultipleAttributeValues) for speed — a 100-element tree takes ~1 XPC call per element instead of ~10.",
+            description: "Get the accessibility UI element tree for an application. Returns a hierarchical JSON tree of UI elements with roles, titles, and properties.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
@@ -21,7 +20,7 @@ struct InspectionTools {
                     ]),
                     "detail": .object([
                         "type": .string("string"),
-                        "description": .string("'lean' (default, ~5x faster) returns role/title/identifier/value/enabled/focused/children. 'full' also includes description/roleDescription/position/size/actions."),
+                        "description": .string("'lean' (default) returns role/title/identifier/value/enabled/focused/children. 'full' also includes description/roleDescription/position/size/actions."),
                     ]),
                 ]),
                 "required": .array([.string("app")]),
@@ -29,9 +28,9 @@ struct InspectionTools {
             handler: { args in
                 let pid = try args!.resolvePID()
                 let maxDepth = args?["maxDepth"]?.intValue ?? 5
-                let detail = AXTreeDetail.from(args?["detail"]?.stringValue)
+                let detail = AXTreeDetail(raw: args?["detail"]?.stringValue)
                 let tree = await MainActor.run {
-                    let appElement = AXElement.application(pid: pid, timeout: 2.0)
+                    let appElement = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
                     return AXElementTree.buildTree(root: appElement, maxDepth: maxDepth, detail: detail)
                 }
                 return ToolResult.json(tree)
@@ -87,7 +86,7 @@ struct InspectionTools {
                 )
 
                 let results = await MainActor.run {
-                    let appElement = AXElement.application(pid: pid, timeout: 2.0)
+                    let appElement = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
                     return AXElementSearch.find(root: appElement, criteria: criteria)
                 }
 
@@ -153,7 +152,7 @@ struct InspectionTools {
                 )
 
                 let result = await MainActor.run {
-                    let appElement = AXElement.application(pid: pid, timeout: 2.0)
+                    let appElement = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
                     let results = AXElementSearch.find(root: appElement, criteria: criteria)
                     guard let first = results.first else { return JSONValue.null }
 
