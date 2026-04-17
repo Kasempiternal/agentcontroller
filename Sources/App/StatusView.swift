@@ -85,10 +85,14 @@ struct StatusView: View {
                 }
 
                 if !state.screenRecordingGranted {
-                    Button("Open Privacy Settings") {
-                        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
+                    Button("Grant Screen Recording") {
+                        let granted = PermissionChecker.requestScreenRecording()
+                        if !granted {
+                            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
+                        }
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.borderedProminent)
+                    .tint(.teal)
                 }
 
                 Spacer()

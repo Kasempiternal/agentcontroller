@@ -17,6 +17,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !appState.accessibilityGranted {
             PermissionChecker.requestAccessibility()
         }
+        if !appState.screenRecordingGranted {
+            PermissionChecker.requestScreenRecording()
+        }
         appState.startPermissionPolling()
 
         // Start MCP server

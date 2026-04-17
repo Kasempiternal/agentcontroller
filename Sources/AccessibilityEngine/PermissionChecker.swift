@@ -13,17 +13,18 @@ public struct PermissionChecker {
     }
 
     public static var isScreenRecordingGranted: Bool {
-        // Heuristic: try to get window names from CGWindowList
-        // If screen recording is not granted, window names will be nil
-        guard let windowList = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else {
-            return false
-        }
-        // Check if any non-self window has a name
-        let selfPID = ProcessInfo.processInfo.processIdentifier
-        return windowList.contains { info in
-            let ownerPID = info[kCGWindowOwnerPID as String] as? pid_t ?? 0
-            if ownerPID == selfPID { return false }
-            return info[kCGWindowName as String] as? String != nil
-        }
+        // Reliable check: CGPreflightScreenCaptureAccess reflects the actual
+        // capture permission, not window-name visibility (which can false-positive
+        // right after a TCC change while window metadata is still cached).
+        CGPreflightScreenCaptureAccess()
+    }
+
+    /// Triggers the system Screen Recording prompt if not yet granted. Returns
+    /// the current grant status. The prompt only appears once per bundle ID —
+    /// if the user dismisses it, subsequent calls just return false until they
+    /// toggle the permission on in System Settings.
+    @discardableResult
+    public static func requestScreenRecording() -> Bool {
+        CGRequestScreenCaptureAccess()
     }
 }
