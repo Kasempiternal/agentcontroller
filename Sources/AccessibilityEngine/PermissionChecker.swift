@@ -1,6 +1,7 @@
 import ApplicationServices
 import CoreGraphics
 import Foundation
+import ScreenCaptureKit
 
 public struct PermissionChecker {
     public static var isAccessibilityGranted: Bool {
@@ -13,18 +14,22 @@ public struct PermissionChecker {
     }
 
     public static var isScreenRecordingGranted: Bool {
-        // Reliable check: CGPreflightScreenCaptureAccess reflects the actual
-        // capture permission, not window-name visibility (which can false-positive
-        // right after a TCC change while window metadata is still cached).
         CGPreflightScreenCaptureAccess()
     }
 
-    /// Triggers the system Screen Recording prompt if not yet granted. Returns
-    /// the current grant status. The prompt only appears once per bundle ID —
-    /// if the user dismisses it, subsequent calls just return false until they
-    /// toggle the permission on in System Settings.
+    /// Triggers the system Screen Recording prompt and — critically on macOS 15+ —
+    /// registers the app in Settings > Privacy > Screen Recording so the user can
+    /// toggle it on. Calling CGRequestScreenCaptureAccess alone is NOT enough on
+    /// Sequoia; we must also touch ScreenCaptureKit (SCShareableContent) because
+    /// that's the API path TCC watches to surface the app in the list.
     @discardableResult
     public static func requestScreenRecording() -> Bool {
-        CGRequestScreenCaptureAccess()
+        let granted = CGRequestScreenCaptureAccess()
+        // Fire-and-forget ScreenCaptureKit call; triggers TCC registration on macOS 15+.
+        // We don't care about the result — the side effect is what matters.
+        Task.detached {
+            _ = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        }
+        return granted
     }
 }
