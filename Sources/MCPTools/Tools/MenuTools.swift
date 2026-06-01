@@ -29,12 +29,21 @@ struct MenuTools {
                     throw ToolError.invalidParameter("menuPath must not be empty")
                 }
 
-                let success = await MainActor.run {
-                    AppManager.activate(pid: pid)
-                    usleep(200_000)
-                    return MenuNavigator.navigateMenu(pid: pid, menuPath: path)
+                // Activate on the MainActor (NSRunningApplication is main-thread-only),
+                // settle without blocking the main thread, then drive the AX menu walk on
+                // the serial executor.
+                let activated = await MainActor.run { AppManager.activate(pid: pid) }
+                await AXExecutor.shared.pause(0.2)
+                let success = await AXExecutor.shared.run {
+                    MenuNavigator.navigateMenu(pid: pid, menuPath: path)
                 }
-                return ToolResult.json(.object(["success": .bool(success)]))
+                guard success else {
+                    return ToolResult.error("Menu path not found or item refused: \(path.joined(separator: " > "))")
+                }
+                return ToolResult.action(success: true, method: "accessibility", extra: [
+                    "activated": .bool(activated),
+                    "menuPath": .array(path.map { .string($0) }),
+                ])
             }
         ))
 
@@ -52,7 +61,7 @@ struct MenuTools {
             handler: { args in
                 let pid = try args!.resolvePID()
                 let maxDepth = args?["maxDepth"]?.intValue ?? 3
-                let structure = await MainActor.run {
+                let structure = await AXExecutor.shared.run {
                     MenuNavigator.getMenuStructure(pid: pid, maxDepth: maxDepth)
                 }
                 return ToolResult.json(structure)

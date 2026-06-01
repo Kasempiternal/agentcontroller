@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode 15
+        run: sudo xcode-select -switch /Applications/Xcode_15.4.app || sudo xcode-select -switch /Applications/Xcode.app
+
+      - name: Swift version
+        run: swift --version
+
+      - name: Build (release, warnings as errors)
+        run: swift build -c release -Xswiftc -warnings-as-errors
+
+      - name: Test
+        run: swift test

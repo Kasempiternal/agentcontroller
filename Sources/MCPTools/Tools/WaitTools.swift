@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import MCPServer
 import AccessibilityEngine
@@ -28,7 +29,12 @@ struct WaitTools {
 
                 let start = Date()
                 while Date().timeIntervalSince(start) < timeout {
-                    let found = await MainActor.run {
+                    // Liveness: a target that quits/crashes mid-wait would otherwise have us
+                    // poll a dead PID until the generic timeout. Bail immediately instead.
+                    if NSRunningApplication(processIdentifier: pid) == nil {
+                        return ToolResult.error("App is no longer running (pid \(pid))")
+                    }
+                    let found = await AXExecutor.shared.run { () -> AXElementSearchResult? in
                         let appElement = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
                         return AXElementSearch.find(root: appElement, criteria: criteria).first
                     }

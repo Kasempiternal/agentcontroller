@@ -25,6 +25,8 @@ struct PermissionsView: View {
                     isGranted: state.accessibilityGranted,
                     action: {
                         PermissionChecker.requestAccessibility()
+                        // Mirror Screen Recording: also deep-link to the Accessibility pane.
+                        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
                     }
                 )
 

@@ -1,5 +1,6 @@
 import ApplicationServices
 import Foundation
+import MCPServer
 
 public final class AXElement: @unchecked Sendable {
     /// Default AX messaging timeout for tool-handler app elements. Low enough that a
@@ -39,9 +40,26 @@ public final class AXElement: @unchecked Sendable {
 
     // MARK: - Attributes
 
+    /// Bounded retry for transient AX failures. `AXUIElementCopyAttributeValue` /
+    /// `AXUIElementCopyMultipleAttributeValues` return `.cannotComplete` when the
+    /// target app is momentarily busy (mid-layout, main thread blocked) — a one-shot
+    /// read then sees nil and callers report a phantom "element not found". We retry
+    /// ONLY `.cannotComplete` (never `.attributeUnsupported` / `.noValue` /
+    /// `.invalidUIElement`, which are stable answers) with a short backoff. The first
+    /// attempt is unconditional, so success-path latency is unchanged.
+    private static let transientRetryAttempts = 3
+    private static let transientRetryBackoffMicros: useconds_t = 18_000  // ~18ms
+
     public func attribute<T>(_ name: String) -> T? {
         var value: CFTypeRef?
-        let result = AXUIElementCopyAttributeValue(ref, name as CFString, &value)
+        var result = AXUIElementCopyAttributeValue(ref, name as CFString, &value)
+        var attempt = 1
+        while result == .cannotComplete && attempt < Self.transientRetryAttempts {
+            usleep(Self.transientRetryBackoffMicros)
+            value = nil
+            result = AXUIElementCopyAttributeValue(ref, name as CFString, &value)
+            attempt += 1
+        }
         guard result == .success, let value else { return nil }
         return value as? T
     }
@@ -55,9 +73,21 @@ public final class AXElement: @unchecked Sendable {
     public func readAttributes(_ names: [String]) -> [String: CFTypeRef] {
         var values: CFArray?
         // rawValue 0: return CFError markers for missing attrs instead of bailing on first error
-        let result = AXUIElementCopyMultipleAttributeValues(
+        var result = AXUIElementCopyMultipleAttributeValues(
             ref, names as CFArray, AXCopyMultipleAttributeOptions(rawValue: 0), &values
         )
+        // Same transient-busy retry as `attribute(_:)`. This is the hot path (one call
+        // per node in tree/search), so a flaky `.cannotComplete` here would otherwise
+        // drop a whole node's attributes.
+        var attempt = 1
+        while result == .cannotComplete && attempt < Self.transientRetryAttempts {
+            usleep(Self.transientRetryBackoffMicros)
+            values = nil
+            result = AXUIElementCopyMultipleAttributeValues(
+                ref, names as CFArray, AXCopyMultipleAttributeOptions(rawValue: 0), &values
+            )
+            attempt += 1
+        }
         guard result == .success, let values else { return [:] }
         let count = CFArrayGetCount(values)
         var out: [String: CFTypeRef] = [:]
@@ -68,6 +98,28 @@ public final class AXElement: @unchecked Sendable {
             out[names[i]] = value
         }
         return out
+    }
+
+    /// The element's `kAXValueAttribute` classified into a `JSONValue`, regardless of
+    /// the underlying CF type. `stringValue` only surfaces `String` values, so
+    /// checkbox / radio / disclosure state (NSNumber 0/1), slider / stepper positions
+    /// (NSNumber double) and Bool toggles are silently dropped — a real gap for a QA
+    /// tool that needs to assert toggle / slider state. This reads the raw CFTypeRef
+    /// once and maps it: String → .string, Bool → .bool, integral number → .int,
+    /// fractional number → .double. AXValue point/size and other types yield nil.
+    /// `stringValue: String?` is unchanged for back-compat.
+    public var valueJSON: JSONValue? {
+        var raw: CFTypeRef?
+        var result = AXUIElementCopyAttributeValue(ref, kAXValueAttribute as CFString, &raw)
+        var attempt = 1
+        while result == .cannotComplete && attempt < Self.transientRetryAttempts {
+            usleep(Self.transientRetryBackoffMicros)
+            raw = nil
+            result = AXUIElementCopyAttributeValue(ref, kAXValueAttribute as CFString, &raw)
+            attempt += 1
+        }
+        guard result == .success, let raw else { return nil }
+        return AXValueExtract.jsonValue(raw)
     }
 
     public var role: String? { attribute(kAXRoleAttribute) }
@@ -215,5 +267,48 @@ public enum AXValueExtract {
         var s = CGSize.zero
         AXValueGetValue(ax, .cgSize, &s)
         return s
+    }
+
+    /// Classify a raw `kAXValueAttribute` CFTypeRef into a `JSONValue`. Used by
+    /// `AXElement.valueJSON` and by `AXElementTree.nodeToJSON` so that non-string
+    /// values (toggle / radio / slider / stepper state arriving as CFBoolean /
+    /// CFNumber) surface instead of being dropped.
+    /// - String → `.string`
+    /// - CFBoolean → `.bool`
+    /// - CFNumber → `.int` (integral) or `.double` (fractional)
+    /// - AXValue point / size → `.object` describing the geometry
+    /// - anything else → nil
+    public static func jsonValue(_ cf: CFTypeRef?) -> JSONValue? {
+        guard let cf else { return nil }
+        let typeID = CFGetTypeID(cf)
+
+        if typeID == CFStringGetTypeID() {
+            return .string(cf as! String)
+        }
+        if typeID == CFBooleanGetTypeID() {
+            return .bool(CFBooleanGetValue((cf as! CFBoolean)))
+        }
+        if typeID == CFNumberGetTypeID() {
+            let num = cf as! CFNumber
+            if CFNumberIsFloatType(num) {
+                var d = 0.0
+                CFNumberGetValue(num, .doubleType, &d)
+                return .double(d)
+            } else {
+                var i = 0
+                CFNumberGetValue(num, .nsIntegerType, &i)
+                return .int(i)
+            }
+        }
+        if typeID == AXValueGetTypeID() {
+            if let p = point(cf) {
+                return .object(["x": .double(p.x), "y": .double(p.y)])
+            }
+            if let s = size(cf) {
+                return .object(["width": .double(s.width), "height": .double(s.height)])
+            }
+            return nil
+        }
+        return nil
     }
 }

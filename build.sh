@@ -8,14 +8,26 @@
 set -euo pipefail
 
 MODE="${1:-release}"
-SIGN_ID="Developer ID Application: Izotz Cristobal Mota (U4VYZ8CUN9)"
+SIGN_ID="${SIGN_ID:-Developer ID Application: Izotz Cristobal Mota (U4VYZ8CUN9)}"
 ENTITLEMENTS="Resources/Macoestro.entitlements"
 BUILD_DIR="build/Macoestro.app"
-NOTARY_PROFILE="macoestro-notary"
+NOTARY_PROFILE="${NOTARY_PROFILE:-macoestro-notary}"
 
 cd "$(dirname "$0")"
 
 say() { printf '\n\033[1;36m== %s ==\033[0m\n' "$*"; }
+die() { printf '\n\033[1;31m== ERROR: %s ==\033[0m\n' "$*" >&2; exit 1; }
+
+# Fail fast if Developer ID signing is requested but the identity isn't in the keychain.
+# Ad-hoc (--dev) signing uses the "-" pseudo-identity and needs no lookup.
+if [ "$MODE" = "release" ] || [ "$MODE" = "--skip-notarize" ]; then
+    if ! security find-identity -v -p codesigning 2>/dev/null | grep -qF "$SIGN_ID"; then
+        die "Signing identity not found in keychain: '$SIGN_ID'
+       Available codesigning identities:
+$(security find-identity -v -p codesigning 2>/dev/null | sed 's/^/         /')
+       Set a valid one with:  SIGN_ID='Developer ID Application: ...' ./build.sh $MODE"
+    fi
+fi
 
 say "Killing any running Macoestro"
 pkill -x Macoestro 2>/dev/null || true
@@ -32,11 +44,11 @@ cp Resources/Info.plist "$BUILD_DIR/Contents/"
 case "$MODE" in
     --dev)
         say "Signing ad-hoc (dev mode — TCC will NOT persist across rebuilds)"
-        codesign --force --deep --sign - "$BUILD_DIR"
+        codesign --force --sign - "$BUILD_DIR"
         ;;
     --skip-notarize|release)
         say "Signing with Developer ID + hardened runtime"
-        codesign --force --deep --options runtime \
+        codesign --force --options runtime \
             --entitlements "$ENTITLEMENTS" \
             --sign "$SIGN_ID" \
             --timestamp \
@@ -53,8 +65,18 @@ if [ "$MODE" = "release" ]; then
     ZIP="build/Macoestro.zip"
     rm -f "$ZIP"
     ditto -c -k --keepParent "$BUILD_DIR" "$ZIP"
-    xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
+
+    # Capture notarytool output so we can confirm Apple actually Accepted the build
+    # before stapling. --wait blocks until the submission reaches a terminal state.
+    NOTARY_OUT="$(xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait 2>&1)"
+    printf '%s\n' "$NOTARY_OUT"
     rm -f "$ZIP"
+
+    if ! printf '%s\n' "$NOTARY_OUT" | grep -Eq 'status:[[:space:]]*Accepted'; then
+        die "Notarization did not reach 'status: Accepted'. Aborting before staple.
+       Inspect the submission with:
+         xcrun notarytool log <submission-id> --keychain-profile '$NOTARY_PROFILE'"
+    fi
 
     say "Stapling notarization ticket"
     xcrun stapler staple "$BUILD_DIR"
@@ -67,11 +89,14 @@ xattr -cr /Applications/Macoestro.app
 
 say "Deploying resilient MCP bridge to ~/.macoestro/"
 mkdir -p ~/.macoestro
+chmod 700 ~/.macoestro
 cp Scripts/macoestro-mcp-bridge.sh ~/.macoestro/macoestro-mcp-bridge.sh
-chmod +x ~/.macoestro/macoestro-mcp-bridge.sh
+chmod 700 ~/.macoestro/macoestro-mcp-bridge.sh
 
 say "Launching"
-open -a Macoestro
+# Launch by path, not `open -a Macoestro`: LaunchServices hasn't necessarily
+# indexed the just-copied bundle by name yet, which makes `-a` fail on a fresh install.
+open "/Applications/Macoestro.app"
 
 sleep 1
 say "Verification"

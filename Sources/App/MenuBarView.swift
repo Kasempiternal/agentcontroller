@@ -2,6 +2,7 @@ import SwiftUI
 
 struct MenuBarView: View {
     @Environment(AppState.self) private var state
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack {
@@ -23,9 +24,7 @@ struct MenuBarView: View {
 
             Button("Open Macoestro") {
                 NSApplication.shared.activate(ignoringOtherApps: true)
-                if let window = NSApplication.shared.windows.first(where: { $0.title == "Macoestro" }) {
-                    window.makeKeyAndOrderFront(nil)
-                }
+                openWindow(id: "main")
             }
 
             Button("Quit Macoestro") {

@@ -1,20 +1,28 @@
 # Macoestro
 
-Native macOS app automation exposed over MCP (Model Context Protocol). A menu-bar app that lets Claude Code drive any running macOS application via the Accessibility API — click, type, screenshot, navigate menus, inspect the AX tree.
+**v1.2.0**
+
+Native macOS app QA automation exposed over MCP (Model Context Protocol). A menu-bar app that lets Claude Code drive and *test* any running macOS application via the Accessibility API — click, type, screenshot, navigate menus, inspect the AX tree, **assert** UI state, snapshot interactable elements as stable handles, extract text, and record replayable flows. The macOS-native counterpart to Maestro (mobile) and Blitz (Mac).
 
 Personal tool. Signed with a stable Developer ID so TCC permission grants persist across rebuilds.
 
 ## What it does
 
-Exposes 28 MCP tools for macOS automation:
+Exposes 42 MCP tools for macOS automation + QA:
 
-- **App control**: `list_apps`, `launch_app`, `quit_app`, `activate_app`, `get_frontmost_app`
-- **Accessibility**: `get_element_tree`, `find_elements`, `get_element_attributes`, `wait_for_element`
-- **Input**: `click`, `double_click`, `right_click`, `type_text`, `send_shortcut`, `scroll`, `swipe`, `drag_drop`
+- **App control**: `list_apps`, `launch_app`, `quit_app`, `activate_app`, `get_frontmost_app`, `open_url`, `reset_app_state`
+- **Accessibility / inspection**: `get_element_tree`, `find_elements`, `get_element_attributes`, `wait_for_element`
+- **Snapshot & handles**: `snapshot` / `describe_screen` — a compact, token-lean list of interactable elements, each with a stable `id` (`e1`, `e2`, …) that the interaction tools accept via `elementId` (no re-search per action)
+- **Assertions** (the QA core): `assert_visible`, `assert_not_visible`, `assert_value` — poll until satisfied or timeout; a failed assertion returns an MCP `isError` result so pass/fail is unambiguous
+- **Text**: `read_text`, `read_all_text` — verify content without screenshots
+- **Input**: `click`, `double_click`, `right_click`, `type_text`, `send_shortcut`, `scroll`, `scroll_until_visible`, `swipe`, `drag_drop`
 - **Windows**: `list_windows`, `get_window_bounds`, `set_window_bounds`, `minimize_window`, `restore_window`
-- **Screenshots**: `screenshot_window`, `screenshot_element`, `screenshot_screen`
+- **Screenshots**: `screenshot_window`, `screenshot_element`, `screenshot_screen` (JPEG + longest-side cap by default to stay context-cheap; `format`/`quality`/`maxLongestSide` overridable)
 - **Menus**: `navigate_menu`, `get_menu_structure`
+- **Flows**: `run_steps`, `save_flow`, `list_flows`, `run_saved_flow` — record and replay a QA run deterministically
 - **Setup**: `check_permissions`
+
+All element matchers (`role`, `title`, `titleContains`, `identifier`, `value`, `description`, `descriptionContains`, `labelContains`, `index`) are accepted consistently across the interaction, assertion, and inspection tools. Interaction tools default their search to the **focused window** (`scope: "app"` to widen) and retry briefly so first-frame races self-heal.
 
 Architecture:
 
@@ -24,6 +32,10 @@ Claude Code  ──stdin/stdout──▶  macoestro-mcp-bridge.sh  ──HTTP PO
 ```
 
 The bridge is resilient — it doesn't die when Macoestro restarts, so rebuilds during an active Claude Code session recover automatically.
+
+### Security
+
+The HTTP server is pinned to **IPv4 loopback** (never `0.0.0.0`), so it is unreachable from the LAN. Every request must carry `Authorization: Bearer <token>`; the server generates a fresh 256-bit token per launch, writes it to `~/.macoestro/mcp-token` (mode `0600`, alongside `mcp-port`), and the bridge replays it on each call. Requests with an `Origin` header or a non-loopback `Host` are rejected (`403`) to defeat DNS-rebinding from a browser the user happens to have open. Bodies are size-capped and reads are deadline-bounded.
 
 ## Install
 

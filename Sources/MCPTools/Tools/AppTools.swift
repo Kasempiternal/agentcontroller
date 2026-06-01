@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import MCPServer
 import AccessibilityEngine
@@ -71,14 +72,12 @@ struct AppTools {
                 guard let appStr = args?["app"]?.stringValue else {
                     throw ToolError.missingParameter("app")
                 }
-                let success: Bool
-                if let pid = AppManager.resolvePID(from: appStr) {
-                    success = await MainActor.run { AppManager.quit(pid: pid) }
-                    await ShareableContentCache.shared.invalidate()
-                } else {
-                    success = false
+                guard let pid = AppManager.resolvePID(from: appStr) else {
+                    return ToolResult.error("App not found or not running: \(appStr)")
                 }
-                return ToolResult.json(.object(["success": .bool(success)]))
+                let success = await MainActor.run { AppManager.quit(pid: pid) }
+                await ShareableContentCache.shared.invalidate()
+                return ToolResult.action(success: success, method: "terminate")
             }
         ))
 
@@ -99,14 +98,116 @@ struct AppTools {
                 guard let appStr = args?["app"]?.stringValue else {
                     throw ToolError.missingParameter("app")
                 }
-                let success: Bool
-                if let pid = AppManager.resolvePID(from: appStr) {
-                    success = await MainActor.run { AppManager.activate(pid: pid) }
-                    await ShareableContentCache.shared.invalidate()
-                } else {
-                    success = false
+                guard let pid = AppManager.resolvePID(from: appStr) else {
+                    return ToolResult.error("App not found or not running: \(appStr)")
                 }
-                return ToolResult.json(.object(["success": .bool(success)]))
+                let success = await MainActor.run { AppManager.activate(pid: pid) }
+                await ShareableContentCache.shared.invalidate()
+                return ToolResult.action(success: success, method: "activate")
+            }
+        ))
+
+        registry.register(.init(
+            name: "open_url",
+            description: "Open a URL with the default handler (web link, deep link, or custom scheme like 'myapp://path'). Use for deep-link / web navigation during a flow.",
+            inputSchema: .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "url": .object(["type": .string("string"), "description": .string("URL to open (e.g. 'https://example.com' or 'myapp://route')")]),
+                ]),
+                "required": .array([.string("url")]),
+            ]),
+            handler: { args in
+                guard let urlStr = args?["url"]?.stringValue else {
+                    throw ToolError.missingParameter("url")
+                }
+                guard let url = URL(string: urlStr), url.scheme != nil else {
+                    return ToolResult.error("Invalid URL: \(urlStr)")
+                }
+                let opened = await MainActor.run { NSWorkspace.shared.open(url) }
+                guard opened else {
+                    return ToolResult.error("No handler could open URL: \(urlStr)")
+                }
+                return ToolResult.action(success: true, method: "workspace", extra: [
+                    "url": .string(urlStr),
+                ])
+            }
+        ))
+
+        registry.register(.init(
+            name: "reset_app_state",
+            description: "Quit an app to reset its in-memory state. When wipeData:true AND the app is sandboxed (a Container exists for its bundle ID), ALSO delete ~/Library/Containers/<bundleId>/Data — this is DESTRUCTIVE and only happens behind the explicit wipeData:true flag. Without the flag, only quits.",
+            inputSchema: .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "app": .object(["type": .string("string"), "description": .string("Bundle ID, app name, or PID")]),
+                    "wipeData": .object(["type": .string("boolean"), "description": .string("DESTRUCTIVE: when true, delete the app's sandbox Data container after quitting. Default false (quit only).")]),
+                ]),
+                "required": .array([.string("app")]),
+            ]),
+            handler: { args in
+                guard let appStr = args?["app"]?.stringValue else {
+                    throw ToolError.missingParameter("app")
+                }
+                let wipeData = args?["wipeData"]?.boolValue ?? false
+
+                // Resolve a bundle id (from the live process if running, else treat the
+                // arg as a bundle id) BEFORE quitting so we can target its container.
+                let runningPID = AppManager.resolvePID(from: appStr)
+                let bundleId: String? = await MainActor.run { () -> String? in
+                    if let pid = runningPID,
+                       let app = NSRunningApplication(processIdentifier: pid),
+                       let bid = app.bundleIdentifier {
+                        return bid
+                    }
+                    // Not running: accept the arg as a bundle id if it resolves to an app.
+                    if NSWorkspace.shared.urlForApplication(withBundleIdentifier: appStr) != nil {
+                        return appStr
+                    }
+                    return nil
+                }
+
+                // Quit if running.
+                var quit = false
+                if let pid = runningPID {
+                    quit = await MainActor.run { AppManager.quit(pid: pid) }
+                    await ShareableContentCache.shared.invalidate()
+                }
+
+                var fields: [String: JSONValue] = [
+                    "quit": .bool(quit),
+                    "wiped": .bool(false),
+                ]
+                if let bundleId { fields["bundleId"] = .string(bundleId) }
+
+                guard wipeData else {
+                    // Non-destructive path — never touch the filesystem without the flag.
+                    return ToolResult.action(success: true, method: "quit", extra: fields)
+                }
+
+                guard let bundleId else {
+                    return ToolResult.error("Cannot wipe data: could not resolve a bundle ID for '\(appStr)'")
+                }
+
+                // Give the app a beat to terminate and release file handles.
+                await AXExecutor.shared.pause(0.5)
+
+                let home = FileManager.default.homeDirectoryForCurrentUser
+                let dataDir = home
+                    .appendingPathComponent("Library/Containers/\(bundleId)/Data", isDirectory: true)
+                guard FileManager.default.fileExists(atPath: dataDir.path) else {
+                    fields["wiped"] = .bool(false)
+                    fields["note"] = .string("No sandbox container at \(dataDir.path); nothing removed (app may be unsandboxed).")
+                    return ToolResult.action(success: true, method: "quit", extra: fields)
+                }
+                do {
+                    try FileManager.default.removeItem(at: dataDir)
+                    fields["wiped"] = .bool(true)
+                    fields["removed"] = .string(dataDir.path)
+                    return ToolResult.action(success: true, method: "wipe", extra: fields)
+                } catch {
+                    return ToolResult.error("Quit ok but failed to remove container data: \(error.localizedDescription)")
+                }
             }
         ))
     }

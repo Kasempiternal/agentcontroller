@@ -35,5 +35,10 @@ let package = Package(
             dependencies: ["AccessibilityEngine", "ScreenCapture", "MCPServer"],
             path: "Sources/MCPTools"
         ),
+        .testTarget(
+            name: "MacoestroTests",
+            dependencies: ["MCPServer", "AccessibilityEngine", "MCPTools", "ScreenCapture"],
+            path: "Tests/MacoestroTests"
+        ),
     ]
 )

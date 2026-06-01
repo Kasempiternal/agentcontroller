@@ -8,12 +8,22 @@ public protocol MCPToolProvider: Sendable {
 public struct MCPProtocolHandler: Sendable {
     private let toolProvider: MCPToolProvider
     private let serverInfo: JSONValue
+    /// Invoked with the tool name whenever `tools/call` dispatches a tool.
+    /// The App layer wires this to AppState for telemetry; nil by default.
+    private let onToolCall: (@Sendable (String) -> Void)?
 
-    public init(toolProvider: MCPToolProvider) {
+    public init(
+        toolProvider: MCPToolProvider,
+        onToolCall: (@Sendable (String) -> Void)? = nil
+    ) {
         self.toolProvider = toolProvider
+        self.onToolCall = onToolCall
+        // Real version from the bundle. Info.plist is injected via -sectcreate into
+        // the executable's __TEXT,__info_plist section, so Bundle.main resolves it.
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
         self.serverInfo = .object([
             "name": .string("macoestro"),
-            "version": .string("1.0.0"),
+            "version": .string(version),
         ])
     }
 
@@ -52,12 +62,22 @@ public struct MCPProtocolHandler: Sendable {
     }
 
     private func handleInitialize(_ request: JSONRPCRequest) -> JSONRPCResponse {
+        // Echo the client's requested protocolVersion when present (we assume support),
+        // otherwise fall back to the baseline MCP revision.
+        let protocolVersion = request.params?["protocolVersion"]?.stringValue ?? "2024-11-05"
+        let instructions = """
+        Macoestro is a macOS QA-automation server that drives native apps via the \
+        Accessibility API. Start with `list_apps` to find a running app, then \
+        `get_element_tree` or `find_elements` to inspect its UI hierarchy, then use \
+        the interaction tools (click, type_text, etc.) to drive it.
+        """
         let result: JSONValue = .object([
-            "protocolVersion": .string("2024-11-05"),
+            "protocolVersion": .string(protocolVersion),
             "capabilities": .object([
                 "tools": .object([:]),
             ]),
             "serverInfo": serverInfo,
+            "instructions": .string(instructions),
         ])
         return .success(result, id: request.id)
     }
@@ -77,6 +97,9 @@ public struct MCPProtocolHandler: Sendable {
         }
 
         let arguments = params["arguments"]
+
+        // Telemetry: notify the host that a tool is being dispatched.
+        onToolCall?(name)
 
         do {
             let result = try await toolProvider.callTool(name: name, arguments: arguments)

@@ -1,4 +1,5 @@
 import Foundation
+import ApplicationServices
 import MCPServer
 import AccessibilityEngine
 
@@ -29,7 +30,7 @@ struct InspectionTools {
                 let pid = try args!.resolvePID()
                 let maxDepth = args?["maxDepth"]?.intValue ?? 5
                 let detail = AXTreeDetail(raw: args?["detail"]?.stringValue)
-                let tree = await MainActor.run {
+                let tree = await AXExecutor.shared.run {
                     let appElement = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
                     return AXElementTree.buildTree(root: appElement, maxDepth: maxDepth, detail: detail)
                 }
@@ -90,7 +91,7 @@ struct InspectionTools {
                 let pid = try args!.resolvePID()
                 let criteria = AXElementSearchCriteria(from: args, maxResults: args?["maxResults"]?.intValue ?? 20)
 
-                let results = await MainActor.run {
+                let results = await AXExecutor.shared.run {
                     let appElement = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
                     return AXElementSearch.find(root: appElement, criteria: criteria)
                 }
@@ -152,7 +153,7 @@ struct InspectionTools {
                 let pid = try args!.resolvePID()
                 let criteria = AXElementSearchCriteria(from: args, maxResults: 1)
 
-                let result = await MainActor.run {
+                let result = await AXExecutor.shared.run { () -> JSONValue in
                     let appElement = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
                     let results = AXElementSearch.find(root: appElement, criteria: criteria)
                     guard let first = results.first else { return JSONValue.null }
@@ -160,6 +161,12 @@ struct InspectionTools {
                     let element = first.element
                     var attrs: [String: JSONValue] = [:]
                     for name in element.attributeNames {
+                        // Prefer the real classified value for AXValue so toggles/sliders
+                        // surface their actual state (CFBoolean/CFNumber), not "(complex value)".
+                        if name == (kAXValueAttribute as String), let jv = element.valueJSON {
+                            attrs[name] = jv
+                            continue
+                        }
                         if let str: String = element.attribute(name) {
                             attrs[name] = .string(str)
                         } else if let b: Bool = element.attribute(name) {
@@ -167,7 +174,9 @@ struct InspectionTools {
                         } else if let n: Int = element.attribute(name) {
                             attrs[name] = .int(n)
                         } else {
-                            attrs[name] = .string("(complex value)")
+                            // Short type tag instead of an opaque literal. Skip walking large
+                            // relationship/UI-element attrs; just name their shape.
+                            attrs[name] = .string(complexTypeTag(for: element, attribute: name))
                         }
                     }
                     attrs["_actions"] = .array(element.actionNames.map { .string($0) })
@@ -181,5 +190,29 @@ struct InspectionTools {
                 return ToolResult.json(result)
             }
         ))
+    }
+
+    /// A short, token-lean tag describing a non-scalar attribute value instead of the old
+    /// opaque "(complex value)" literal. We read the raw CFTypeRef once and name its shape
+    /// (array / AX element / AX point-or-size / class name) — never recursing into it, so a
+    /// big relationship attribute (children, related elements) can't explode the payload.
+    static func complexTypeTag(for element: AXElement, attribute name: String) -> String {
+        guard let raw: CFTypeRef = element.attribute(name) else { return "[empty]" }
+        let typeID = CFGetTypeID(raw)
+        if typeID == CFArrayGetTypeID() {
+            let count = CFArrayGetCount((raw as! CFArray))
+            return "[array \(count)]"
+        }
+        if typeID == AXUIElementGetTypeID() {
+            return "[axelement]"
+        }
+        if typeID == AXValueGetTypeID() {
+            if AXValueExtract.point(raw) != nil { return "[axvalue point]" }
+            if AXValueExtract.size(raw) != nil { return "[axvalue size]" }
+            return "[axvalue]"
+        }
+        // Fall back to the CF/NS class name (e.g. AXTextMarker, NSAttributedString, NSURL).
+        let className = CFCopyTypeIDDescription(typeID) as String? ?? "value"
+        return "[\(className)]"
     }
 }

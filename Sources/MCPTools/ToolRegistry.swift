@@ -50,6 +50,12 @@ public final class ToolRegistry: MCPToolProvider, @unchecked Sendable {
         MenuTools.register(in: self)
         WaitTools.register(in: self)
         SystemTools.register(in: self)
+        // QA-capability layer.
+        AssertTools.register(in: self)
+        SnapshotTools.register(in: self)
+        ReadTextTools.register(in: self)
+        // FlowTools handlers capture `self` to call back into callTool for composed flows.
+        FlowTools.register(in: self)
     }
 }
 

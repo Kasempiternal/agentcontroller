@@ -94,11 +94,15 @@ struct WindowTools {
                 if let w = args?["width"]?.doubleValue, let h = args?["height"]?.doubleValue {
                     size = CGSize(width: w, height: h)
                 }
+                // Capture immutable copies before the @Sendable MainActor closure — Swift 6
+                // rejects mutable `var` captures crossing the actor boundary.
+                let pos = position
+                let sz = size
                 let success = await MainActor.run {
-                    WindowManager.setWindowBounds(pid: pid, windowIndex: index, position: position, size: size)
+                    WindowManager.setWindowBounds(pid: pid, windowIndex: index, position: pos, size: sz)
                 }
                 if success { await ShareableContentCache.shared.invalidate() }
-                return ToolResult.json(.object(["success": .bool(success)]))
+                return ToolResult.action(success: success, method: "accessibility")
             }
         ))
 
@@ -118,7 +122,7 @@ struct WindowTools {
                 let index = args?["windowIndex"]?.intValue ?? 0
                 let success = await MainActor.run { WindowManager.minimize(pid: pid, windowIndex: index) }
                 if success { await ShareableContentCache.shared.invalidate() }
-                return ToolResult.json(.object(["success": .bool(success)]))
+                return ToolResult.action(success: success, method: "accessibility")
             }
         ))
 
@@ -138,7 +142,7 @@ struct WindowTools {
                 let index = args?["windowIndex"]?.intValue ?? 0
                 let success = await MainActor.run { WindowManager.restore(pid: pid, windowIndex: index) }
                 if success { await ShareableContentCache.shared.invalidate() }
-                return ToolResult.json(.object(["success": .bool(success)]))
+                return ToolResult.action(success: success, method: "accessibility")
             }
         ))
     }

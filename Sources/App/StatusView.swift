@@ -14,7 +14,7 @@ struct StatusView: View {
                 Text("Macoestro")
                     .font(.title2.bold())
                 Spacer()
-                Text("v1.1.0")
+                Text("v" + (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -79,6 +79,9 @@ struct StatusView: View {
                 if !state.accessibilityGranted {
                     Button("Grant Accessibility") {
                         PermissionChecker.requestAccessibility()
+                        // Mirror the Screen Recording flow: also deep-link to the
+                        // Accessibility pane so the user can flip the toggle directly.
+                        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(.teal)
@@ -127,6 +130,28 @@ struct StatusView: View {
                     .buttonStyle(.borderless)
                     .help("Copy path")
                 }
+
+                // Copy-able .mcp.json snippet built from the bridge path — paste
+                // straight into a project's .mcp.json.
+                Text(".mcp.json")
+                    .font(.caption.bold())
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 4)
+                HStack(alignment: .top) {
+                    Text(mcpJSONSnippet)
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(mcpJSONSnippet, forType: .string)
+                    } label: {
+                        Image(systemName: "doc.on.doc")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Copy .mcp.json snippet")
+                }
             }
             .padding(.horizontal)
             .padding(.bottom)
@@ -135,6 +160,18 @@ struct StatusView: View {
         .onAppear {
             state.updatePermissions()
         }
+    }
+
+    private var mcpJSONSnippet: String {
+        """
+        {
+          "mcpServers": {
+            "macoestro": {
+              "command": "\(SetupManager.bridgeScript.path)"
+            }
+          }
+        }
+        """
     }
 }
 

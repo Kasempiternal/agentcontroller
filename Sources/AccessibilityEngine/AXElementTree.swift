@@ -46,8 +46,15 @@ public struct AXElementTree {
         if let id = attrs[kAXIdentifierAttribute as String] as? String, !id.isEmpty {
             fields["identifier"] = .string(id)
         }
-        if let v = attrs[kAXValueAttribute as String] as? String, !v.isEmpty {
-            fields["value"] = .string(v)
+        if let rawValue = attrs[kAXValueAttribute as String] {
+            if let v = rawValue as? String {
+                if !v.isEmpty { fields["value"] = .string(v) }
+            } else if let classified = AXValueExtract.jsonValue(rawValue) {
+                // Non-string value (toggle / radio / slider / stepper state arriving as
+                // CFBoolean or CFNumber). Surface it instead of dropping it so the tree
+                // can assert control state.
+                fields["value"] = classified
+            }
         }
         fields["enabled"] = .bool((attrs[kAXEnabledAttribute as String] as? Bool) ?? true)
         if (attrs[kAXFocusedAttribute as String] as? Bool) == true {

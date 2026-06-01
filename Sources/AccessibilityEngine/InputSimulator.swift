@@ -48,6 +48,8 @@ public struct InputSimulator {
     public static func typeText(_ text: String) {
         // Per-char posting because some text targets (Electron, legacy Carbon) drop
         // bursts of Unicode events. 1ms pacer is defensive; modern AppKit handles zero-gap.
+        // NOTE: the per-char `usleep` is intentional and now runs on the AXExecutor
+        // serial thread (never the MainActor), so it no longer freezes the menu-bar UI.
         for char in text {
             let chars = Array(String(char).utf16)
             guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
@@ -58,6 +60,15 @@ public struct InputSimulator {
             up.post(tap: .cghidEventTap)
             usleep(1_000)
         }
+    }
+
+    /// Clear the focused text field before typing so a re-run replaces rather than
+    /// appends (the CGEvent type path otherwise inserts at the caret, doubling text on
+    /// repeat). Select-all (Cmd+A) then forward-delete leaves an empty field.
+    public static func clearFocusedField() {
+        sendShortcut(keyCode: CGKeyCode(kVK_ANSI_A), modifiers: .maskCommand)
+        usleep(5_000)
+        pressKey(CGKeyCode(kVK_ForwardDelete))
     }
 
     public static func sendShortcut(keyCode: CGKeyCode, modifiers: CGEventFlags) {

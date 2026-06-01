@@ -2,32 +2,65 @@ import Foundation
 import MCPServer
 
 public struct MenuNavigator {
+    /// Normalize a menu label for matching: fold the Unicode horizontal ellipsis (U+2026
+    /// "…") to three ASCII dots so a caller's `"Save As..."` matches the system's
+    /// `"Save As…"` (and vice-versa), trim surrounding whitespace, and lowercase. Without
+    /// this, exact-lowercased matching could never hit any ellipsis menu item — the
+    /// tool's own `"Save As..."` schema example included.
+    static func normalize(_ s: String) -> String {
+        s.replacingOccurrences(of: "\u{2026}", with: "...")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+    }
+
+    /// Find the best child matching `name` among `items`: exact → prefix → contains
+    /// (all on normalized labels). Returns nil if nothing matches.
+    static func matchItem(_ name: String, in items: [AXElement]) -> AXElement? {
+        let target = normalize(name)
+        let labeled = items.compactMap { item -> (AXElement, String)? in
+            guard let t = item.title, !t.isEmpty else { return nil }
+            return (item, normalize(t))
+        }
+        if let exact = labeled.first(where: { $0.1 == target }) { return exact.0 }
+        if let prefix = labeled.first(where: { $0.1.hasPrefix(target) || target.hasPrefix($0.1) }) { return prefix.0 }
+        if let contains = labeled.first(where: { $0.1.contains(target) }) { return contains.0 }
+        return nil
+    }
+
     public static func navigateMenu(pid: pid_t, menuPath: [String]) -> Bool {
         let appElement = AXElement.application(pid: pid)
         guard let menuBar = appElement.menuBar else { return false }
 
         var currentItems = menuBar.children
         for (index, menuName) in menuPath.enumerated() {
-            guard let menuItem = currentItems.first(where: {
-                $0.title?.lowercased() == menuName.lowercased()
-            }) else {
+            guard let menuItem = matchItem(menuName, in: currentItems) else {
+                // Descent failed before reaching the leaf — make sure we didn't leave a
+                // menu hanging open.
+                if index > 0 { InputSimulator.pressEscape() }
                 return false
             }
 
             if index == menuPath.count - 1 {
-                // Last item — click it
+                // Last item — click it.
                 return menuItem.press()
+            }
+
+            // Open the submenu, then descend into the child whose role is AXMenu rather
+            // than blindly taking children.first (which can be a separator or title).
+            _ = menuItem.press()
+            usleep(100_000) // 100ms for menu to open
+            let children = menuItem.children
+            if let submenu = children.first(where: { $0.role == "AXMenu" }) {
+                currentItems = submenu.children
+            } else if let firstChild = children.first, !firstChild.children.isEmpty {
+                // Some apps nest the menu one level deeper without an explicit AXMenu role.
+                currentItems = firstChild.children
+            } else if !children.isEmpty {
+                currentItems = children
             } else {
-                // Open submenu
-                _ = menuItem.press()
-                usleep(100_000) // 100ms for menu to open
-                // Get submenu children
-                let children = menuItem.children
-                if let submenu = children.first {
-                    currentItems = submenu.children
-                } else {
-                    currentItems = children
-                }
+                // No descendable submenu — bail and close the open menu.
+                InputSimulator.pressEscape()
+                return false
             }
         }
         return false
