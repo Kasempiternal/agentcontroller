@@ -35,8 +35,9 @@ public struct MenuNavigator {
         for (index, menuName) in menuPath.enumerated() {
             guard let menuItem = matchItem(menuName, in: currentItems) else {
                 // Descent failed before reaching the leaf — make sure we didn't leave a
-                // menu hanging open.
-                if index > 0 { InputSimulator.pressEscape() }
+                // menu hanging open. Route Escape to the target PID (background-safe) so
+                // closing a half-open menu never hits the global HID stream.
+                if index > 0 { InputSimulator.pressEscape(pid: pid) }
                 return false
             }
 
@@ -58,8 +59,9 @@ public struct MenuNavigator {
             } else if !children.isEmpty {
                 currentItems = children
             } else {
-                // No descendable submenu — bail and close the open menu.
-                InputSimulator.pressEscape()
+                // No descendable submenu — bail and close the open menu. Route Escape to
+                // the target PID (background-safe) rather than the global HID stream.
+                InputSimulator.pressEscape(pid: pid)
                 return false
             }
         }

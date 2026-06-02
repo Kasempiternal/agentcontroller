@@ -6,7 +6,7 @@ struct MenuTools {
     static func register(in registry: ToolRegistry) {
         registry.register(.init(
             name: "navigate_menu",
-            description: "Navigate and click a menu item by path (e.g. ['File', 'Save As...'])",
+            description: "Navigate and click a menu item by path (e.g. ['File', 'Save As...']). BACKGROUND-SAFE BY DEFAULT: the menu walk presses each AXMenuItem via the Accessibility API, which invokes the command in-process WITHOUT dropping the visible menu, moving the cursor, or bringing the app forward. Set foreground:true only for apps that build their menus lazily and expose them in the AX tree only when frontmost.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
@@ -16,6 +16,7 @@ struct MenuTools {
                         "items": .object(["type": .string("string")]),
                         "description": .string("Array of menu item names (e.g. ['File', 'Save As...'])"),
                     ]),
+                    "foreground": .object(["type": .string("boolean"), "description": .string("Default false (background-safe). When true, activates the app first — only needed for apps that populate their menu bar in the AX tree lazily when frontmost.")]),
                 ]),
                 "required": .array([.string("app"), .string("menuPath")]),
             ]),
@@ -28,12 +29,16 @@ struct MenuTools {
                 guard !path.isEmpty else {
                     throw ToolError.invalidParameter("menuPath must not be empty")
                 }
+                let foreground = args?["foreground"]?.boolValue ?? false
 
-                // Activate on the MainActor (NSRunningApplication is main-thread-only),
-                // settle without blocking the main thread, then drive the AX menu walk on
-                // the serial executor.
-                let activated = await MainActor.run { AppManager.activate(pid: pid) }
-                await AXExecutor.shared.pause(0.2)
+                // Background-safe: the AX menu walk (AXPress on menu items) works without
+                // the app being frontmost, so do NOT activate by default. foreground:true
+                // activates first for apps that build menus lazily when active.
+                var activated = false
+                if foreground {
+                    activated = await MainActor.run { AppManager.activate(pid: pid) }
+                    await AXExecutor.shared.pause(0.2)
+                }
                 let success = await AXExecutor.shared.run {
                     MenuNavigator.navigateMenu(pid: pid, menuPath: path)
                 }

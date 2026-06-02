@@ -83,7 +83,7 @@ struct AppTools {
 
         registry.register(.init(
             name: "activate_app",
-            description: "Bring a running macOS application to the foreground",
+            description: "Bring a running macOS application to the foreground. This is the ONE tool that intentionally changes focus and is the explicit, user-requested way to do so — every other interaction tool (click/type_text/send_shortcut/scroll/etc.) runs in the background by default and does NOT bring the app forward. Use this only when you genuinely need the target app frontmost (e.g. before a foreground:true escape-hatch action).",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([

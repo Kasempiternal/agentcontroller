@@ -7,7 +7,7 @@ struct ScrollTools {
     static func register(in registry: ToolRegistry) {
         registry.register(.init(
             name: "scroll",
-            description: "Scroll at a specific position within an app window. Use negative deltaY to scroll down, positive to scroll up.",
+            description: "Scroll at a specific position within an app window. Use negative deltaY to scroll down, positive to scroll up. BACKGROUND-SAFE BY DEFAULT: the scroll-wheel event is delivered to the target PID with no cursor warp and no app activation — the user's mouse and focus are untouched. Set foreground:true only for apps that ignore PID-targeted scrolls (activates the app, warps the real cursor to the point, and scrolls via the global HID stream).",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
@@ -16,6 +16,7 @@ struct ScrollTools {
                     "y": .object(["type": .string("number"), "description": .string("Y coordinate")]),
                     "deltaX": .object(["type": .string("number"), "description": .string("Horizontal scroll amount (default 0)")]),
                     "deltaY": .object(["type": .string("number"), "description": .string("Vertical scroll amount (negative = down)")]),
+                    "foreground": .object(["type": .string("boolean"), "description": .string("Default false (background-safe). When true, activates the app and scrolls via the global HID stream (moves the real cursor).")]),
                 ]),
                 "required": .array([.string("app"), .string("x"), .string("y"), .string("deltaY")]),
             ]),
@@ -27,13 +28,18 @@ struct ScrollTools {
                     throw ToolError.missingParameter("x, y, deltaY")
                 }
                 let deltaX = args?["deltaX"]?.intValue ?? 0
+                let foreground = args?["foreground"]?.boolValue ?? false
 
-                let activated = await MainActor.run { AppManager.activate(pid: pid) }
-                await AXExecutor.shared.pause(0.1)
-                await AXExecutor.shared.run {
-                    InputSimulator.scroll(at: CGPoint(x: x, y: y), deltaX: Int32(deltaX), deltaY: Int32(deltaY))
+                var activated = false
+                if foreground {
+                    activated = await MainActor.run { AppManager.activate(pid: pid) }
+                    await AXExecutor.shared.pause(0.1)
                 }
-                return ToolResult.action(success: true, method: "coordinate", extra: [
+                let targetPid: pid_t? = foreground ? nil : pid
+                await AXExecutor.shared.run {
+                    InputSimulator.scroll(at: CGPoint(x: x, y: y), deltaX: Int32(deltaX), deltaY: Int32(deltaY), pid: targetPid)
+                }
+                return ToolResult.action(success: true, method: foreground ? "coordinate" : "coordinate-pid", extra: [
                     "activated": .bool(activated),
                 ])
             }
@@ -41,7 +47,7 @@ struct ScrollTools {
 
         registry.register(.init(
             name: "swipe",
-            description: "Swipe gesture from one point to another (implemented as a mouse drag)",
+            description: "Swipe gesture from one point to another (implemented as a mouse drag). BACKGROUND-SAFE BY DEFAULT: the drag events are delivered to the target PID without warping the real cursor or activating the app. NOTE: drags are the least reliable synthetic gesture — many apps poll the real OS pointer mid-drag, so a PID-targeted drag with a stationary cursor can desync; if the gesture doesn't take, set foreground:true to activate the app and drag via the global HID stream (which moves the real cursor).",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
@@ -51,6 +57,7 @@ struct ScrollTools {
                     "endX": .object(["type": .string("number"), "description": .string("End X coordinate")]),
                     "endY": .object(["type": .string("number"), "description": .string("End Y coordinate")]),
                     "duration": .object(["type": .string("number"), "description": .string("Duration in seconds (default 0.3)")]),
+                    "foreground": .object(["type": .string("boolean"), "description": .string("Default false (background-safe). When true, activates the app and drags via the global HID stream (moves the real cursor).")]),
                 ]),
                 "required": .array([.string("app"), .string("startX"), .string("startY"), .string("endX"), .string("endY")]),
             ]),
@@ -63,13 +70,18 @@ struct ScrollTools {
                     throw ToolError.missingParameter("startX, startY, endX, endY")
                 }
                 let duration = args?["duration"]?.doubleValue ?? 0.3
+                let foreground = args?["foreground"]?.boolValue ?? false
 
-                let activated = await MainActor.run { AppManager.activate(pid: pid) }
-                await AXExecutor.shared.pause(0.1)
-                await AXExecutor.shared.run {
-                    InputSimulator.drag(from: CGPoint(x: sx, y: sy), to: CGPoint(x: ex, y: ey), duration: duration)
+                var activated = false
+                if foreground {
+                    activated = await MainActor.run { AppManager.activate(pid: pid) }
+                    await AXExecutor.shared.pause(0.1)
                 }
-                return ToolResult.action(success: true, method: "coordinate", extra: [
+                let targetPid: pid_t? = foreground ? nil : pid
+                await AXExecutor.shared.run {
+                    InputSimulator.drag(from: CGPoint(x: sx, y: sy), to: CGPoint(x: ex, y: ey), duration: duration, pid: targetPid)
+                }
+                return ToolResult.action(success: true, method: foreground ? "coordinate" : "coordinate-pid", extra: [
                     "activated": .bool(activated),
                 ])
             }
@@ -77,7 +89,7 @@ struct ScrollTools {
 
         registry.register(.init(
             name: "drag_drop",
-            description: "Drag from one position and drop at another",
+            description: "Drag from one position and drop at another. BACKGROUND-SAFE BY DEFAULT: the drag events are delivered to the target PID without warping the real cursor or activating the app. NOTE: drags are the least reliable synthetic gesture — many apps poll the real OS pointer mid-drag, so a PID-targeted drag with a stationary cursor can desync; if the drop doesn't take, set foreground:true to activate the app and drag via the global HID stream (which moves the real cursor).",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
@@ -86,6 +98,7 @@ struct ScrollTools {
                     "fromY": .object(["type": .string("number"), "description": .string("Source Y")]),
                     "toX": .object(["type": .string("number"), "description": .string("Target X")]),
                     "toY": .object(["type": .string("number"), "description": .string("Target Y")]),
+                    "foreground": .object(["type": .string("boolean"), "description": .string("Default false (background-safe). When true, activates the app and drags via the global HID stream (moves the real cursor).")]),
                 ]),
                 "required": .array([.string("app"), .string("fromX"), .string("fromY"), .string("toX"), .string("toY")]),
             ]),
@@ -97,13 +110,18 @@ struct ScrollTools {
                       let ty = args?["toY"]?.doubleValue else {
                     throw ToolError.missingParameter("fromX, fromY, toX, toY")
                 }
+                let foreground = args?["foreground"]?.boolValue ?? false
 
-                let activated = await MainActor.run { AppManager.activate(pid: pid) }
-                await AXExecutor.shared.pause(0.1)
-                await AXExecutor.shared.run {
-                    InputSimulator.drag(from: CGPoint(x: fx, y: fy), to: CGPoint(x: tx, y: ty), duration: 0.5)
+                var activated = false
+                if foreground {
+                    activated = await MainActor.run { AppManager.activate(pid: pid) }
+                    await AXExecutor.shared.pause(0.1)
                 }
-                return ToolResult.action(success: true, method: "coordinate", extra: [
+                let targetPid: pid_t? = foreground ? nil : pid
+                await AXExecutor.shared.run {
+                    InputSimulator.drag(from: CGPoint(x: fx, y: fy), to: CGPoint(x: tx, y: ty), duration: 0.5, pid: targetPid)
+                }
+                return ToolResult.action(success: true, method: foreground ? "coordinate" : "coordinate-pid", extra: [
                     "activated": .bool(activated),
                 ])
             }
@@ -111,7 +129,7 @@ struct ScrollTools {
 
         registry.register(.init(
             name: "scroll_until_visible",
-            description: "Scroll until an element matching the selector is on-screen. Prefers the native one-call AXScrollToVisible; otherwise wheel-scrolls in `direction`, re-checking the element's frame against the focused window bounds, up to maxScrolls/timeout. Returns offscreen:true if the element exists but stays outside the window; errors if never found.",
+            description: "Scroll until an element matching the selector is on-screen. BACKGROUND-SAFE: prefers the native one-call AXScrollToVisible (pure AX, no input events); the wheel-scroll fallback is delivered to the target PID without warping the cursor or activating the app. Re-checks the element's frame against the focused window bounds, up to maxScrolls/timeout. Returns offscreen:true if the element exists but stays outside the window; errors if never found. Set foreground:true only for apps that ignore PID-targeted scrolls (activates + global HID, moves the real cursor).",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object(SelectorSchema.merged(into: [
@@ -120,6 +138,7 @@ struct ScrollTools {
                     "maxScrolls": .object(["type": .string("integer"), "description": .string("Maximum scroll steps (default 20)")]),
                     "timeout": .object(["type": .string("number"), "description": .string("Overall timeout in seconds (default 20)")]),
                     "scope": .object(["type": .string("string"), "enum": .array([.string("window"), .string("app")]), "description": .string("Search scope: 'window' (default) or 'app'")]),
+                    "foreground": .object(["type": .string("boolean"), "description": .string("Default false (background-safe). When true, activates the app and uses global-HID wheel scrolls for the fallback (moves the real cursor).")]),
                 ])),
                 "required": .array([.string("app")]),
             ]),
@@ -129,9 +148,18 @@ struct ScrollTools {
                 let maxScrolls = args?["maxScrolls"]?.intValue ?? 20
                 let timeout = args?["timeout"]?.doubleValue ?? 20.0
                 let criteria = AXElementSearchCriteria(from: args, maxResults: 1)
+                let foreground = args?["foreground"]?.boolValue ?? false
 
-                let activated = await MainActor.run { AppManager.activate(pid: pid) }
-                await AXExecutor.shared.pause(0.1)
+                // Background-safe: never activate. The AXScrollToVisible primary path and
+                // the PID-targeted wheel fallback both run without bringing the app
+                // forward or moving the cursor. foreground:true restores activate + global
+                // HID scrolls for apps that ignore PID-targeted scrolls.
+                var activated = false
+                if foreground {
+                    activated = await MainActor.run { AppManager.activate(pid: pid) }
+                    await AXExecutor.shared.pause(0.1)
+                }
+                let targetPid: pid_t? = foreground ? nil : pid
 
                 let deadline = Date().addingTimeInterval(timeout)
                 // Negative deltaY scrolls down (content moves up), positive scrolls up.
@@ -181,7 +209,7 @@ struct ScrollTools {
                             if let wf = appElement.focusedWindow?.frame { return CGPoint(x: wf.midX, y: wf.midY) }
                             return CGPoint(x: 400, y: 400)
                         }
-                        await AXExecutor.shared.run { InputSimulator.scroll(at: center, deltaY: deltaY) }
+                        await AXExecutor.shared.run { InputSimulator.scroll(at: center, deltaY: deltaY, pid: targetPid) }
                         scrolls += 1
                         await AXExecutor.shared.pause(0.15)
                     case .offscreen(let center):
@@ -191,7 +219,7 @@ struct ScrollTools {
                                 "scrolls": .int(scrolls), "activated": .bool(activated),
                             ])
                         }
-                        await AXExecutor.shared.run { InputSimulator.scroll(at: center, deltaY: deltaY) }
+                        await AXExecutor.shared.run { InputSimulator.scroll(at: center, deltaY: deltaY, pid: targetPid) }
                         scrolls += 1
                         await AXExecutor.shared.pause(0.15)
                     }

@@ -79,7 +79,7 @@ struct InteractionTools {
     static func register(in registry: ToolRegistry) {
         registry.register(.init(
             name: "click",
-            description: "Click a UI element (AX action, background-safe) or at screen coordinates (CGEvent, requires focus). For element matching, use role+title/identifier when known; use labelContains when you see the text on-screen but don't know which AX attribute carries it (common with SwiftUI buttons that stash labels in AXDescription). Pass an `elementId` from a prior snapshot/describe_screen to act on that exact element and skip the search. Element searches default to the focused window (scope:'window'); pass scope:'app' to search all windows + menu bar.",
+            description: "Click a UI element (AX press action) or at screen coordinates. BACKGROUND-SAFE BY DEFAULT: the element path uses AXPress and the coordinate path posts to the target PID — neither moves the user's mouse cursor, brings the app forward, nor steals keyboard focus. For element matching, use role+title/identifier when known; use labelContains when you see the text on-screen but don't know which AX attribute carries it (common with SwiftUI buttons that stash labels in AXDescription). Pass an `elementId` from a prior snapshot/describe_screen to act on that exact element and skip the search. Element searches default to the focused window (scope:'window'); pass scope:'app' to search all windows + menu bar. Set foreground:true ONLY for apps that ignore targeted events (Electron/games) — that activates the app and injects a global click (moves the real cursor).",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object(SelectorSchema.merged(into: [
@@ -89,20 +89,27 @@ struct InteractionTools {
                     "timeout": .object(["type": .string("number"), "description": .string("Seconds to keep retrying the element find before reporting a miss (default 4)")]),
                     "x": .object(["type": .string("number"), "description": .string("X coordinate (screen points) for coordinate click")]),
                     "y": .object(["type": .string("number"), "description": .string("Y coordinate (screen points) for coordinate click")]),
+                    "foreground": .object(["type": .string("boolean"), "description": .string("Default false (background-safe). When true, activates the app and injects a global click (moves the real cursor) — use only for apps that ignore PID-targeted events.")]),
                 ])),
                 "required": .array([.string("app")]),
             ]),
             handler: { args in
                 let pid = try args!.resolvePID()
+                let foreground = args?["foreground"]?.boolValue ?? false
 
-                // Coordinate-based click — requires focus, so activate first.
+                // Coordinate-based click. Background-safe path delivers to the target PID
+                // (no cursor warp, no activation); foreground path activates + global HID.
                 if let x = args?["x"]?.doubleValue, let y = args?["y"]?.doubleValue {
-                    let activated = await MainActor.run { AppManager.activate(pid: pid) }
-                    await AXExecutor.shared.pause(0.1)
-                    await AXExecutor.shared.run {
-                        InputSimulator.click(at: CGPoint(x: x, y: y))
+                    var activated = false
+                    if foreground {
+                        activated = await MainActor.run { AppManager.activate(pid: pid) }
+                        await AXExecutor.shared.pause(0.1)
                     }
-                    return ToolResult.action(success: true, method: "coordinate", extra: [
+                    let targetPid: pid_t? = foreground ? nil : pid
+                    await AXExecutor.shared.run {
+                        InputSimulator.click(at: CGPoint(x: x, y: y), pid: targetPid)
+                    }
+                    return ToolResult.action(success: true, method: foreground ? "coordinate" : "coordinate-pid", extra: [
                         "activated": .bool(activated),
                         "x": .double(x), "y": .double(y),
                     ])
@@ -137,7 +144,7 @@ struct InteractionTools {
 
         registry.register(.init(
             name: "double_click",
-            description: "Double-click a UI element or at coordinates. AX path (two press actions, background-safe) preferred; falls back to coordinate CGEvent if AX press fails. Accepts the same matchers as click (role/title/identifier/description/labelContains) plus `elementId` and `scope`.",
+            description: "Double-click a UI element or at coordinates. BACKGROUND-SAFE BY DEFAULT: prefers two AX press actions; the coordinate fallback posts to the target PID (no cursor move, no activation, no focus steal). Accepts the same matchers as click (role/title/identifier/description/labelContains) plus `elementId` and `scope`. Set foreground:true only for apps that ignore PID-targeted events (activates + global double-click, moves the real cursor).",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object(SelectorSchema.merged(into: [
@@ -147,20 +154,27 @@ struct InteractionTools {
                     "timeout": .object(["type": .string("number"), "description": .string("Seconds to keep retrying the element find (default 4)")]),
                     "x": .object(["type": .string("number"), "description": .string("X coordinate")]),
                     "y": .object(["type": .string("number"), "description": .string("Y coordinate")]),
+                    "foreground": .object(["type": .string("boolean"), "description": .string("Default false (background-safe). When true, activates the app and injects a global double-click (moves the real cursor).")]),
                 ])),
                 "required": .array([.string("app")]),
             ]),
             handler: { args in
                 let pid = try args!.resolvePID()
+                let foreground = args?["foreground"]?.boolValue ?? false
 
-                // Coordinate path: still requires focus.
+                // Coordinate path. Background-safe path delivers to the target PID;
+                // foreground path activates + global HID.
                 if let x = args?["x"]?.doubleValue, let y = args?["y"]?.doubleValue {
-                    let activated = await MainActor.run { AppManager.activate(pid: pid) }
-                    await AXExecutor.shared.pause(0.1)
-                    await AXExecutor.shared.run {
-                        InputSimulator.doubleClick(at: CGPoint(x: x, y: y))
+                    var activated = false
+                    if foreground {
+                        activated = await MainActor.run { AppManager.activate(pid: pid) }
+                        await AXExecutor.shared.pause(0.1)
                     }
-                    return ToolResult.action(success: true, method: "coordinate", extra: [
+                    let targetPid: pid_t? = foreground ? nil : pid
+                    await AXExecutor.shared.run {
+                        InputSimulator.doubleClick(at: CGPoint(x: x, y: y), pid: targetPid)
+                    }
+                    return ToolResult.action(success: true, method: foreground ? "coordinate" : "coordinate-pid", extra: [
                         "activated": .bool(activated),
                     ])
                 }
@@ -190,10 +204,16 @@ struct InteractionTools {
 
                 if let pt = center {
                     // AX press returned false; use coordinate-based double click as fallback.
-                    let activated = await MainActor.run { AppManager.activate(pid: pid) }
-                    await AXExecutor.shared.pause(0.1)
-                    await AXExecutor.shared.run { InputSimulator.doubleClick(at: pt) }
-                    return ToolResult.action(success: true, method: "coordinate-fallback", extra: [
+                    // Background-safe: deliver to the target PID (no cursor warp, no
+                    // activation). foreground:true restores activate + global HID.
+                    var activated = false
+                    if foreground {
+                        activated = await MainActor.run { AppManager.activate(pid: pid) }
+                        await AXExecutor.shared.pause(0.1)
+                    }
+                    let targetPid: pid_t? = foreground ? nil : pid
+                    await AXExecutor.shared.run { InputSimulator.doubleClick(at: pt, pid: targetPid) }
+                    return ToolResult.action(success: true, method: foreground ? "coordinate-fallback" : "coordinate-fallback-pid", extra: [
                         "found": .bool(true), "role": .string(role), "activated": .bool(activated),
                     ])
                 }
@@ -205,7 +225,7 @@ struct InteractionTools {
 
         registry.register(.init(
             name: "right_click",
-            description: "Right-click a UI element (AX showMenu, background-safe) or at coordinates to open a context menu. Accepts the same matchers as click plus `elementId` and `scope`.",
+            description: "Right-click a UI element (AX showMenu) or at coordinates to open a context menu. BACKGROUND-SAFE BY DEFAULT: the element path uses AXShowMenu and the coordinate path posts to the target PID — no cursor move, no activation, no focus steal. Accepts the same matchers as click plus `elementId` and `scope`. Set foreground:true only for apps that ignore PID-targeted events (activates + global right-click, moves the real cursor).",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object(SelectorSchema.merged(into: [
@@ -215,18 +235,24 @@ struct InteractionTools {
                     "timeout": .object(["type": .string("number"), "description": .string("Seconds to keep retrying the element find (default 4)")]),
                     "x": .object(["type": .string("number"), "description": .string("X coordinate")]),
                     "y": .object(["type": .string("number"), "description": .string("Y coordinate")]),
+                    "foreground": .object(["type": .string("boolean"), "description": .string("Default false (background-safe). When true, activates the app and injects a global right-click (moves the real cursor).")]),
                 ])),
                 "required": .array([.string("app")]),
             ]),
             handler: { args in
                 let pid = try args!.resolvePID()
+                let foreground = args?["foreground"]?.boolValue ?? false
                 if let x = args?["x"]?.doubleValue, let y = args?["y"]?.doubleValue {
-                    let activated = await MainActor.run { AppManager.activate(pid: pid) }
-                    await AXExecutor.shared.pause(0.1)
-                    await AXExecutor.shared.run {
-                        InputSimulator.rightClick(at: CGPoint(x: x, y: y))
+                    var activated = false
+                    if foreground {
+                        activated = await MainActor.run { AppManager.activate(pid: pid) }
+                        await AXExecutor.shared.pause(0.1)
                     }
-                    return ToolResult.action(success: true, method: "coordinate", extra: [
+                    let targetPid: pid_t? = foreground ? nil : pid
+                    await AXExecutor.shared.run {
+                        InputSimulator.rightClick(at: CGPoint(x: x, y: y), pid: targetPid)
+                    }
+                    return ToolResult.action(success: true, method: foreground ? "coordinate" : "coordinate-pid", extra: [
                         "activated": .bool(activated),
                     ])
                 }
@@ -256,7 +282,7 @@ struct InteractionTools {
 
         registry.register(.init(
             name: "type_text",
-            description: "Type text into the focused element, or into a specific element matched by selector/elementId. For AXTextField/AXTextArea the value is set directly via AX (background-safe, replaces the field). When that path is unavailable the keyboard (CGEvent) fallback runs; by default it CLEARS the field first (Cmd+A then forward-delete) so re-running does not double the text — pass append:true to keep existing content and append instead.",
+            description: "Type text into the focused element, or into a specific element matched by selector/elementId. BACKGROUND-SAFE BY DEFAULT: for AXTextField/AXTextArea the value is set directly via AX (replaces the field, no keystrokes, no focus steal). When AX-set is rejected (e.g. some SwiftUI fields) the keyboard fallback focuses the control via AX (kAXFocusedAttribute, no app activation) and delivers keystrokes to the target PID — the user's keyboard focus and cursor are never disturbed. By default the fallback CLEARS the field first (Cmd+A then forward-delete) so re-running does not double the text — pass append:true to keep existing content and append instead. Set foreground:true only for apps that ignore PID-targeted keys (activates the app and types via the global HID stream).",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object(SelectorSchema.merged(into: [
@@ -266,6 +292,7 @@ struct InteractionTools {
                     "elementId": .object(["type": .string("string"), "description": .string("Handle id from a prior snapshot/describe_screen — focuses/sets that element directly")]),
                     "scope": .object(["type": .string("string"), "enum": .array([.string("window"), .string("app")]), "description": .string("Search scope: 'window' (default) or 'app'")]),
                     "timeout": .object(["type": .string("number"), "description": .string("Seconds to keep retrying the element find (default 4)")]),
+                    "foreground": .object(["type": .string("boolean"), "description": .string("Default false (background-safe). When true, activates the app and types via the global HID stream — use only for apps that ignore PID-targeted keys.")]),
                 ])),
                 "required": .array([.string("app"), .string("text")]),
             ]),
@@ -275,6 +302,7 @@ struct InteractionTools {
                     throw ToolError.missingParameter("text")
                 }
                 let append = args?["append"]?.boolValue ?? false
+                let foreground = args?["foreground"]?.boolValue ?? false
                 let hasTarget = args?["role"] != nil || args?["title"] != nil
                     || args?["titleContains"] != nil || args?["identifier"] != nil
                     || args?["description"] != nil || args?["descriptionContains"] != nil
@@ -326,10 +354,21 @@ struct InteractionTools {
                     ])
                 }
 
-                // Keyboard (CGEvent) fallback. Activate for focus, optionally focus the
-                // resolved element, clear the field unless appending, then type.
-                let activated = await MainActor.run { AppManager.activate(pid: pid) }
-                await AXExecutor.shared.pause(0.1)
+                // Keyboard (CGEvent) fallback.
+                //
+                // Background-safe (default): focus the resolved control via AX
+                // (kAXFocusedAttribute steers where text lands WITHOUT activating the
+                // app), then deliver the clear + keystrokes to the target PID via
+                // postToPid. No cursor move, no app activation, no global HID.
+                //
+                // foreground:true: activate the app and type through the global HID
+                // stream — the escape hatch for apps that ignore PID-targeted keys.
+                var activated = false
+                if foreground {
+                    activated = await MainActor.run { AppManager.activate(pid: pid) }
+                    await AXExecutor.shared.pause(0.1)
+                }
+                let targetPid: pid_t? = foreground ? nil : pid
                 let capturedFocus = focusElement
                 await AXExecutor.shared.run {
                     if let element = capturedFocus {
@@ -337,9 +376,9 @@ struct InteractionTools {
                     }
                     if !append {
                         // Clear the field first so re-running replaces rather than appends.
-                        InputSimulator.clearFocusedField()
+                        InputSimulator.clearFocusedField(pid: targetPid)
                     }
-                    InputSimulator.typeText(text)
+                    InputSimulator.typeText(text, pid: targetPid)
                 }
                 return ToolResult.action(success: true, method: "keyboard", extra: [
                     "typed": .string(text),
@@ -351,7 +390,7 @@ struct InteractionTools {
 
         registry.register(.init(
             name: "send_shortcut",
-            description: "Send a keyboard shortcut (e.g. Cmd+S, Cmd+Shift+Z) to the app. Activates the app first so the keystroke lands; the `activated` field reports whether activation succeeded.",
+            description: "Send a keyboard shortcut (e.g. Cmd+S, Cmd+Shift+Z) to the app. BACKGROUND-SAFE BY DEFAULT: the chord is delivered to the target PID via postToPid, so it lands in that app's queue WITHOUT bringing it forward, moving the cursor, or stealing the user's keyboard focus. Set foreground:true only for system-wide hotkeys or apps that ignore PID-targeted chords — that activates the app and posts to the global HID stream.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
@@ -362,6 +401,7 @@ struct InteractionTools {
                         "items": .object(["type": .string("string")]),
                         "description": .string("Modifier keys: 'cmd', 'shift', 'opt'/'alt', 'ctrl'"),
                     ]),
+                    "foreground": .object(["type": .string("boolean"), "description": .string("Default false (background-safe). When true, activates the app and posts the chord to the global HID stream — use for system-wide hotkeys or apps that ignore PID-targeted chords.")]),
                 ]),
                 "required": .array([.string("app"), .string("key")]),
             ]),
@@ -375,17 +415,25 @@ struct InteractionTools {
                 }
                 let modNames = args?["modifiers"]?.arrayValue?.compactMap(\.stringValue) ?? []
                 let flags = InputSimulator.modifierFlags(from: modNames)
+                let foreground = args?["foreground"]?.boolValue ?? false
 
-                let activated = await MainActor.run { AppManager.activate(pid: pid) }
-                await AXExecutor.shared.pause(0.1)
-                await AXExecutor.shared.run {
-                    InputSimulator.sendShortcut(keyCode: keyCode, modifiers: flags)
+                // Background-safe (default): deliver the chord to the target PID — no
+                // activation, no global HID, no focus steal. foreground:true activates
+                // the app and posts globally (system-wide hotkeys).
+                var activated = false
+                if foreground {
+                    activated = await MainActor.run { AppManager.activate(pid: pid) }
+                    await AXExecutor.shared.pause(0.1)
+                    guard activated else {
+                        return ToolResult.error("Could not activate app (pid \(pid)) to receive the foreground shortcut")
+                    }
                 }
-                guard activated else {
-                    return ToolResult.error("Could not activate app (pid \(pid)) to receive the shortcut")
+                let targetPid: pid_t? = foreground ? nil : pid
+                await AXExecutor.shared.run {
+                    InputSimulator.sendShortcut(keyCode: keyCode, modifiers: flags, pid: targetPid)
                 }
                 return ToolResult.action(success: true, method: "keyboard", extra: [
-                    "activated": .bool(true),
+                    "activated": .bool(activated),
                     "key": .string(keyName),
                 ])
             }
