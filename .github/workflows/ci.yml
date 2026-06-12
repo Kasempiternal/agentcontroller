@@ -2,18 +2,18 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [master]
   pull_request:
 
 jobs:
   build-and-test:
-    runs-on: macos-14
+    # macOS 15 runner: WindowRecorder uses SCRecordingOutput, which needs the
+    # macOS 15 SDK (Xcode 16) to compile. The app still runs on macOS 14
+    # (recording tools are @available-gated at runtime).
+    runs-on: macos-15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Select Xcode 15
-        run: sudo xcode-select -switch /Applications/Xcode_15.4.app || sudo xcode-select -switch /Applications/Xcode.app
 
       - name: Swift version
         run: swift --version
