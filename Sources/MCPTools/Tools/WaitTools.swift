@@ -7,18 +7,15 @@ struct WaitTools {
     static func register(in registry: ToolRegistry) {
         registry.register(.init(
             name: "wait_for_element",
-            description: "Wait for a UI element to appear matching the given criteria. Polls until found or timeout.",
+            description: "Wait for a UI element to appear matching the given criteria (all the standard selectors: role/title/titleContains/identifier/value/description/descriptionContains/labelContains/index). Polls until found or timeout. Searches the whole app by default; pass scope:'window' for just the focused window.",
             inputSchema: .object([
                 "type": .string("object"),
-                "properties": .object([
+                "properties": .object(SelectorSchema.merged(into: [
                     "app": .object(["type": .string("string"), "description": .string("Bundle ID, app name, or PID")]),
-                    "role": .object(["type": .string("string"), "description": .string("AX role to match")]),
-                    "title": .object(["type": .string("string"), "description": .string("Title to match")]),
-                    "titleContains": .object(["type": .string("string"), "description": .string("Partial title match")]),
-                    "identifier": .object(["type": .string("string"), "description": .string("Accessibility identifier")]),
                     "timeout": .object(["type": .string("number"), "description": .string("Timeout in seconds (default 10)")]),
                     "pollInterval": .object(["type": .string("number"), "description": .string("Poll interval in seconds (default 0.5)")]),
-                ]),
+                    "scope": SelectorSchema.scopeProperty(default: "app"),
+                ])),
                 "required": .array([.string("app")]),
             ]),
             handler: { args in
@@ -35,8 +32,8 @@ struct WaitTools {
                         return ToolResult.error("App is no longer running (pid \(pid))")
                     }
                     let found = await AXExecutor.shared.run { () -> AXElementSearchResult? in
-                        let appElement = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
-                        return AXElementSearch.find(root: appElement, criteria: criteria).first
+                        let root = SearchScope.root(pid: pid, args: args, defaultScope: "app")
+                        return AXElementSearch.find(root: root, criteria: criteria).first
                     }
                     if let r = found {
                         let elapsed = Date().timeIntervalSince(start)

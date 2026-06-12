@@ -37,10 +37,7 @@ struct InteractionTools {
     /// the app's focused window (faster, avoids matching hidden/background-window
     /// controls); "app" searches from the app root (all windows + menu bar).
     static func searchRoot(pid: pid_t, args: JSONValue?) -> AXElement {
-        let appElement = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
-        let scope = args?["scope"]?.stringValue ?? "window"
-        if scope == "app" { return appElement }
-        return appElement.focusedWindow ?? appElement
+        SearchScope.root(pid: pid, args: args, defaultScope: "window")
     }
 
     /// Resolve the interaction target: try an `elementId` handle first (O(1)), else run
@@ -109,10 +106,14 @@ struct InteractionTools {
                     await AXExecutor.shared.run {
                         InputSimulator.click(at: CGPoint(x: x, y: y), pid: targetPid)
                     }
-                    return ToolResult.action(success: true, method: foreground ? "coordinate" : "coordinate-pid", extra: [
+                    var extra: [String: JSONValue] = [
                         "activated": .bool(activated),
                         "x": .double(x), "y": .double(y),
-                    ])
+                    ]
+                    if !foreground, let warning = await offTargetWarning(pid: pid, x: x, y: y) {
+                        extra["warning"] = .string(warning)
+                    }
+                    return ToolResult.action(success: true, method: foreground ? "coordinate" : "coordinate-pid", extra: extra)
                 }
 
                 let timeout = args?["timeout"]?.doubleValue ?? defaultFindTimeout
@@ -174,9 +175,11 @@ struct InteractionTools {
                     await AXExecutor.shared.run {
                         InputSimulator.doubleClick(at: CGPoint(x: x, y: y), pid: targetPid)
                     }
-                    return ToolResult.action(success: true, method: foreground ? "coordinate" : "coordinate-pid", extra: [
-                        "activated": .bool(activated),
-                    ])
+                    var extra: [String: JSONValue] = ["activated": .bool(activated)]
+                    if !foreground, let warning = await offTargetWarning(pid: pid, x: x, y: y) {
+                        extra["warning"] = .string(warning)
+                    }
+                    return ToolResult.action(success: true, method: foreground ? "coordinate" : "coordinate-pid", extra: extra)
                 }
 
                 let timeout = args?["timeout"]?.doubleValue ?? defaultFindTimeout
@@ -252,9 +255,11 @@ struct InteractionTools {
                     await AXExecutor.shared.run {
                         InputSimulator.rightClick(at: CGPoint(x: x, y: y), pid: targetPid)
                     }
-                    return ToolResult.action(success: true, method: foreground ? "coordinate" : "coordinate-pid", extra: [
-                        "activated": .bool(activated),
-                    ])
+                    var extra: [String: JSONValue] = ["activated": .bool(activated)]
+                    if !foreground, let warning = await offTargetWarning(pid: pid, x: x, y: y) {
+                        extra["warning"] = .string(warning)
+                    }
+                    return ToolResult.action(success: true, method: foreground ? "coordinate" : "coordinate-pid", extra: extra)
                 }
 
                 let timeout = args?["timeout"]?.doubleValue ?? defaultFindTimeout
@@ -334,9 +339,14 @@ struct InteractionTools {
                         let resolved = await AXExecutor.shared.run { () -> TypeOutcome in
                             let role = e.role ?? ""
                             if role == "AXTextField" || role == "AXTextArea",
-                               e.setAttribute(kAXValueAttribute, value: text as CFString),
-                               e.stringValue == text {
-                                return .axSuccess
+                               e.setAttribute(kAXValueAttribute, value: text as CFString) {
+                                if e.stringValue == text { return .axSuccess }
+                                // Some SwiftUI fields apply an AX value-set asynchronously,
+                                // so an immediate readback can be a stale negative. One
+                                // short beat before falling back avoids a needless
+                                // clear-and-retype keyboard pass.
+                                usleep(50_000)
+                                if e.stringValue == text { return .axSuccess }
                             }
                             return .axFocusedFallback
                         }
@@ -390,7 +400,7 @@ struct InteractionTools {
 
         registry.register(.init(
             name: "send_shortcut",
-            description: "Send a keyboard shortcut (e.g. Cmd+S, Cmd+Shift+Z) to the app. BACKGROUND-SAFE BY DEFAULT: the chord is delivered to the target PID via postToPid, so it lands in that app's queue WITHOUT bringing it forward, moving the cursor, or stealing the user's keyboard focus. Set foreground:true only for system-wide hotkeys or apps that ignore PID-targeted chords — that activates the app and posts to the global HID stream.",
+            description: "Send a keyboard shortcut (e.g. Cmd+S, Cmd+Shift+Z) to the app. BACKGROUND-SAFE BY DEFAULT: the chord is delivered to the target PID via postToPid, so it lands in that app's queue WITHOUT bringing it forward, moving the cursor, or stealing the user's keyboard focus. CAVEAT: clipboard/responder-chain chords (Cmd+C/V/X, Select All) need an ACTIVE app and silently no-op in background apps — verify content with read_text/assert_value instead, or activate_app first for paste flows. Set foreground:true only for system-wide hotkeys or apps that ignore PID-targeted chords — that activates the app and posts to the global HID stream.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([

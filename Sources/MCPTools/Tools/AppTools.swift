@@ -5,6 +5,19 @@ import AccessibilityEngine
 import ScreenCapture
 
 struct AppTools {
+    /// `NSRunningApplication.hide()/unhide()` return values are unreliable (false even
+    /// when the request lands, especially right after a background launch). Send the
+    /// request, then poll the app's actual `isHidden` state briefly and report THAT.
+    static func setHiddenVerified(pid: pid_t, hidden: Bool) async -> Bool {
+        _ = await MainActor.run { hidden ? AppManager.hide(pid: pid) : AppManager.unhide(pid: pid) }
+        for _ in 0..<10 {
+            let state = await MainActor.run { NSRunningApplication(processIdentifier: pid)?.isHidden ?? false }
+            if state == hidden { return state }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        return await MainActor.run { NSRunningApplication(processIdentifier: pid)?.isHidden ?? false }
+    }
+
     static func register(in registry: ToolRegistry) {
         registry.register(.init(
             name: "list_apps",
@@ -30,13 +43,17 @@ struct AppTools {
 
         registry.register(.init(
             name: "launch_app",
-            description: "Launch a macOS application by bundle identifier (e.g. 'com.apple.TextEdit')",
+            description: "Launch a macOS application by bundle identifier (e.g. 'com.apple.TextEdit'). BACKGROUND-SAFE BY DEFAULT: the app starts WITHOUT being activated — its window appears but the user's current app keeps keyboard focus (open -g semantics). Set foreground:true only when the app genuinely must start frontmost.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
                     "bundleId": .object([
                         "type": .string("string"),
                         "description": .string("Bundle identifier (e.g. 'com.apple.TextEdit')"),
+                    ]),
+                    "foreground": .object([
+                        "type": .string("boolean"),
+                        "description": .string("Default false (launch without stealing focus). When true, activates the app on launch."),
                     ]),
                 ]),
                 "required": .array([.string("bundleId")]),
@@ -45,13 +62,55 @@ struct AppTools {
                 guard let bundleId = args?["bundleId"]?.stringValue else {
                     throw ToolError.missingParameter("bundleId")
                 }
-                let app = try await AppManager.launch(bundleIdentifier: bundleId)
+                let foreground = args?["foreground"]?.boolValue ?? false
+                let app = try await AppManager.launch(bundleIdentifier: bundleId, activates: foreground)
                 await ShareableContentCache.shared.invalidate()
                 return ToolResult.json(.object([
                     "name": .string(app.name),
                     "bundleId": .string(app.bundleIdentifier ?? bundleId),
                     "pid": .int(Int(app.pid)),
+                    "activated": .bool(foreground),
                 ]))
+            }
+        ))
+
+        registry.register(.init(
+            name: "hide_app",
+            description: "Hide all windows of a running app (Cmd+H equivalent) so it is completely invisible to the user while the QA run continues. VERIFIED to keep working while hidden: focused-window interactions (click/type_text by selector, snapshot, get_focused_element) AND screenshot_window — ScreenCaptureKit renders hidden windows fresh, so captures show current content, not a stale frame. CAVEATS: (1) the AX windows LIST is empty while hidden, so list_windows and scope:'app' searches see no windows — stick to the default scope:'window'; (2) clipboard/responder-chain commands (Copy/Paste menu items or Cmd+C/V) no-op without an active app.",
+            inputSchema: .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "app": .object(["type": .string("string"), "description": .string("Bundle ID, app name, or PID")]),
+                ]),
+                "required": .array([.string("app")]),
+            ]),
+            handler: { args in
+                let pid = try args!.resolvePID()
+                let hidden = await setHiddenVerified(pid: pid, hidden: true)
+                await ShareableContentCache.shared.invalidate()
+                return ToolResult.action(success: hidden, method: "hide", extra: [
+                    "isHidden": .bool(hidden),
+                ])
+            }
+        ))
+
+        registry.register(.init(
+            name: "unhide_app",
+            description: "Unhide a hidden app's windows WITHOUT activating it — the user's frontmost app keeps keyboard focus. NOTE: until the app is activated once, its AX windows LIST may stay empty (focused-window tools and screenshots work regardless); use activate_app only if you explicitly need list_windows/scope:'app' enumeration back.",
+            inputSchema: .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "app": .object(["type": .string("string"), "description": .string("Bundle ID, app name, or PID")]),
+                ]),
+                "required": .array([.string("app")]),
+            ]),
+            handler: { args in
+                let pid = try args!.resolvePID()
+                let hidden = await setHiddenVerified(pid: pid, hidden: false)
+                await ShareableContentCache.shared.invalidate()
+                return ToolResult.action(success: !hidden, method: "unhide", extra: [
+                    "isHidden": .bool(hidden),
+                ])
             }
         ))
 
@@ -109,11 +168,12 @@ struct AppTools {
 
         registry.register(.init(
             name: "open_url",
-            description: "Open a URL with the default handler (web link, deep link, or custom scheme like 'myapp://path'). Use for deep-link / web navigation during a flow.",
+            description: "Open a URL with the default handler (web link, deep link, or custom scheme like 'myapp://path'). BACKGROUND-SAFE BY DEFAULT: the handler app receives the URL WITHOUT being brought to the front — the user's focus is untouched. Set foreground:true to activate the handler app.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
                     "url": .object(["type": .string("string"), "description": .string("URL to open (e.g. 'https://example.com' or 'myapp://route')")]),
+                    "foreground": .object(["type": .string("boolean"), "description": .string("Default false (handler app stays in the background). When true, activates the handler app.")]),
                 ]),
                 "required": .array([.string("url")]),
             ]),
@@ -124,13 +184,19 @@ struct AppTools {
                 guard let url = URL(string: urlStr), url.scheme != nil else {
                     return ToolResult.error("Invalid URL: \(urlStr)")
                 }
-                let opened = await MainActor.run { NSWorkspace.shared.open(url) }
-                guard opened else {
-                    return ToolResult.error("No handler could open URL: \(urlStr)")
+                let foreground = args?["foreground"]?.boolValue ?? false
+                let config = NSWorkspace.OpenConfiguration()
+                config.activates = foreground
+                do {
+                    let handler = try await NSWorkspace.shared.open(url, configuration: config)
+                    return ToolResult.action(success: true, method: "workspace", extra: [
+                        "url": .string(urlStr),
+                        "handler": .string(handler.bundleIdentifier ?? handler.localizedName ?? "unknown"),
+                        "activated": .bool(foreground),
+                    ])
+                } catch {
+                    return ToolResult.error("No handler could open URL: \(urlStr) (\(error.localizedDescription))")
                 }
-                return ToolResult.action(success: true, method: "workspace", extra: [
-                    "url": .string(urlStr),
-                ])
             }
         ))
 

@@ -2,25 +2,25 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key>
-    <string>Macoestro</string>
-    <key>CFBundleDisplayName</key>
-    <string>Macoestro</string>
-    <key>CFBundleIdentifier</key>
-    <string>izotz.macoestro</string>
-    <key>CFBundleVersion</key>
-    <string>1.2.0</string>
-    <key>CFBundleShortVersionString</key>
-    <string>1.2.0</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>CFBundleExecutable</key>
-    <string>Macoestro</string>
-    <key>LSMinimumSystemVersion</key>
-    <string>14.0</string>
-    <key>LSUIElement</key>
-    <true/>
-    <key>NSScreenCaptureUsageDescription</key>
-    <string>Macoestro needs screen recording access to capture app window screenshots for AI agents.</string>
+	<key>CFBundleDisplayName</key>
+	<string>Macoestro</string>
+	<key>CFBundleExecutable</key>
+	<string>Macoestro</string>
+	<key>CFBundleIdentifier</key>
+	<string>izotz.macoestro</string>
+	<key>CFBundleName</key>
+	<string>Macoestro</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.3.0</string>
+	<key>CFBundleVersion</key>
+	<string>1.3.0</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>Macoestro needs screen recording access to capture app window screenshots for AI agents.</string>
 </dict>
 </plist>

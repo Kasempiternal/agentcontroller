@@ -57,7 +57,7 @@ struct SnapshotTools {
                 }
 
                 // Register handles (assigns e1, e2, … in order), then read compact fields.
-                let ids = await ElementHandleStore.shared.replace(with: collected)
+                let ids = await ElementHandleStore.shared.replace(with: collected, pid: pid)
 
                 let items: [JSONValue] = await AXExecutor.shared.run {
                     zip(ids, collected).map { id, el in

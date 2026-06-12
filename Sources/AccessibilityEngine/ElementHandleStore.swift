@@ -14,21 +14,28 @@ import Foundation
 public actor ElementHandleStore {
     public static let shared = ElementHandleStore()
 
-    private var handles: [String: AXElement] = [:]
+    private struct Entry {
+        let pid: pid_t
+        let element: AXElement
+    }
+
+    private var handles: [String: Entry] = [:]
     private var seq = 0
 
     private init() {}
 
-    /// Replace the table with a fresh snapshot. Returns the assigned ids, in input order.
+    /// Replace ONE app's handles with a fresh snapshot (other apps' handles survive, so
+    /// interleaved two-app testing doesn't churn ids). Returns the assigned ids, in
+    /// input order.
     @discardableResult
-    public func replace(with elements: [AXElement]) -> [String] {
-        handles.removeAll(keepingCapacity: true)
+    public func replace(with elements: [AXElement], pid: pid_t) -> [String] {
+        handles = handles.filter { $0.value.pid != pid }
         var ids: [String] = []
         ids.reserveCapacity(elements.count)
         for element in elements {
             seq += 1
             let id = "e\(seq)"
-            handles[id] = element
+            handles[id] = Entry(pid: pid, element: element)
             ids.append(id)
         }
         return ids
@@ -36,6 +43,6 @@ public actor ElementHandleStore {
 
     /// Resolve a handle id to its cached element, or nil if unknown/stale.
     public func resolve(_ id: String) -> AXElement? {
-        handles[id]
+        handles[id]?.element
     }
 }

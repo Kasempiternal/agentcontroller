@@ -1,28 +1,41 @@
 # Macoestro
 
-**v1.2.0**
+**v1.3.0**
 
-Native macOS app QA automation exposed over MCP (Model Context Protocol). A menu-bar app that lets Claude Code drive and *test* any running macOS application via the Accessibility API — click, type, screenshot, navigate menus, inspect the AX tree, **assert** UI state, snapshot interactable elements as stable handles, extract text, and record replayable flows. The macOS-native counterpart to Maestro (mobile) and Blitz (Mac).
+Native macOS app QA automation exposed over MCP (Model Context Protocol). A menu-bar app that lets Claude Code drive and *test* any running macOS application via the Accessibility API — click, type, screenshot, record video, navigate menus, inspect the AX tree, **assert** UI state, snapshot interactable elements as stable handles, extract text, and record replayable flows. The macOS-native counterpart to Maestro (mobile) and Blitz (Mac).
 
 Personal tool. Signed with a stable Developer ID so TCC permission grants persist across rebuilds.
 
 ## What it does
 
-Exposes 42 MCP tools for macOS automation + QA:
+Exposes 49 MCP tools for macOS automation + QA:
 
-- **App control**: `list_apps`, `launch_app`, `quit_app`, `activate_app`, `get_frontmost_app`, `open_url`, `reset_app_state`
-- **Accessibility / inspection**: `get_element_tree`, `find_elements`, `get_element_attributes`, `wait_for_element`
+- **App control**: `list_apps`, `launch_app`, `quit_app`, `activate_app`, `hide_app`, `unhide_app`, `get_frontmost_app`, `open_url`, `reset_app_state`
+- **Accessibility / inspection**: `get_element_tree`, `find_elements`, `get_element_attributes`, `get_focused_element`, `wait_for_element`
 - **Snapshot & handles**: `snapshot` / `describe_screen` — a compact, token-lean list of interactable elements, each with a stable `id` (`e1`, `e2`, …) that the interaction tools accept via `elementId` (no re-search per action)
 - **Assertions** (the QA core): `assert_visible`, `assert_not_visible`, `assert_value` — poll until satisfied or timeout; a failed assertion returns an MCP `isError` result so pass/fail is unambiguous
 - **Text**: `read_text`, `read_all_text` — verify content without screenshots
 - **Input**: `click`, `double_click`, `right_click`, `type_text`, `send_shortcut`, `scroll`, `scroll_until_visible`, `swipe`, `drag_drop`
 - **Windows**: `list_windows`, `get_window_bounds`, `set_window_bounds`, `minimize_window`, `restore_window`
-- **Screenshots**: `screenshot_window`, `screenshot_element`, `screenshot_screen` (JPEG + longest-side cap by default to stay context-cheap; `format`/`quality`/`maxLongestSide` overridable)
+- **Screenshots & video**: `screenshot_window` (by title or `windowIndex`), `screenshot_element`, `screenshot_screen` (JPEG + longest-side cap by default to stay context-cheap), `start_recording` / `stop_recording` (H.264 `.mov` of a window, macOS 15+)
 - **Menus**: `navigate_menu`, `get_menu_structure`
+- **Clipboard**: `get_clipboard`, `set_clipboard` — verify copy/export flows (system-wide shared state; warned in the tool descriptions)
 - **Flows**: `run_steps`, `save_flow`, `list_flows`, `run_saved_flow` — record and replay a QA run deterministically
 - **Setup**: `check_permissions`
 
-All element matchers (`role`, `title`, `titleContains`, `identifier`, `value`, `description`, `descriptionContains`, `labelContains`, `index`) are accepted consistently across the interaction, assertion, and inspection tools. Interaction tools default their search to the **focused window** (`scope: "app"` to widen) and retry briefly so first-frame races self-heal.
+All element matchers (`role`, `title`, `titleContains`, `identifier`, `value`, `description`, `descriptionContains`, `labelContains`, `index`) are accepted consistently across the interaction, assertion, and inspection tools. Interaction tools default their search to the **focused window** (`scope: "app"` to widen) and retry briefly so first-frame races self-heal; assertion/inspection tools default to the whole app (`scope: "window"` to narrow).
+
+## Fully-background QA
+
+Every tool is background-safe by default — a full test run (launch → interact → assert → screenshot → record) happens while the user keeps working in another app, with their focus, cursor, and key window untouched:
+
+- `launch_app` / `open_url` start apps **without activating** them (`foreground: true` to opt out)
+- Input goes through `CGEvent.postToPid` (per-process queue) or pure AX actions — never the global HID stream, never a cursor warp
+- `navigate_menu` resolves the menu tree by **reading** it; no menu ever opens on screen
+- Screenshots/video read the window's own backing store: the tested window can be **fully covered** by the user's windows — capture stays correct
+- `hide_app` makes the tested app completely invisible; interactions and even screenshots keep working (ScreenCaptureKit renders hidden windows fresh — verified)
+
+Verified limitations of background/hidden operation (also stated in the tool descriptions): the AX windows *list* is empty while an app is hidden (use the default `scope:'window'`), minimized windows can't be captured, and clipboard/responder-chain commands (Cmd+C/V, Copy/Paste menu items) need an active app.
 
 Architecture:
 

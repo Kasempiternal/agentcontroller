@@ -31,6 +31,50 @@ public struct MenuNavigator {
         let appElement = AXElement.application(pid: pid)
         guard let menuBar = appElement.menuBar else { return false }
 
+        // Silent path first: most apps expose the FULL menu hierarchy in the AX tree
+        // without any menu ever opening (getMenuStructure relies on exactly this), so we
+        // descend by reading children only and press JUST the leaf. Nothing flashes on
+        // screen, no 100ms-per-level waits, and it works while the app is frontmost too.
+        if let leaf = resolveLeafSilently(menuBar: menuBar, menuPath: menuPath), leaf.press() {
+            return true
+        }
+
+        // Fallback: apps that populate submenus lazily (only on actual open) need the
+        // visible press-descend walk.
+        return pressDescend(menuBar: menuBar, menuPath: menuPath, pid: pid)
+    }
+
+    /// Descend the menu tree by reading children only — no AXPress on intermediates, so
+    /// no menu opens. Returns the leaf item, or nil when a level is missing/unpopulated
+    /// (lazily-built menus), in which case the caller falls back to press-descend.
+    private static func resolveLeafSilently(menuBar: AXElement, menuPath: [String]) -> AXElement? {
+        var currentItems = menuBar.children
+        for (index, menuName) in menuPath.enumerated() {
+            guard let menuItem = matchItem(menuName, in: currentItems) else { return nil }
+            if index == menuPath.count - 1 { return menuItem }
+            guard let next = submenuItems(of: menuItem), !next.isEmpty else { return nil }
+            currentItems = next
+        }
+        return nil
+    }
+
+    /// The descendable item list under a menu item: its AXMenu child's children, a
+    /// nested first child's children (apps that skip the explicit AXMenu role), or its
+    /// direct children. Nil when there is nothing to descend into.
+    private static func submenuItems(of menuItem: AXElement) -> [AXElement]? {
+        let children = menuItem.children
+        if let submenu = children.first(where: { $0.role == "AXMenu" }) {
+            return submenu.children
+        }
+        if let firstChild = children.first, !firstChild.children.isEmpty {
+            return firstChild.children
+        }
+        return children.isEmpty ? nil : children
+    }
+
+    /// Visible fallback walk: press each intermediate item to force lazy submenu
+    /// population, then press the leaf. Closes any half-open menu on failure.
+    private static func pressDescend(menuBar: AXElement, menuPath: [String], pid: pid_t) -> Bool {
         var currentItems = menuBar.children
         for (index, menuName) in menuPath.enumerated() {
             guard let menuItem = matchItem(menuName, in: currentItems) else {
@@ -50,14 +94,8 @@ public struct MenuNavigator {
             // than blindly taking children.first (which can be a separator or title).
             _ = menuItem.press()
             usleep(100_000) // 100ms for menu to open
-            let children = menuItem.children
-            if let submenu = children.first(where: { $0.role == "AXMenu" }) {
-                currentItems = submenu.children
-            } else if let firstChild = children.first, !firstChild.children.isEmpty {
-                // Some apps nest the menu one level deeper without an explicit AXMenu role.
-                currentItems = firstChild.children
-            } else if !children.isEmpty {
-                currentItems = children
+            if let next = submenuItems(of: menuItem) {
+                currentItems = next
             } else {
                 // No descendable submenu — bail and close the open menu. Route Escape to
                 // the target PID (background-safe) rather than the global HID stream.

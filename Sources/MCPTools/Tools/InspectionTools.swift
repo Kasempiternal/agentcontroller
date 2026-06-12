@@ -84,6 +84,7 @@ struct InspectionTools {
                         "type": .string("integer"),
                         "description": .string("Maximum results to return (default 20)"),
                     ]),
+                    "scope": SelectorSchema.scopeProperty(default: "app"),
                 ]),
                 "required": .array([.string("app")]),
             ]),
@@ -92,8 +93,8 @@ struct InspectionTools {
                 let criteria = AXElementSearchCriteria(from: args, maxResults: args?["maxResults"]?.intValue ?? 20)
 
                 let results = await AXExecutor.shared.run {
-                    let appElement = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
-                    return AXElementSearch.find(root: appElement, criteria: criteria)
+                    let root = SearchScope.root(pid: pid, args: args, defaultScope: "app")
+                    return AXElementSearch.find(root: root, criteria: criteria)
                 }
 
                 let items: [JSONValue] = results.map { r in
@@ -186,6 +187,62 @@ struct InspectionTools {
 
                 if result.isNull {
                     return ToolResult.error("Element not found")
+                }
+                return ToolResult.json(result)
+            }
+        ))
+
+        registerGetFocusedElement(in: registry)
+    }
+
+    static func registerGetFocusedElement(in registry: ToolRegistry) {
+        registry.register(.init(
+            name: "get_focused_element",
+            description: "Report the element that holds the app's INTERNAL keyboard focus (kAXFocusedUIElement) — role, label, value, frame, and enclosing window. Works while the app is in the background (every app keeps its own focus chain even when not frontmost). Use before/after type_text to verify where keystrokes will land.",
+            inputSchema: .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "app": .object(["type": .string("string"), "description": .string("Bundle ID, app name, or PID")]),
+                ]),
+                "required": .array([.string("app")]),
+            ]),
+            handler: { args in
+                let pid = try args!.resolvePID()
+                let result = await AXExecutor.shared.run { () -> JSONValue in
+                    let app = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
+                    guard let ref: AXUIElement = app.attribute(kAXFocusedUIElementAttribute) else {
+                        return .null
+                    }
+                    let el = AXElement(ref)
+                    var fields: [String: JSONValue] = [
+                        "role": .string(el.role ?? "unknown"),
+                        "enabled": .bool(el.isEnabled),
+                    ]
+                    if let t = el.title, !t.isEmpty { fields["title"] = .string(t) }
+                    if let id = el.identifier, !id.isEmpty { fields["identifier"] = .string(id) }
+                    if let v = el.valueJSON { fields["value"] = v }
+                    if let d = el.label, !d.isEmpty { fields["description"] = .string(d) }
+                    if let f = el.frame {
+                        fields["frame"] = .object([
+                            "x": .double(f.origin.x), "y": .double(f.origin.y),
+                            "w": .double(f.size.width), "h": .double(f.size.height),
+                        ])
+                    }
+                    // Name the enclosing window so multi-window focus is unambiguous.
+                    var current: AXElement? = el
+                    var hops = 0
+                    while let node = current, hops < 64 {
+                        if node.role == "AXWindow" {
+                            if let t = node.title, !t.isEmpty { fields["window"] = .string(t) }
+                            break
+                        }
+                        current = node.parent
+                        hops += 1
+                    }
+                    return .object(fields)
+                }
+                if result.isNull {
+                    return ToolResult.error("App has no focused element (nothing holds its internal keyboard focus)")
                 }
                 return ToolResult.json(result)
             }

@@ -24,13 +24,17 @@ public struct AppManager {
             }
     }
 
-    public static func launch(bundleIdentifier: String) async throws -> RunningApp {
+    /// Launch an app. `activates` defaults to FALSE (the `open -g` semantics): the app
+    /// starts and its windows appear, but the user's frontmost app keeps keyboard focus
+    /// and the cursor is untouched — required for background QA runs. Pass
+    /// `activates: true` only behind an explicit foreground request.
+    public static func launch(bundleIdentifier: String, activates: Bool = false) async throws -> RunningApp {
         guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier) else {
             throw AppError.appNotFound(bundleIdentifier)
         }
 
         let config = NSWorkspace.OpenConfiguration()
-        config.activates = true
+        config.activates = activates
 
         let app = try await NSWorkspace.shared.openApplication(at: url, configuration: config)
 
@@ -58,6 +62,20 @@ public struct AppManager {
     public static func activate(pid: pid_t) -> Bool {
         guard let app = NSRunningApplication(processIdentifier: pid) else { return false }
         return app.activate()
+    }
+
+    /// Hide all of an app's windows (Cmd+H equivalent). The app keeps running and its
+    /// AX tree, PID-targeted input, and internal focus chain all keep working.
+    @discardableResult
+    public static func hide(pid: pid_t) -> Bool {
+        NSRunningApplication(processIdentifier: pid)?.hide() ?? false
+    }
+
+    /// Unhide an app WITHOUT activating it — windows come back on screen but the
+    /// user's frontmost app keeps focus (unlike `activate`, which unhides AND focuses).
+    @discardableResult
+    public static func unhide(pid: pid_t) -> Bool {
+        NSRunningApplication(processIdentifier: pid)?.unhide() ?? false
     }
 
     public static func quit(bundleIdentifier: String) -> Bool {

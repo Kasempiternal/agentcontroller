@@ -39,9 +39,11 @@ struct ScrollTools {
                 await AXExecutor.shared.run {
                     InputSimulator.scroll(at: CGPoint(x: x, y: y), deltaX: Int32(deltaX), deltaY: Int32(deltaY), pid: targetPid)
                 }
-                return ToolResult.action(success: true, method: foreground ? "coordinate" : "coordinate-pid", extra: [
-                    "activated": .bool(activated),
-                ])
+                var extra: [String: JSONValue] = ["activated": .bool(activated)]
+                if !foreground, let warning = await offTargetWarning(pid: pid, x: x, y: y) {
+                    extra["warning"] = .string(warning)
+                }
+                return ToolResult.action(success: true, method: foreground ? "coordinate" : "coordinate-pid", extra: extra)
             }
         ))
 
@@ -81,9 +83,11 @@ struct ScrollTools {
                 await AXExecutor.shared.run {
                     InputSimulator.drag(from: CGPoint(x: sx, y: sy), to: CGPoint(x: ex, y: ey), duration: duration, pid: targetPid)
                 }
-                return ToolResult.action(success: true, method: foreground ? "coordinate" : "coordinate-pid", extra: [
-                    "activated": .bool(activated),
-                ])
+                var extra: [String: JSONValue] = ["activated": .bool(activated)]
+                if !foreground, let warning = await offTargetWarning(pid: pid, x: sx, y: sy) {
+                    extra["warning"] = .string(warning)
+                }
+                return ToolResult.action(success: true, method: foreground ? "coordinate" : "coordinate-pid", extra: extra)
             }
         ))
 
@@ -121,9 +125,11 @@ struct ScrollTools {
                 await AXExecutor.shared.run {
                     InputSimulator.drag(from: CGPoint(x: fx, y: fy), to: CGPoint(x: tx, y: ty), duration: 0.5, pid: targetPid)
                 }
-                return ToolResult.action(success: true, method: foreground ? "coordinate" : "coordinate-pid", extra: [
-                    "activated": .bool(activated),
-                ])
+                var extra: [String: JSONValue] = ["activated": .bool(activated)]
+                if !foreground, let warning = await offTargetWarning(pid: pid, x: fx, y: fy) {
+                    extra["warning"] = .string(warning)
+                }
+                return ToolResult.action(success: true, method: foreground ? "coordinate" : "coordinate-pid", extra: extra)
             }
         ))
 

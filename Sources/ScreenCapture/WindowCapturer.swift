@@ -53,19 +53,32 @@ public struct WindowCapturer {
     public static func captureWindow(
         pid: pid_t,
         windowTitle: String? = nil,
+        windowOrigin: CGPoint? = nil,
         scale: CGFloat = 2.0,
         maxLongestSide: Int? = defaultMaxLongestSide,
         format: ImageFormat = .jpeg,
         quality: CGFloat = 0.7
     ) async throws -> (data: Data, mimeType: String) {
         let content = try await ShareableContentCache.shared.current()
+        let owned = content.windows.filter { $0.owningApplication?.processID == pid }
+        guard !owned.isEmpty else { throw CaptureError.windowNotFound }
 
-        guard let window = content.windows.first(where: {
-            $0.owningApplication?.processID == pid &&
-            (windowTitle == nil || $0.title == windowTitle)
-        }) else {
-            throw CaptureError.windowNotFound
+        // Title is strict when it is the ONLY disambiguator (a user-supplied title that
+        // matches nothing must error, not silently capture a different window). When an
+        // origin is also provided (windowIndex path: both derived from the same AX
+        // window), a title miss falls through to nearest-origin matching.
+        var picked: SCWindow?
+        if let windowTitle, !windowTitle.isEmpty {
+            picked = owned.first { $0.title == windowTitle }
+            if picked == nil, windowOrigin == nil { throw CaptureError.windowNotFound }
         }
+        if picked == nil, let windowOrigin {
+            picked = nearestWindow(to: windowOrigin, in: owned)
+        }
+        if picked == nil, windowTitle == nil || windowTitle!.isEmpty {
+            picked = bestWindow(in: owned)
+        }
+        guard let window = picked else { throw CaptureError.windowNotFound }
 
         let filter = SCContentFilter(desktopIndependentWindow: window)
         let config = SCStreamConfiguration()
@@ -163,14 +176,31 @@ public struct WindowCapturer {
             return byTitle
         }
         if let windowOrigin {
-            // SCWindow.frame is top-left origin in global (screen) points — same space as
-            // AXPosition — so match the window whose origin is nearest the measured one.
-            return owned.min(by: { lhs, rhs in
-                hypot(lhs.frame.origin.x - windowOrigin.x, lhs.frame.origin.y - windowOrigin.y) <
-                hypot(rhs.frame.origin.x - windowOrigin.x, rhs.frame.origin.y - windowOrigin.y)
-            })
+            return nearestWindow(to: windowOrigin, in: owned)
         }
-        return owned.first
+        return bestWindow(in: owned)
+    }
+
+    /// SCWindow.frame is top-left origin in global (screen) points — same space as
+    /// AXPosition — so match the window whose origin is nearest the measured one.
+    static func nearestWindow(to origin: CGPoint, in owned: [SCWindow]) -> SCWindow? {
+        owned.min(by: { lhs, rhs in
+            hypot(lhs.frame.origin.x - origin.x, lhs.frame.origin.y - origin.y) <
+            hypot(rhs.frame.origin.x - origin.x, rhs.frame.origin.y - origin.y)
+        })
+    }
+
+    /// The most plausible "main" window when nothing disambiguates. Enumeration includes
+    /// off-screen windows (tooltips, status-item panels, zero-sized helpers), so raw
+    /// `.first` could pick garbage: restrict to layer-0 windows of real size, prefer
+    /// on-screen, then the largest area.
+    static func bestWindow(in owned: [SCWindow]) -> SCWindow? {
+        let plausible = owned.filter { $0.windowLayer == 0 && $0.frame.width >= 40 && $0.frame.height >= 40 }
+        let pool = plausible.isEmpty ? owned : plausible
+        return pool.max(by: { lhs, rhs in
+            if lhs.isOnScreen != rhs.isOnScreen { return rhs.isOnScreen }
+            return lhs.frame.width * lhs.frame.height < rhs.frame.width * rhs.frame.height
+        })
     }
 }
 

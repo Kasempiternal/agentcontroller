@@ -22,12 +22,13 @@ struct AssertTools {
     private static func registerAssertVisible(in registry: ToolRegistry) {
         registry.register(.init(
             name: "assert_visible",
-            description: "Assert that an element matching the selector is present. Polls until it appears or the timeout elapses. PASS → {passed:true}; FAIL → isError result naming the selector. Use for QA checkpoints (e.g. confirm a dialog/label showed up).",
+            description: "Assert that an element matching the selector is present. Polls until it appears or the timeout elapses. PASS → {passed:true}; FAIL → isError result naming the selector. Use for QA checkpoints (e.g. confirm a dialog/label showed up). Searches the whole app by default; pass scope:'window' to check only the focused window (faster).",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object(SelectorSchema.merged(into: [
                     "app": .object(["type": .string("string"), "description": .string("Bundle ID, app name, or PID")]),
                     "timeout": .object(["type": .string("number"), "description": .string("Seconds to poll before failing (default 7)")]),
+                    "scope": SelectorSchema.scopeProperty(default: "app"),
                 ])),
                 "required": .array([.string("app")]),
             ]),
@@ -39,8 +40,8 @@ struct AssertTools {
                 let start = Date()
                 repeat {
                     let found = await AXExecutor.shared.run { () -> AXElementSearchResult? in
-                        let app = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
-                        return AXElementSearch.find(root: app, criteria: criteria).first
+                        let root = SearchScope.root(pid: pid, args: args, defaultScope: "app")
+                        return AXElementSearch.find(root: root, criteria: criteria).first
                     }
                     if let r = found {
                         return ToolResult.json(.object([
@@ -64,12 +65,13 @@ struct AssertTools {
     private static func registerAssertNotVisible(in registry: ToolRegistry) {
         registry.register(.init(
             name: "assert_not_visible",
-            description: "Assert that NO element matches the selector. Polls for the whole window: passes as soon as the element is absent; fails only if it stays present the entire time. Use to confirm something dismissed (spinner gone, dialog closed).",
+            description: "Assert that NO element matches the selector. Polls for the whole window: passes as soon as the element is absent; fails only if it stays present the entire time. Use to confirm something dismissed (spinner gone, dialog closed). Searches the whole app by default; pass scope:'window' to check only the focused window.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object(SelectorSchema.merged(into: [
                     "app": .object(["type": .string("string"), "description": .string("Bundle ID, app name, or PID")]),
                     "timeout": .object(["type": .string("number"), "description": .string("Seconds to poll waiting for absence before failing (default 7)")]),
+                    "scope": SelectorSchema.scopeProperty(default: "app"),
                 ])),
                 "required": .array([.string("app")]),
             ]),
@@ -81,8 +83,8 @@ struct AssertTools {
                 let start = Date()
                 repeat {
                     let found = await AXExecutor.shared.run { () -> AXElementSearchResult? in
-                        let app = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
-                        return AXElementSearch.find(root: app, criteria: criteria).first
+                        let root = SearchScope.root(pid: pid, args: args, defaultScope: "app")
+                        return AXElementSearch.find(root: root, criteria: criteria).first
                     }
                     if found == nil {
                         return ToolResult.json(.object([
@@ -115,6 +117,7 @@ struct AssertTools {
                     "focused": .object(["type": .string("boolean"), "description": .string("Expected focused state")]),
                     "checked": .object(["type": .string("boolean"), "description": .string("Expected checkbox/radio/toggle state (AX value 1/true)")]),
                     "timeout": .object(["type": .string("number"), "description": .string("Seconds to poll before failing (default 7)")]),
+                    "scope": SelectorSchema.scopeProperty(default: "app"),
                 ])),
                 "required": .array([.string("app")]),
             ]),
@@ -135,8 +138,8 @@ struct AssertTools {
 
                 repeat {
                     last = await AXExecutor.shared.run { () -> AssertValueSnapshot in
-                        let app = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
-                        guard let r = AXElementSearch.find(root: app, criteria: criteria).first else {
+                        let root = SearchScope.root(pid: pid, args: args, defaultScope: "app")
+                        guard let r = AXElementSearch.find(root: root, criteria: criteria).first else {
                             return AssertValueSnapshot(found: false, valueString: nil, title: nil, label: nil,
                                                        isEnabled: false, isFocused: false, checked: nil)
                         }
