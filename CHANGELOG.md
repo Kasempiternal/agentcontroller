@@ -4,6 +4,36 @@ All notable changes to Macoestro are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.3.2] - 2026-06-18
+
+Permission-UX fixes uncovered while moving to the notarized Developer ID build:
+switching the signing identity reset TCC, and two gaps made re-granting and
+re-opening the app more confusing than it should be.
+
+### Fixed
+- **Screen Recording "Enable" button** now calls `PermissionChecker.requestScreenRecording()`
+  before deep-linking to System Settings. Previously it only opened the Settings
+  pane — but macOS doesn't list an app under Screen Recording until it actually
+  *requests* capture, so the pane showed a list the app wasn't in yet. (Mirrors
+  the Accessibility row, which already did this.)
+- **Re-opening a running Macoestro** from Spotlight / Finder / Launchpad now
+  resurfaces the main window via `applicationShouldHandleReopen`. As an
+  `LSUIElement` (no Dock icon), a re-launch previously looked like a no-op.
+
+## [1.3.1] - 2026-06-17
+
+Distribution-signing release: builds are now signed with the personal
+**Developer ID Application** identity (Team `U4VYZ8CUN9`) and notarized by
+Apple, so the app and its DMG open with no Gatekeeper warning on any Mac —
+not just the build machine. The same Team ID is retained, so Accessibility /
+Screen-Recording grants persist (a one-time re-grant may be needed the first
+launch after switching from the old Apple Development signature).
+
+### Changed
+- Signing identity moved from `Apple Development` (development-only; rejected by
+  Gatekeeper) to `Developer ID Application` + notarization (the only combination
+  Gatekeeper accepts for distribution outside the App Store).
+
 ## [1.3.0] - 2026-06-12
 
 The "fully invisible QA" release: a complete test run — launch, interact,

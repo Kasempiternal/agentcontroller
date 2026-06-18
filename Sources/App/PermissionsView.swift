@@ -35,6 +35,11 @@ struct PermissionsView: View {
                     description: "Required to capture app window screenshots",
                     isGranted: state.screenRecordingGranted,
                     action: {
+                        // Mirror the Accessibility row: fire the real TCC request FIRST so
+                        // macOS registers Macoestro in the Screen Recording list. Without
+                        // this, the deep-linked pane just shows a list the app isn't in yet
+                        // (the system only lists an app once it attempts a capture).
+                        PermissionChecker.requestScreenRecording()
                         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
                     }
                 )

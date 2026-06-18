@@ -35,6 +35,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// LSUIElement apps have no Dock icon, so re-launching Macoestro from Spotlight,
+    /// Finder, or Launchpad while it's already running routes here instead of doing a
+    /// fresh launch. Without handling it, "opening" a running Macoestro looks like a
+    /// no-op. Resurface the main window when nothing is already visible.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag { showMainWindow() }
+        return true
+    }
+
     /// Brings the accessory app forward and opens the main "Setup" window so the
     /// permissions UI is reachable even without a Dock icon.
     private func showMainWindow() {
