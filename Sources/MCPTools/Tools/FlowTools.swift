@@ -186,7 +186,15 @@ struct FlowTools {
                 if stopOnError { break } else { continue }
             }
             let stepArgs = step["args"] ?? .object([:])
-            let result = try await registry.callTool(name: toolName, arguments: stepArgs)
+            // A handler that THROWS (missing param, unresolvable app) must be
+            // recorded like an isError result — not abort the loop and discard
+            // every accumulated step result.
+            let result: JSONValue
+            do {
+                result = try await registry.callTool(name: toolName, arguments: stepArgs)
+            } catch {
+                result = ToolResult.error(error.localizedDescription)
+            }
             let isError = (result["isError"]?.boolValue) ?? false
 
             results.append(.object([
