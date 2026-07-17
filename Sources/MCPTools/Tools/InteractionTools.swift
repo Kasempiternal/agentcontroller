@@ -17,8 +17,18 @@ struct InteractionTools {
         case found(AXElement, role: String, path: String)
         /// A handle id was supplied but is stale; fell back to a selector match.
         case foundAfterStaleHandle(AXElement, role: String, path: String)
+        /// A handle id was supplied, it is stale, and no selector was given to
+        /// fall back to — retrying the search would be pointless, so callers
+        /// should tell the agent to re-snapshot instead of polling the timeout.
+        case staleHandleNoFallback(id: String)
         /// Nothing matched.
         case none
+    }
+
+    /// Shared error for a dead handle with no selector fallback: name the id,
+    /// say why it died, say exactly how to recover.
+    static func staleHandleError(_ id: String) -> JSONValue {
+        ToolResult.error("elementId '\(id)' is stale — the app's UI changed since that snapshot and no fallback selectors were given. Re-run snapshot/describe_screen and use a fresh id (or add role/labelContains selectors so the tool can re-find the element itself).")
     }
 
     /// Short human description of the criteria for `ToolResult.error` messages so a real
@@ -47,13 +57,25 @@ struct InteractionTools {
         var usedStaleHandle = false
         if let handleId = args?["elementId"]?.stringValue {
             if let element = await ElementHandleStore.shared.resolve(handleId) {
-                return .handle(element)
+                // Liveness probe: the store can hand back a ref whose element the
+                // app has since destroyed (UI rebuilt without a re-snapshot). A
+                // dead ref answers .invalidUIElement to every read, so one cheap
+                // role read distinguishes live from stale — without it, the
+                // press later "fails" with a message that never mentions
+                // staleness.
+                let alive = await AXExecutor.shared.run { element.role != nil }
+                if alive { return .handle(element) }
             }
-            // Handle is stale (nil) — fall back to selector search but note it.
+            // Handle is stale (unknown id or dead ref) — fall back to selector
+            // search if the call carries any selector; otherwise fail fast with
+            // recovery guidance instead of polling a search that can never match.
             usedStaleHandle = true
         }
 
         let criteria = AXElementSearchCriteria(from: args, maxResults: 1)
+        if usedStaleHandle && !criteria.hasAnyMatcher {
+            return .staleHandleNoFallback(id: args?["elementId"]?.stringValue ?? "?")
+        }
         let deadline = Date().addingTimeInterval(max(0, timeout))
         repeat {
             let hit = await AXExecutor.shared.run { () -> (AXElement, String, String)? in
@@ -123,6 +145,8 @@ struct InteractionTools {
                 switch target {
                 case .none:
                     return ToolResult.error("No element matched selector: \(describe(args))")
+                case .staleHandleNoFallback(let id):
+                    return staleHandleError(id)
                 case .handle(let e):
                     (element, role, staleHandle) = (e, e.role ?? "element", false)
                 case .found(let e, let r, _):
@@ -133,7 +157,7 @@ struct InteractionTools {
 
                 let pressed = await AXExecutor.shared.run { element.press() }
                 guard pressed else {
-                    return ToolResult.error("Found \(role) but the press action was refused")
+                    return ToolResult.error("Found \(role) but the press action was refused — the control may be disabled, or the element may not accept AXPress. Try clicking its coordinates (x/y from snapshot's frame) instead.")
                 }
                 return ToolResult.action(success: true, method: "accessibility", extra: [
                     "found": .bool(true),
@@ -189,6 +213,8 @@ struct InteractionTools {
                 switch target {
                 case .none:
                     return ToolResult.error("No element matched selector: \(describe(args))")
+                case .staleHandleNoFallback(let id):
+                    return staleHandleError(id)
                 case .handle(let e):
                     (element, role) = (e, e.role ?? "element")
                 case .found(let e, let r, _), .foundAfterStaleHandle(let e, let r, _):
@@ -196,16 +222,29 @@ struct InteractionTools {
                 }
 
                 // Try AX double-press (background-safe for most standard controls).
-                let center: CGPoint? = await AXExecutor.shared.run { () -> CGPoint? in
+                // Three distinct outcomes — the old CGPoint? return overloaded nil as
+                // both "pressed fine" and "refused with no geometry", reporting the
+                // latter as a false success.
+                enum DoublePressOutcome: Sendable {
+                    case pressed
+                    case fallback(CGPoint)
+                    case refusedNoGeometry
+                }
+                let outcome: DoublePressOutcome = await AXExecutor.shared.run {
                     let first = element.press()
                     let second = element.press()
-                    if first && second { return nil }
+                    if first && second { return .pressed }
                     // AX press refused — compute the element center for a coordinate fallback.
-                    guard let pos = element.position, let sz = element.size else { return nil }
-                    return CGPoint(x: pos.x + sz.width / 2, y: pos.y + sz.height / 2)
+                    guard let pos = element.position, let sz = element.size else {
+                        return .refusedNoGeometry
+                    }
+                    return .fallback(CGPoint(x: pos.x + sz.width / 2, y: pos.y + sz.height / 2))
                 }
 
-                if let pt = center {
+                if case .refusedNoGeometry = outcome {
+                    return ToolResult.error("Found \(role) but the press action was refused and the element exposes no frame for a coordinate fallback. Re-snapshot and try its parent row/cell, or click by coordinates.")
+                }
+                if case .fallback(let pt) = outcome {
                     // AX press returned false; use coordinate-based double click as fallback.
                     // Background-safe: deliver to the target PID (no cursor warp, no
                     // activation). foreground:true restores activate + global HID.
@@ -269,6 +308,8 @@ struct InteractionTools {
                 switch target {
                 case .none:
                     return ToolResult.error("No element matched selector: \(describe(args))")
+                case .staleHandleNoFallback(let id):
+                    return staleHandleError(id)
                 case .handle(let e):
                     (element, role) = (e, e.role ?? "element")
                 case .found(let e, let r, _), .foundAfterStaleHandle(let e, let r, _):
@@ -308,10 +349,14 @@ struct InteractionTools {
                 }
                 let append = args?["append"]?.boolValue ?? false
                 let foreground = args?["foreground"]?.boolValue ?? false
+                // Every advertised selector counts as targeting — `value` and
+                // `index`/`nth` were missing here, so a call selecting purely by
+                // them typed into whatever happened to hold focus instead.
                 let hasTarget = args?["role"] != nil || args?["title"] != nil
                     || args?["titleContains"] != nil || args?["identifier"] != nil
                     || args?["description"] != nil || args?["descriptionContains"] != nil
                     || args?["labelContains"] != nil || args?["elementId"] != nil
+                    || args?["value"] != nil || args?["index"] != nil || args?["nth"] != nil
 
                 // Resolve the target element (if any). Try AX set-value first — for
                 // AXTextField/AXTextArea this works in the background and REPLACES the
@@ -335,6 +380,8 @@ struct InteractionTools {
                     switch target {
                     case .none:
                         outcome = .notFound
+                    case .staleHandleNoFallback(let id):
+                        return staleHandleError(id)
                     case .handle(let e), .found(let e, _, _), .foundAfterStaleHandle(let e, _, _):
                         let resolved = await AXExecutor.shared.run { () -> TypeOutcome in
                             let role = e.role ?? ""

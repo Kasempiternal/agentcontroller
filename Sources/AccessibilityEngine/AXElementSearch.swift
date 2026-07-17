@@ -38,6 +38,17 @@ public struct AXElementSearchCriteria: Sendable {
         self.maxResults = maxResults
         self.index = index
     }
+
+    /// True when at least one element matcher is set. `matches` requires this
+    /// (empty criteria must never match everything), and callers use it to
+    /// distinguish "stale handle with a selector fallback" from "stale handle
+    /// with nothing to fall back to".
+    public var hasAnyMatcher: Bool {
+        role != nil || title != nil || titleContains != nil
+            || identifier != nil || value != nil
+            || description != nil || descriptionContains != nil
+            || labelContains != nil
+    }
 }
 
 public struct AXElementSearchResult: Sendable {
@@ -68,7 +79,10 @@ public struct AXElementSearch {
         kAXChildrenAttribute as String,
     ]
 
-    public static func find(root: AXElement, criteria: AXElementSearchCriteria, maxDepth: Int = 10) -> [AXElementSearchResult] {
+    /// Default `maxDepth` matches `snapshot`'s walk depth (12) — a shallower
+    /// search default meant an element visible in a snapshot could be
+    /// unreachable by the selector-based tools (click/assert/wait).
+    public static func find(root: AXElement, criteria: AXElementSearchCriteria, maxDepth: Int = 12) -> [AXElementSearchResult] {
         var results: [AXElementSearchResult] = []
         bfs(root: root, criteria: criteria, maxDepth: maxDepth, results: &results)
 
@@ -168,10 +182,6 @@ public struct AXElementSearch {
             let haystacks = [titleVal, descriptionVal, helpVal, valueVal].compactMap { $0 }
             guard haystacks.contains(where: { $0.localizedCaseInsensitiveContains(contains) }) else { return false }
         }
-        let anyCriterion = criteria.role != nil || criteria.title != nil || criteria.titleContains != nil
-            || criteria.identifier != nil || criteria.value != nil
-            || criteria.description != nil || criteria.descriptionContains != nil
-            || criteria.labelContains != nil
-        return anyCriterion
+        return criteria.hasAnyMatcher
     }
 }
