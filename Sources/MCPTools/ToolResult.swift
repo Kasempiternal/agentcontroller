@@ -15,7 +15,10 @@ public struct ToolResult {
 
     public static func json(_ value: JSONValue) -> JSONValue {
         let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        // Compact on purpose: pretty-printing added 10-30% whitespace tokens to
+        // every tree/snapshot/list response, paid on each of an agent's calls.
+        // sortedKeys stays for deterministic output (stable diffs, stable tests).
+        encoder.outputFormatting = [.sortedKeys]
         if let data = try? encoder.encode(value),
            let str = String(data: data, encoding: .utf8) {
             return text(str)
