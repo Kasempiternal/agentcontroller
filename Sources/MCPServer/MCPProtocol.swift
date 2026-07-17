@@ -103,7 +103,11 @@ public struct MCPProtocolHandler: Sendable {
             return .failure(.invalidParams, id: request.id)
         }
 
-        let arguments = params["arguments"]
+        // `arguments` is OPTIONAL in the MCP spec. Normalize its absence to an
+        // empty object so handlers never see nil — a nil here used to reach the
+        // handlers' force-unwraps and take down the whole process on one
+        // malformed (but spec-legal) call.
+        let arguments = params["arguments"] ?? .object([:])
 
         // Telemetry: notify the host that a tool is being dispatched.
         onToolCall?(name)

@@ -32,6 +32,10 @@ public final class ToolRegistry: MCPToolProvider, @unchecked Sendable {
     }
 
     public func callTool(name: String, arguments: JSONValue?) async throws -> JSONValue {
+        // Second normalization choke point (MCPProtocolHandler is the first):
+        // handlers may force-unwrap `args`, so direct callers (flows, tests)
+        // must never deliver nil either.
+        let arguments = arguments ?? .object([:])
         guard let tool = tools[name] else {
             return ToolResult.error("Unknown tool: \(name)")
         }
@@ -44,7 +48,7 @@ public final class ToolRegistry: MCPToolProvider, @unchecked Sendable {
             if name == "activate_app" {
                 return ToolResult.error(FocusGuard.denialMessage(for: "activate_app"))
             }
-            if arguments?["foreground"]?.boolValue == true {
+            if arguments["foreground"]?.boolValue == true {
                 return ToolResult.error(FocusGuard.denialMessage(for: "foreground:true on \(name)"))
             }
         }
