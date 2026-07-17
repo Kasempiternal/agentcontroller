@@ -4,6 +4,54 @@ All notable changes to Macoestro are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.5.0] - 2026-07-17
+
+The reliability release, from a three-agent deep review of the whole stack.
+Closes the full hang chain (hung target app → hung server → wedged bridge →
+dead session) and a process-killing crash, and modernizes the MCP surface.
+
+### Fixed
+- **Server crash on spec-legal input**: `tools/call` without the optional
+  `arguments` key hit handler force-unwraps and killed the process. Absent
+  arguments now normalize to `{}` at both dispatch choke points.
+- **Hang chain**: a process-wide AX messaging-timeout floor (system-wide
+  element) bounds every AX call — previously only app roots were bounded and
+  each child ref ran at the ~6s system default; the bridge adds
+  `--max-time 180` with a distinct deadline-vs-refused message.
+- **Bridge correctness**: error replies now echo the request's own id
+  (id:null errors were uncorrelatable, so clients waited out their own
+  timeout instead of seeing the message), notifications never get replies,
+  bodies stream via `--data-binary @-` (ARG_MAX-proof), and non-200 responses
+  are wrapped as proper JSON-RPC errors.
+- **DMG-install first run**: the app now bundles the canonical bridge script
+  (Contents/Resources) and installs/refreshes `~/.macoestro/` from it. The
+  old embedded bootstrap sent no bearer token — DMG installs (which never run
+  build.sh) got a 401 on every request.
+- **run_steps**: a step whose handler throws is recorded as a failed step;
+  previously it aborted the loop and discarded every accumulated result.
+- **Stale element handles**: cached `elementId` refs are liveness-probed; a
+  dead handle with no fallback selectors fails fast with a re-snapshot hint
+  instead of polling a search that can never match for the full timeout.
+- **double_click false success**: a refused press on an element with no
+  geometry was reported as success; it now returns a recovery-path error.
+- **type_text**: `value`/`index`/`nth` now count as targeting selectors
+  (previously text went to whatever held focus).
+- **Selector depth parity**: searches default to depth 12 matching
+  `snapshot`, so snapshot-visible elements are reachable by selector tools.
+- `--skip-notarize` DMGs are now actually codesigned (the summary already
+  said "signed").
+
+### Added
+- **MCP tool annotations**: `readOnlyHint` on the 23 pure-read tools,
+  `destructiveHint` on `reset_app_state`/`quit_app`/`set_clipboard`,
+  `openWorldHint:false` everywhere — clients can gate approvals sensibly.
+- **protocolVersion negotiation**: only supported revisions are echoed
+  (2024-11-05 / 2025-03-26 / 2025-06-18).
+
+### Changed
+- Tool JSON payloads are compact (no pretty-printing) — removes a 10-30%
+  whitespace token tax on every tree/snapshot/list response.
+
 ## [1.4.0] - 2026-07-17
 
 The Focus Guard release: "background by default" is now a guarantee, not a
