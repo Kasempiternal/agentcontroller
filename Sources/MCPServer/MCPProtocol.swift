@@ -68,8 +68,15 @@ public struct MCPProtocolHandler: Sendable {
         let instructions = """
         Macoestro is a macOS QA-automation server that drives native apps via the \
         Accessibility API. Start with `list_apps` to find a running app, then \
-        `get_element_tree` or `find_elements` to inspect its UI hierarchy, then use \
-        the interaction tools (click, type_text, etc.) to drive it.
+        `snapshot` (compact element list with stable ids) or `find_elements` to \
+        inspect its UI, then use the interaction tools (click, type_text, etc.) to \
+        drive it. GOLDEN RULE: every tool is background-safe by default — the user \
+        keeps their focus, cursor, and frontmost window for the entire run. Never \
+        call `activate_app` and never pass `foreground:true` unless a tool result \
+        explicitly tells you to: `screenshot_window` captures background and even \
+        hidden windows, so an app never needs to be frontmost to be driven, \
+        asserted on, or screenshotted. While Focus Guard is on (the default) such \
+        calls are refused with an error.
         """
         let result: JSONValue = .object([
             "protocolVersion": .string(protocolVersion),

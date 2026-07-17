@@ -4,6 +4,28 @@ All notable changes to Macoestro are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.4.0] - 2026-07-17
+
+The Focus Guard release: "background by default" is now a guarantee, not a
+convention. A driving agent was observed calling `activate_app` before a
+screenshot that never needed it — yanking the user to the tested app mid-run.
+Tool descriptions alone are hints; the dispatcher now enforces them.
+
+### Added
+- **Focus Guard** (default ON; toggle in the menu-bar dropdown and the status
+  window; persisted across launches): the tool dispatcher refuses
+  `activate_app` and any `foreground:true` escalation with an instructive
+  error that re-steers the agent onto the background-safe path instead of
+  executing the call. The single dispatch-level gate also covers steps
+  replayed through `run_steps` / `run_saved_flow`.
+- Server `instructions` (MCP `initialize`) now lead with the golden rule:
+  never `activate_app`, never `foreground:true` — screenshots capture
+  background and hidden windows, so the app never needs to be frontmost.
+
+### Changed
+- `activate_app` tool description now leads with the focus-steal warning and
+  documents the Focus Guard refusal.
+
 ## [1.3.2] - 2026-06-18
 
 Permission-UX fixes uncovered while moving to the notarized Developer ID build:

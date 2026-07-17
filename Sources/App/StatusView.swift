@@ -5,6 +5,7 @@ struct StatusView: View {
     @Environment(AppState.self) private var state
 
     var body: some View {
+        @Bindable var state = state
         VStack(spacing: 0) {
             // Header
             HStack {
@@ -44,6 +45,20 @@ struct StatusView: View {
                     title: "Screen Recording",
                     detail: state.screenRecordingGranted ? "Granted" : "Not granted"
                 )
+
+                Divider()
+
+                Toggle(isOn: $state.focusGuardEnabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Focus Guard")
+                            .font(.callout.bold())
+                        Text("Refuse activate_app and foreground:true so a QA run can never steal your focus or cursor")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .toggleStyle(.switch)
+                .tint(.teal)
 
                 Divider()
 

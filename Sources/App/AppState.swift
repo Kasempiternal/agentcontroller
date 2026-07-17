@@ -12,6 +12,11 @@ public final class AppState {
     var lastToolName: String?
     var accessibilityGranted = false
     var screenRecordingGranted = false
+    /// UI mirror of `FocusGuard` (the engine-side source of truth read by the
+    /// tool dispatcher). Persisted via UserDefaults inside FocusGuard.
+    var focusGuardEnabled = FocusGuard.isEnabled {
+        didSet { FocusGuard.setEnabled(focusGuardEnabled) }
+    }
     private var permissionTimer: Timer?
     /// True once we've already done at least one poll; used to back off the timer.
     private var didFirstPoll = false

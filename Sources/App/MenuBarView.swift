@@ -5,6 +5,7 @@ struct MenuBarView: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
+        @Bindable var state = state
         VStack {
             if state.isServerRunning {
                 Label("Server running on port \(state.serverPort)", systemImage: "circle.fill")
@@ -13,6 +14,10 @@ struct MenuBarView: View {
                 Label("Server stopped", systemImage: "circle.fill")
                     .foregroundStyle(.red)
             }
+
+            Divider()
+
+            Toggle("Focus Guard — never steal my focus", isOn: $state.focusGuardEnabled)
 
             Divider()
 

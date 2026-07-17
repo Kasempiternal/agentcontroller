@@ -1,7 +1,7 @@
 # Macoestro
 
 [![CI](https://github.com/Kasempiternal/macoestro/actions/workflows/ci.yml/badge.svg)](https://github.com/Kasempiternal/macoestro/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-1.3.2-blue)
+![Version](https://img.shields.io/badge/version-1.4.0-blue)
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B%20(Apple%20Silicon)-lightgrey)
 ![Swift](https://img.shields.io/badge/swift-5.10-orange)
 ![License](https://img.shields.io/badge/license-personal%20use-red)
@@ -183,7 +183,7 @@ Verified limitations, also stated in the tool descriptions so agents self-correc
 | Clipboard / responder-chain commands (Cmd+C/V, Copy/Paste menu items) no-op without an active app | Verify content with `read_text` / `assert_value` instead, or `activate_app` briefly for paste flows |
 | PID-targeted drags can desync (apps that poll the real pointer) | Set `foreground: true` for that gesture |
 
-The single intentionally focus-changing tool is `activate_app`; everything else only escalates behind an explicit `foreground: true`.
+The single intentionally focus-changing tool is `activate_app`; everything else only escalates behind an explicit `foreground: true`. And since v1.4.0, **Focus Guard** (default on, toggle in the menu bar) turns that convention into a hard guarantee: while enabled, the dispatcher refuses `activate_app` and every `foreground:true` call with an error that points the agent back to the background-safe path — a misbehaving agent *cannot* steal your focus.
 
 ## Tool catalog
 

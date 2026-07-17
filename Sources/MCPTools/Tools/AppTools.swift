@@ -142,7 +142,7 @@ struct AppTools {
 
         registry.register(.init(
             name: "activate_app",
-            description: "Bring a running macOS application to the foreground. This is the ONE tool that intentionally changes focus and is the explicit, user-requested way to do so — every other interaction tool (click/type_text/send_shortcut/scroll/etc.) runs in the background by default and does NOT bring the app forward. Use this only when you genuinely need the target app frontmost (e.g. before a foreground:true escape-hatch action).",
+            description: "Bring a running macOS application to the foreground. ⚠️ This is the ONE tool that STEALS THE USER'S FOCUS, and it is almost never needed: screenshot_window captures background and even hidden windows, and every interaction tool (click/type_text/send_shortcut/scroll/navigate_menu) works without activation. Legitimate uses are clipboard/paste flows and apps that ignore PID-targeted input. While Focus Guard is enabled (the default; menu-bar toggle) this call is refused with an error.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([

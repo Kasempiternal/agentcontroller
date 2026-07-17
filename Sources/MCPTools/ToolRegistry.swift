@@ -35,6 +35,19 @@ public final class ToolRegistry: MCPToolProvider, @unchecked Sendable {
         guard let tool = tools[name] else {
             return ToolResult.error("Unknown tool: \(name)")
         }
+        // Focus Guard: every focus-stealing path in the tool set is either the
+        // `activate_app` tool or gated behind `foreground:true`, so this single
+        // dispatch-level check covers all of them — including steps replayed via
+        // run_steps/run_saved_flow (they re-enter through callTool) and any
+        // future tool that adopts the `foreground` convention.
+        if FocusGuard.isEnabled {
+            if name == "activate_app" {
+                return ToolResult.error(FocusGuard.denialMessage(for: "activate_app"))
+            }
+            if arguments?["foreground"]?.boolValue == true {
+                return ToolResult.error(FocusGuard.denialMessage(for: "foreground:true on \(name)"))
+            }
+        }
         return try await tool.handler(arguments)
     }
 
