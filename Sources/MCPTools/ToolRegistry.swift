@@ -13,6 +13,27 @@ public final class ToolRegistry: MCPToolProvider, @unchecked Sendable {
 
     private var tools: [String: ToolDefinition] = [:]
 
+    /// MCP tool annotations (2025-03-26 spec): behavior hints clients use to
+    /// gate approvals — e.g. auto-allowing read-only tools. Central maps rather
+    /// than per-definition fields so the classification is reviewable at a
+    /// glance; `AnnotationTests` asserts every name here actually exists.
+    static let readOnlyTools: Set<String> = [
+        "assert_not_visible", "assert_value", "assert_visible",
+        "check_permissions", "describe_screen", "find_elements",
+        "get_clipboard", "get_element_attributes", "get_element_tree",
+        "get_focused_element", "get_frontmost_app", "get_menu_structure",
+        "get_window_bounds", "list_apps", "list_flows", "list_windows",
+        "read_all_text", "read_text", "screenshot_element",
+        "screenshot_screen", "screenshot_window", "snapshot",
+        "wait_for_element",
+    ]
+
+    /// Tools that can lose user data or clobber user-owned state: container
+    /// wipes, app termination (unsaved work), and the system-wide clipboard.
+    static let destructiveTools: Set<String> = [
+        "quit_app", "reset_app_state", "set_clipboard",
+    ]
+
     public init() {
         registerAllTools()
     }
@@ -23,10 +44,21 @@ public final class ToolRegistry: MCPToolProvider, @unchecked Sendable {
 
     public func listTools() -> [JSONValue] {
         tools.values.sorted(by: { $0.name < $1.name }).map { tool in
-            .object([
+            // openWorldHint false: every tool acts on this Mac's UI, nothing
+            // reaches the open internet. destructiveHint defaults to true in
+            // the spec, so state it explicitly for the harmless majority.
+            var annotations: [String: JSONValue] = [
+                "openWorldHint": .bool(false),
+                "destructiveHint": .bool(Self.destructiveTools.contains(tool.name)),
+            ]
+            if Self.readOnlyTools.contains(tool.name) {
+                annotations["readOnlyHint"] = .bool(true)
+            }
+            return .object([
                 "name": .string(tool.name),
                 "description": .string(tool.description),
                 "inputSchema": tool.inputSchema,
+                "annotations": .object(annotations),
             ])
         }
     }

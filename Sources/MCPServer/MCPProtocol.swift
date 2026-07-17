@@ -61,10 +61,24 @@ public struct MCPProtocolHandler: Sendable {
         }
     }
 
+    /// MCP revisions this server actually implements. Echoing an arbitrary
+    /// client-requested version would claim semantics we don't have.
+    private static let supportedProtocolVersions: Set<String> = [
+        "2024-11-05", "2025-03-26", "2025-06-18",
+    ]
+
     private func handleInitialize(_ request: JSONRPCRequest) -> JSONRPCResponse {
-        // Echo the client's requested protocolVersion when present (we assume support),
-        // otherwise fall back to the baseline MCP revision.
-        let protocolVersion = request.params?["protocolVersion"]?.stringValue ?? "2024-11-05"
+        // Spec: echo the requested version when supported; otherwise answer with
+        // the latest version we do support. No request → conservative baseline.
+        let requested = request.params?["protocolVersion"]?.stringValue
+        let protocolVersion: String
+        if let requested, Self.supportedProtocolVersions.contains(requested) {
+            protocolVersion = requested
+        } else if requested != nil {
+            protocolVersion = "2025-06-18"
+        } else {
+            protocolVersion = "2024-11-05"
+        }
         let instructions = """
         Macoestro is a macOS QA-automation server that drives native apps via the \
         Accessibility API. Start with `list_apps` to find a running app, then \
