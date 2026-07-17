@@ -44,6 +44,10 @@ rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR/Contents/MacOS"
 cp .build/arm64-apple-macosx/release/Macoestro "$BUILD_DIR/Contents/MacOS/"
 cp Resources/Info.plist "$BUILD_DIR/Contents/"
+# Bundle the canonical bridge script (sealed by the signature below) so the app
+# itself can install/refresh ~/.macoestro/ — DMG installs never run this script.
+mkdir -p "$BUILD_DIR/Contents/Resources"
+cp Scripts/macoestro-mcp-bridge.sh "$BUILD_DIR/Contents/Resources/"
 
 case "$MODE" in
     --dev)
@@ -101,9 +105,11 @@ if [ "$MODE" != "--dev" ]; then
         -srcfolder "$STAGING" -fs HFS+ -format UDZO -ov "$DMG" >/dev/null
     rm -rf "$STAGING"
 
+    # Sign the DMG wrapper in both distribution modes (the final message says
+    # "signed" — make that true for --skip-notarize too, not just release).
+    codesign --force --sign "$SIGN_ID" --timestamp "$DMG"
     if [ "$MODE" = "release" ]; then
-        say "Signing + notarizing DMG (1-3 min)"
-        codesign --force --sign "$SIGN_ID" --timestamp "$DMG"
+        say "Notarizing DMG (1-3 min)"
         DMG_NOTARY_OUT="$(xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait 2>&1)"
         printf '%s\n' "$DMG_NOTARY_OUT"
         printf '%s\n' "$DMG_NOTARY_OUT" | grep -Eq 'status:[[:space:]]*Accepted' \

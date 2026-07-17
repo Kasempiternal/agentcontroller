@@ -3,9 +3,15 @@
 # Reads JSON-RPC from stdin, POSTs to Macoestro's local HTTP server, echoes response.
 # Authenticates with a per-launch bearer token written by Macoestro at 0600.
 # Keeps the process alive even if Macoestro isn't running yet — retries on each request.
+# Every request is deadline-bounded (--max-time) so a hung server can never wedge the
+# loop, and error replies echo the request's own id so the client can correlate them
+# (an id-less error is uncorrelatable and leaves the client waiting until timeout).
 
 PORT_FILE="$HOME/.macoestro/mcp-port"
 TOKEN_FILE="$HOME/.macoestro/mcp-token"
+# Generous ceiling: the longest legitimate tool calls (wait_for_element, recordings)
+# finish well inside this. Without it, one hung request wedges the serial loop forever.
+MAX_TIME=180
 
 resolve_port() {
     [ -f "$PORT_FILE" ] && cat "$PORT_FILE" || echo ""
@@ -13,6 +19,20 @@ resolve_port() {
 
 resolve_token() {
     [ -f "$TOKEN_FILE" ] && cat "$TOKEN_FILE" || echo ""
+}
+
+# First "id" member of the request line — string, number, or null. Empty result
+# means the request is a notification and must never receive a reply at all.
+extract_id() {
+    printf '%s' "$1" \
+        | grep -oE '"id"[[:space:]]*:[[:space:]]*("(\\.|[^"\\])*"|-?[0-9]+|null)' \
+        | head -n 1 \
+        | sed -E 's/^"id"[[:space:]]*:[[:space:]]*//'
+}
+
+emit_error() { # $1 = request id ("" = notification → suppressed), $2 = message
+    [ -z "$1" ] && return
+    echo "{\"jsonrpc\":\"2.0\",\"id\":$1,\"error\":{\"code\":-32000,\"message\":\"$2\"}}"
 }
 
 # Wait up to 30s on startup for BOTH the port and token files to appear.
@@ -26,6 +46,7 @@ TOKEN=$(resolve_token)
 
 while IFS= read -r line; do
     [ -z "$line" ] && continue
+    REQ_ID=$(extract_id "$line")
 
     # Re-resolve port if empty (previous failure or Macoestro not yet running).
     if [ -z "$PORT" ]; then
@@ -36,22 +57,33 @@ while IFS= read -r line; do
     [ -z "$TOKEN" ] && TOKEN=$(resolve_token)
 
     if [ -z "$PORT" ] || [ -z "$TOKEN" ]; then
-        echo '{"jsonrpc":"2.0","id":null,"error":{"code":-1,"message":"Macoestro is not running. Launch the Macoestro menu bar app first."}}'
+        emit_error "$REQ_ID" "Macoestro is not running. Launch the Macoestro menu bar app first."
         continue
     fi
 
     do_request() {
-        curl -s -o - -w '\n%{http_code}' -X POST "http://127.0.0.1:${PORT}/mcp" \
+        # Body via stdin (--data-binary @-): immune to ARG_MAX however large a
+        # run_steps flow gets. curl's exit status survives as the pipeline status.
+        printf '%s' "$line" | curl -s -o - -w '\n%{http_code}' --max-time "$MAX_TIME" \
+            -X POST "http://127.0.0.1:${PORT}/mcp" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${TOKEN}" \
-            -d "$line" 2>/dev/null
+            --data-binary @- 2>/dev/null
     }
 
     response=$(do_request)
+    curl_rc=$?
 
     # Split http_code (last line) from body (everything before) without subshells.
     http_code="${response##*$'\n'}"
     body="${response%$'\n'*}"
+
+    # curl 28 = deadline hit: the server accepted the connection but never
+    # finished answering. Retrying immediately would just burn another deadline.
+    if [ "$curl_rc" = "28" ]; then
+        emit_error "$REQ_ID" "Macoestro did not respond within ${MAX_TIME}s (server busy or hung on the target app)."
+        continue
+    fi
 
     if [ "$http_code" = "000" ]; then
         # Connection failed — Macoestro restarted on a new port. Re-resolve both and retry once.
@@ -64,7 +96,7 @@ while IFS= read -r line; do
         fi
         if [ "$http_code" = "000" ]; then
             PORT=""
-            echo '{"jsonrpc":"2.0","id":null,"error":{"code":-1,"message":"Cannot connect to Macoestro. Retrying on next request."}}'
+            emit_error "$REQ_ID" "Cannot connect to Macoestro. Retrying on next request."
             continue
         fi
     fi
@@ -81,6 +113,13 @@ while IFS= read -r line; do
 
     # HTTP 204 = notification acknowledged, no body to echo.
     [ "$http_code" = "204" ] && continue
+
+    # Non-200 bodies (401/403/413) are plain {"error": ...} JSON, not JSON-RPC —
+    # wrap them so the client can parse and correlate the failure.
+    if [ "$http_code" != "200" ]; then
+        emit_error "$REQ_ID" "Macoestro rejected the request (HTTP ${http_code})."
+        continue
+    fi
 
     [ -n "$body" ] && echo "$body"
 done
