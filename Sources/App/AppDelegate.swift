@@ -10,6 +10,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var httpServer: HTTPServer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Bound every AX call this process ever makes — a hung target app must
+        // fail fast, not stall tool calls at the ~6s per-node system default.
+        AXElement.installProcessWideTimeoutFloor()
+
         // Setup directories and bridge script
         SetupManager.setup()
 

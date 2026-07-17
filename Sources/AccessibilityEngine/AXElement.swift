@@ -25,6 +25,17 @@ public final class AXElement: @unchecked Sendable {
         AXElement(AXUIElementCreateSystemWide())
     }
 
+    /// Install a process-wide AX messaging-timeout floor. Setting the timeout on
+    /// the system-wide element makes it the default for every AXUIElementRef this
+    /// process touches (per-element overrides still win). Without it, only the
+    /// app roots created via `application(pid:timeout:)` are bounded — every
+    /// child ref produced during tree walks and searches runs at the ~6s system
+    /// default, so a single hung target app could stall a whole snapshot/find.
+    /// Call once at app startup.
+    public static func installProcessWideTimeoutFloor(_ seconds: Float = defaultToolTimeout) {
+        _ = AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), seconds)
+    }
+
     /// Unwrap a CF array of AXUIElement refs into Swift `AXElement` wrappers.
     /// Shared helper for `children`, `windows`, and batched tree reads.
     static func elements(fromCFArray cf: CFTypeRef?) -> [AXElement] {
