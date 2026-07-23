@@ -4,3 +4,10 @@ build/
 *.xcodeproj/
 .swiftpm/
 .tmp
+
+# Windows/.NET
+bin/
+obj/
+publish/
+*.user
+.dotnet-cli/

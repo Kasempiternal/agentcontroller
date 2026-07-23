@@ -10,11 +10,11 @@ import AccessibilityEngine
 /// The handlers capture `registry` so they can invoke `registry.callTool(...)`. `ToolRegistry`
 /// is `@unchecked Sendable`, so capturing it in the `@Sendable` closures is safe.
 struct FlowTools {
-    /// `~/Library/Application Support/Macoestro/flows`
+    /// `~/Library/Application Support/Deskestro/flows`
     private static var flowsDirectory: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
-        return base.appendingPathComponent("Macoestro/flows", isDirectory: true)
+        return base.appendingPathComponent("Deskestro/flows", isDirectory: true)
     }
 
     static func register(in registry: ToolRegistry) {

@@ -2,10 +2,10 @@
 import PackageDescription
 
 let package = Package(
-    name: "Macoestro",
+    name: "Deskestro",
     platforms: [.macOS(.v14)],
     products: [
-        .executable(name: "Macoestro", targets: ["App"]),
+        .executable(name: "Deskestro", targets: ["App"]),
     ],
     targets: [
         .executableTarget(
@@ -36,9 +36,9 @@ let package = Package(
             path: "Sources/MCPTools"
         ),
         .testTarget(
-            name: "MacoestroTests",
+            name: "DeskestroTests",
             dependencies: ["MCPServer", "AccessibilityEngine", "MCPTools", "ScreenCapture"],
-            path: "Tests/MacoestroTests"
+            path: "Tests/DeskestroTests"
         ),
     ]
 )

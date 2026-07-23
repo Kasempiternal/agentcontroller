@@ -22,7 +22,7 @@ public struct MCPProtocolHandler: Sendable {
         // the executable's __TEXT,__info_plist section, so Bundle.main resolves it.
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
         self.serverInfo = .object([
-            "name": .string("macoestro"),
+            "name": .string("deskestro"),
             "version": .string(version),
         ])
     }
@@ -80,7 +80,7 @@ public struct MCPProtocolHandler: Sendable {
             protocolVersion = "2024-11-05"
         }
         let instructions = """
-        Macoestro is a macOS QA-automation server that drives native apps via the \
+        Deskestro is a macOS QA-automation server that drives native apps via the \
         Accessibility API. Start with `list_apps` to find a running app, then \
         `snapshot` (compact element list with stable ids) or `find_elements` to \
         inspect its UI, then use the interaction tools (click, type_text, etc.) to \

@@ -1,26 +1,42 @@
-# Macoestro
+# Deskestro
 
-[![CI](https://github.com/Kasempiternal/macoestro/actions/workflows/ci.yml/badge.svg)](https://github.com/Kasempiternal/macoestro/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-1.5.0-blue)
-![Platform](https://img.shields.io/badge/platform-macOS%2014%2B%20(Apple%20Silicon)-lightgrey)
+<p align="center">
+  <img src="Resources/DeskestroIcon.png" width="180" alt="Deskestro icon">
+</p>
+
+[![CI](https://github.com/Kasempiternal/deskestro/actions/workflows/ci.yml/badge.svg)](https://github.com/Kasempiternal/deskestro/actions/workflows/ci.yml)
+![Version](https://img.shields.io/badge/version-2.0.0-blue)
+![Platform](https://img.shields.io/badge/platform-macOS%2014%2B%20%7C%20Windows%2010%2F11-lightgrey)
 ![Swift](https://img.shields.io/badge/swift-5.10-orange)
+![.NET](https://img.shields.io/badge/.NET-9.0-512BD4)
 ![License](https://img.shields.io/badge/license-personal%20use-red)
 
-**Native macOS app QA automation for AI agents, exposed over MCP (Model Context Protocol).**
+**Native desktop app QA automation for AI agents, exposed over MCP (Model Context Protocol).**
 
-Macoestro is a menu-bar app that lets Claude Code (or any MCP client) drive and *test* any macOS application through the Accessibility API — click, type, screenshot, record video, navigate menus, inspect the AX tree, **assert** UI state, and replay recorded flows. It is the macOS-native counterpart to [Maestro](https://maestro.dev) (mobile) and Blitz (iOS).
+Deskestro lets Claude Code—or any MCP client—drive and *test* desktop applications on **macOS and Windows**. It exposes one portable automation vocabulary for clicking, typing, screenshots, menus, accessibility inspection, assertions, and replayable flows, backed by native platform APIs rather than a browser-only abstraction.
 
-Its defining feature: **every tool is background-safe by default**. A full QA run happens while you keep working in another app — your keyboard focus, your cursor, and your frontmost window are never touched. The app under test can even be completely hidden and the run keeps working, screenshots included.
+Its defining feature is background-first automation. On macOS, every tool is background-safe by default. On Windows, UI Automation patterns run without moving the pointer, while the five raw-input gestures require explicit `foreground:true` authorization and restore the prior focus and cursor afterward.
+
+## Platform support
+
+| Platform | Native stack | Transport | Distribution |
+|---|---|---|---|
+| macOS 14+ | Swift, AXUIElement, CGEvent, ScreenCaptureKit | Local HTTP through a resilient stdio bridge | Signed `.app` and `.dmg` |
+| Windows 10/11 | C#/.NET, UI Automation, Win32 `SendInput` | MCP stdio directly | Self-contained `.exe` |
+
+Both backends register the same 49-tool contract. Windows currently has 46 native implementations and returns explicit unsupported errors for `reset_app_state`, `start_recording`, and `stop_recording`; see the [Windows guide](Windows/README.md) for platform-specific behavior.
 
 ---
 
 ## Table of contents
 
 - [Highlights](#highlights)
+- [Platform support](#platform-support)
 - [How it works](#how-it-works)
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Setup](#setup)
+- [Migrating from v1](#migrating-from-v1)
 - [Quick start](#quick-start)
 - [Fully-background QA](#fully-background-qa)
 - [Tool catalog](#tool-catalog)
@@ -42,8 +58,8 @@ Its defining feature: **every tool is background-safe by default**. A full QA ru
 ## How it works
 
 ```
-Claude Code ──stdio──▶ macoestro-mcp-bridge.sh ──HTTP POST──▶ Macoestro.app
- (MCP client)           (~/.macoestro/)           localhost     (menu-bar app)
+Claude Code ──stdio──▶ deskestro-mcp-bridge.sh ──HTTP POST──▶ Deskestro.app
+ (MCP client)           (~/.deskestro/)           localhost     (menu-bar app)
                                                                  │
                                                   Accessibility API + CGEvent
                                                   ScreenCaptureKit
@@ -52,7 +68,7 @@ Claude Code ──stdio──▶ macoestro-mcp-bridge.sh ──HTTP POST──�
                                                           App under test
 ```
 
-Macoestro runs as a menu-bar app (`LSUIElement`, no Dock icon) hosting a bespoke HTTP + JSON-RPC 2.0 server on a random loopback port. A resilient stdio bridge script translates MCP's stdio transport to HTTP, re-resolving the port and auth token automatically — so rebuilding or restarting Macoestro never kills an active Claude Code session.
+Deskestro runs as a menu-bar app (`LSUIElement`, no Dock icon) hosting a bespoke HTTP + JSON-RPC 2.0 server on a random loopback port. A resilient stdio bridge script translates MCP's stdio transport to HTTP, re-resolving the port and auth token automatically — so rebuilding or restarting Deskestro never kills an active Claude Code session.
 
 | Module | Responsibility |
 |---|---|
@@ -64,16 +80,22 @@ Macoestro runs as a menu-bar app (`LSUIElement`, no Dock icon) hosting a bespoke
 
 ## Requirements
 
-- macOS 14 (Sonoma) or later, Apple Silicon
-- Xcode 16 / Swift 5.10+ toolchain (to build from source; the recording tools need the macOS 15 SDK to compile and are runtime-gated to macOS 15+)
-- A code-signing identity (any Apple Development certificate works for personal use — see [Why signing matters](#why-signing-matters))
+**macOS:** macOS 14 Sonoma or later on Apple Silicon, plus Xcode 16 / Swift 5.10+ and a stable code-signing identity when building from source. Recording requires the macOS 15 SDK to compile and is runtime-gated to macOS 15+.
+
+**Windows:** Windows 10 or 11 and the .NET 9 SDK for source builds. The default publish command produces a self-contained x64 executable, so target machines do not need a separate .NET installation.
 
 ## Installation
 
-```bash
-git clone git@github.com:Kasempiternal/macoestro.git
-cd macoestro
+Clone once for either platform:
 
+```bash
+git clone https://github.com/Kasempiternal/deskestro.git
+cd deskestro
+```
+
+### macOS
+
+```bash
 # Full release: Developer ID sign + notarize + staple + DMG + install
 ./build.sh
 
@@ -84,7 +106,16 @@ cd macoestro
 ./build.sh --dev
 ```
 
-`build.sh` kills any running instance, builds, signs, installs to `/Applications/Macoestro.app`, deploys the bridge script to `~/.macoestro/`, and relaunches the app.
+`build.sh` kills any running instance, builds, signs, installs to `/Applications/Deskestro.app`, deploys the bridge script to `~/.deskestro/`, and relaunches the app.
+
+### Windows
+
+```powershell
+.\Windows\build.ps1
+.\Windows\smoke.ps1 -Server .\Windows\publish\win-x64\deskestro-windows.exe
+```
+
+Register `Windows\publish\win-x64\deskestro-windows.exe` directly as an MCP stdio server. Full configuration and the elevated interactive integration test are documented in [Windows/README.md](Windows/README.md).
 
 The default signing identity is set at the top of `build.sh`; override per-invocation with:
 
@@ -95,7 +126,7 @@ SIGN_ID='Apple Development: Your Name (TEAMID1234)' ./build.sh --skip-notarize
 For notarized release builds, store notarization credentials once (create an app-specific password at [appleid.apple.com](https://appleid.apple.com) first):
 
 ```bash
-xcrun notarytool store-credentials macoestro-notary \
+xcrun notarytool store-credentials deskestro-notary \
   --apple-id <your-apple-id> --team-id <your-team-id> --password <app-specific-password>
 ```
 
@@ -105,15 +136,15 @@ macOS TCC keys Accessibility and Screen Recording grants to the signing identity
 
 ## Setup
 
-**1. Grant permissions (one time).** On first launch Macoestro prompts for the two permissions it needs — grant them to **Macoestro.app** (not your terminal):
+**1. Grant permissions (one time).** On first launch Deskestro prompts for the two permissions it needs — grant them to **Deskestro.app** (not your terminal):
 
-- *System Settings → Privacy & Security → Accessibility → Macoestro*
-- *System Settings → Privacy & Security → Screen Recording → Macoestro*
+- *System Settings → Privacy & Security → Accessibility → Deskestro*
+- *System Settings → Privacy & Security → Screen Recording → Deskestro*
 
 **2. Register the MCP server with Claude Code.** Either user-scoped (available in all projects):
 
 ```bash
-claude mcp add --scope user macoestro -- ~/.macoestro/macoestro-mcp-bridge.sh
+claude mcp add --scope user deskestro -- ~/.deskestro/deskestro-mcp-bridge.sh
 ```
 
 …or per-project, by adding to the project's `.mcp.json`:
@@ -121,14 +152,22 @@ claude mcp add --scope user macoestro -- ~/.macoestro/macoestro-mcp-bridge.sh
 ```json
 {
   "mcpServers": {
-    "macoestro": {
-      "command": "/Users/<you>/.macoestro/macoestro-mcp-bridge.sh"
+    "deskestro": {
+      "command": "/Users/<you>/.deskestro/deskestro-mcp-bridge.sh"
     }
   }
 }
 ```
 
-**3. Verify.** Restart Claude Code; the tools appear as `mcp__macoestro__*`. Ask Claude to run `check_permissions` — it should report `"allGranted": true`. (Auto-start on login: *System Settings → General → Login Items → add Macoestro*.)
+**3. Verify.** Restart Claude Code; the tools appear as `mcp__deskestro__*`. Ask Claude to run `check_permissions` — it should report `"allGranted": true`. (Auto-start on login: *System Settings → General → Login Items → add Deskestro*.)
+
+## Migrating from v1
+
+Version 2.0 changes the product name, executable names, bundle identifier, MCP server names, and runtime directories. Existing installations are intentionally not deleted automatically.
+
+- On macOS, remove the old MCP registration, install `Deskestro.app`, grant Accessibility and Screen Recording again for the new `izotz.deskestro` bundle identifier, then register `deskestro` using `~/.deskestro/deskestro-mcp-bridge.sh`.
+- On Windows, update the MCP command to `deskestro-windows.exe`; saved flow files now live under `%LOCALAPPDATA%\Deskestro\flows`.
+- After confirming v2 works, the previous app and its legacy runtime directory can be removed manually. They are not read or overwritten by Deskestro.
 
 ## Quick start
 
@@ -206,7 +245,7 @@ The single intentionally focus-changing tool is `activate_app`; everything else 
 
 ## Security
 
-The HTTP server is pinned to **IPv4 loopback** (never `0.0.0.0`), so it is unreachable from the network. Every request must carry `Authorization: Bearer <token>`; the server generates a fresh 256-bit token per launch, writes it to `~/.macoestro/mcp-token` (mode `0600`, alongside `mcp-port`), and the bridge replays it on each call with automatic re-resolution after restarts. Bearer comparison is constant-time. Requests carrying an `Origin` header or a non-loopback `Host` are rejected (`403`) to defeat DNS rebinding from a browser. Request bodies are size-capped (16 MiB) and reads are deadline-bounded (slowloris protection).
+The HTTP server is pinned to **IPv4 loopback** (never `0.0.0.0`), so it is unreachable from the network. Every request must carry `Authorization: Bearer <token>`; the server generates a fresh 256-bit token per launch, writes it to `~/.deskestro/mcp-token` (mode `0600`, alongside `mcp-port`), and the bridge replays it on each call with automatic re-resolution after restarts. Bearer comparison is constant-time. Requests carrying an `Origin` header or a non-loopback `Host` are rejected (`403`) to defeat DNS rebinding from a browser. Request bodies are size-capped (16 MiB) and reads are deadline-bounded (slowloris protection).
 
 Destructive operations are opt-in: `reset_app_state` only deletes an app's sandbox container behind an explicit `wipeData: true` flag, and the clipboard tools warn that they touch system-wide state.
 
@@ -228,9 +267,9 @@ CI builds and tests every push on a macOS 15 runner (`.github/workflows/ci.yml`)
 
 | Symptom | Fix |
 |---|---|
-| Tools don't appear in Claude Code | Is Macoestro running (menu-bar icon)? Re-add the MCP server, restart Claude Code |
-| `Macoestro is not running` errors from the bridge | Launch `/Applications/Macoestro.app`; the bridge retries automatically on the next request |
-| `check_permissions` shows a missing grant | Re-grant in System Settings → Privacy & Security; make sure the grant is for **Macoestro.app**, not your terminal |
+| Tools don't appear in Claude Code | Is Deskestro running (menu-bar icon)? Re-add the MCP server, restart Claude Code |
+| `Deskestro is not running` errors from the bridge | Launch `/Applications/Deskestro.app`; the bridge retries automatically on the next request |
+| `check_permissions` shows a missing grant | Re-grant in System Settings → Privacy & Security; make sure the grant is for **Deskestro.app**, not your terminal |
 | Permissions reset after a rebuild | You built with `--dev` (ad-hoc). Use a real certificate so the Team ID stays stable |
 | `Signing identity not found` from `build.sh` | Pass your own: `SIGN_ID='Apple Development: …' ./build.sh --skip-notarize` |
 | Screenshot of a minimized window fails | By design — `restore_window` first |

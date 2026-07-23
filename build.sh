@@ -1,5 +1,5 @@
 #!/bin/bash
-# Macoestro build + sign + (optionally) notarize + install pipeline.
+# Deskestro build + sign + (optionally) notarize + install pipeline.
 # Usage:
 #   ./build.sh                 full release: Developer ID sign + notarize + staple + install
 #   ./build.sh --skip-notarize Developer ID sign, skip notarization (first-launch may Gatekeeper-prompt)
@@ -9,15 +9,15 @@ set -euo pipefail
 
 MODE="${1:-release}"
 SIGN_ID="${SIGN_ID:-Developer ID Application: Izotz Cristobal Mota (U4VYZ8CUN9)}"
-ENTITLEMENTS="Resources/Macoestro.entitlements"
-BUILD_DIR="build/Macoestro.app"
-NOTARY_PROFILE="${NOTARY_PROFILE:-macoestro-notary}"
+ENTITLEMENTS="Resources/Deskestro.entitlements"
+BUILD_DIR="build/Deskestro.app"
+NOTARY_PROFILE="${NOTARY_PROFILE:-deskestro-notary}"
 
 cd "$(dirname "$0")"
 
 # Marketing version straight from the bundle so the DMG name + volume match the app.
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist 2>/dev/null || echo 0.0.0)"
-DMG="build/Macoestro-${VERSION}.dmg"
+DMG="build/Deskestro-${VERSION}.dmg"
 
 say() { printf '\n\033[1;36m== %s ==\033[0m\n' "$*"; }
 die() { printf '\n\033[1;31m== ERROR: %s ==\033[0m\n' "$*" >&2; exit 1; }
@@ -33,21 +33,41 @@ $(security find-identity -v -p codesigning 2>/dev/null | sed 's/^/         /')
     fi
 fi
 
-say "Killing any running Macoestro"
-pkill -x Macoestro 2>/dev/null || true
+say "Killing any running Deskestro"
+pkill -x Deskestro 2>/dev/null || true
 
 say "Swift build (release, arm64)"
 swift build -c release --arch arm64
 
+say "Generating macOS app icon"
+ICON_SOURCE="Resources/DeskestroIcon.png"
+ICONSET="build/Deskestro.iconset"
+ICON_FILE="build/Deskestro.icns"
+rm -rf "$ICONSET" "$ICON_FILE"
+mkdir -p "$ICONSET"
+sips -z 16 16     "$ICON_SOURCE" --out "$ICONSET/icon_16x16.png" >/dev/null
+sips -z 32 32     "$ICON_SOURCE" --out "$ICONSET/icon_16x16@2x.png" >/dev/null
+sips -z 32 32     "$ICON_SOURCE" --out "$ICONSET/icon_32x32.png" >/dev/null
+sips -z 64 64     "$ICON_SOURCE" --out "$ICONSET/icon_32x32@2x.png" >/dev/null
+sips -z 128 128   "$ICON_SOURCE" --out "$ICONSET/icon_128x128.png" >/dev/null
+sips -z 256 256   "$ICON_SOURCE" --out "$ICONSET/icon_128x128@2x.png" >/dev/null
+sips -z 256 256   "$ICON_SOURCE" --out "$ICONSET/icon_256x256.png" >/dev/null
+sips -z 512 512   "$ICON_SOURCE" --out "$ICONSET/icon_256x256@2x.png" >/dev/null
+sips -z 512 512   "$ICON_SOURCE" --out "$ICONSET/icon_512x512.png" >/dev/null
+sips -z 1024 1024 "$ICON_SOURCE" --out "$ICONSET/icon_512x512@2x.png" >/dev/null
+iconutil -c icns "$ICONSET" -o "$ICON_FILE"
+rm -rf "$ICONSET"
+
 say "Assembling .app bundle"
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR/Contents/MacOS"
-cp .build/arm64-apple-macosx/release/Macoestro "$BUILD_DIR/Contents/MacOS/"
+cp .build/arm64-apple-macosx/release/Deskestro "$BUILD_DIR/Contents/MacOS/"
 cp Resources/Info.plist "$BUILD_DIR/Contents/"
 # Bundle the canonical bridge script (sealed by the signature below) so the app
-# itself can install/refresh ~/.macoestro/ — DMG installs never run this script.
+# itself can install/refresh ~/.deskestro/ — DMG installs never run this script.
 mkdir -p "$BUILD_DIR/Contents/Resources"
-cp Scripts/macoestro-mcp-bridge.sh "$BUILD_DIR/Contents/Resources/"
+cp Scripts/deskestro-mcp-bridge.sh "$BUILD_DIR/Contents/Resources/"
+cp "$ICON_FILE" "$BUILD_DIR/Contents/Resources/Deskestro.icns"
 
 case "$MODE" in
     --dev)
@@ -70,7 +90,7 @@ esac
 
 if [ "$MODE" = "release" ]; then
     say "Notarizing (this takes 1-3 min)"
-    ZIP="build/Macoestro.zip"
+    ZIP="build/Deskestro.zip"
     rm -f "$ZIP"
     ditto -c -k --keepParent "$BUILD_DIR" "$ZIP"
 
@@ -99,9 +119,9 @@ if [ "$MODE" != "--dev" ]; then
     STAGING="build/dmg-staging"
     rm -rf "$STAGING" "$DMG"
     mkdir -p "$STAGING"
-    cp -R "$BUILD_DIR" "$STAGING/Macoestro.app"
+    cp -R "$BUILD_DIR" "$STAGING/Deskestro.app"
     ln -s /Applications "$STAGING/Applications"     # drag-to-install target
-    hdiutil create -volname "Macoestro $VERSION" \
+    hdiutil create -volname "Deskestro $VERSION" \
         -srcfolder "$STAGING" -fs HFS+ -format UDZO -ov "$DMG" >/dev/null
     rm -rf "$STAGING"
 
@@ -121,28 +141,28 @@ if [ "$MODE" != "--dev" ]; then
 fi
 
 say "Installing to /Applications"
-rm -rf /Applications/Macoestro.app
+rm -rf /Applications/Deskestro.app
 cp -R "$BUILD_DIR" /Applications/
-xattr -cr /Applications/Macoestro.app
+xattr -cr /Applications/Deskestro.app
 
-say "Deploying resilient MCP bridge to ~/.macoestro/"
-mkdir -p ~/.macoestro
-chmod 700 ~/.macoestro
-cp Scripts/macoestro-mcp-bridge.sh ~/.macoestro/macoestro-mcp-bridge.sh
-chmod 700 ~/.macoestro/macoestro-mcp-bridge.sh
+say "Deploying resilient MCP bridge to ~/.deskestro/"
+mkdir -p ~/.deskestro
+chmod 700 ~/.deskestro
+cp Scripts/deskestro-mcp-bridge.sh ~/.deskestro/deskestro-mcp-bridge.sh
+chmod 700 ~/.deskestro/deskestro-mcp-bridge.sh
 
 say "Launching"
-# Launch by path, not `open -a Macoestro`: LaunchServices hasn't necessarily
+# Launch by path, not `open -a Deskestro`: LaunchServices hasn't necessarily
 # indexed the just-copied bundle by name yet, which makes `-a` fail on a fresh install.
-open "/Applications/Macoestro.app"
+open "/Applications/Deskestro.app"
 
 sleep 1
 say "Verification"
-codesign -dvv /Applications/Macoestro.app 2>&1 | grep -E "Identifier|TeamIdentifier|Authority|flags" || true
+codesign -dvv /Applications/Deskestro.app 2>&1 | grep -E "Identifier|TeamIdentifier|Authority|flags" || true
 if [ "$MODE" = "release" ]; then
-    spctl -a -vvv /Applications/Macoestro.app 2>&1 | head -5 || true
+    spctl -a -vvv /Applications/Deskestro.app 2>&1 | head -5 || true
 fi
-pgrep -fl Macoestro || echo "(not running — check Console for crash)"
+pgrep -fl Deskestro || echo "(not running — check Console for crash)"
 
 printf '\n\033[1;32mDone.\033[0m First launch: grant Accessibility + Screen Recording once; they persist forever with Team ID U4VYZ8CUN9.\n'
 if [ "$MODE" != "--dev" ] && [ -f "$DMG" ]; then

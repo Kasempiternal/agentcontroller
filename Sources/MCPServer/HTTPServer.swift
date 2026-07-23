@@ -84,7 +84,7 @@ public actor HTTPServer {
                 }
             }
 
-            listener.start(queue: DispatchQueue(label: "macoestro.http"))
+            listener.start(queue: DispatchQueue(label: "deskestro.http"))
         }
     }
 
@@ -103,7 +103,7 @@ public actor HTTPServer {
         authToken: String,
         expectedPort: UInt16
     ) async {
-        connection.start(queue: DispatchQueue(label: "macoestro.http.conn"))
+        connection.start(queue: DispatchQueue(label: "deskestro.http.conn"))
 
         let received = await receiveHTTPRequest(connection)
 

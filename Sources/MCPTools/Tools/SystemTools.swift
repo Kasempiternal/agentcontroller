@@ -7,7 +7,7 @@ struct SystemTools {
     static func register(in registry: ToolRegistry) {
         registry.register(.init(
             name: "check_permissions",
-            description: "Check if Macoestro has the required macOS permissions (Accessibility and Screen Recording)",
+            description: "Check if Deskestro has the required macOS permissions (Accessibility and Screen Recording)",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([:]),
@@ -20,8 +20,8 @@ struct SystemTools {
                     "screenRecording": .bool(sr),
                     "allGranted": .bool(ax && sr),
                     "instructions": .string(
-                        !ax ? "Grant Accessibility: System Settings > Privacy & Security > Accessibility > Enable Macoestro" :
-                        !sr ? "Grant Screen Recording: System Settings > Privacy & Security > Screen Recording > Enable Macoestro" :
+                        !ax ? "Grant Accessibility: System Settings > Privacy & Security > Accessibility > Enable Deskestro" :
+                        !sr ? "Grant Screen Recording: System Settings > Privacy & Security > Screen Recording > Enable Deskestro" :
                         "All permissions granted"
                     ),
                 ]))

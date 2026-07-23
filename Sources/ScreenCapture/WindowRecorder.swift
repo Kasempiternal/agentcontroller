@@ -18,11 +18,11 @@ public actor WindowRecorder {
 
     private init() {}
 
-    /// `~/Library/Application Support/Macoestro/recordings`
+    /// `~/Library/Application Support/Deskestro/recordings`
     public static var recordingsDirectory: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
-        return base.appendingPathComponent("Macoestro/recordings", isDirectory: true)
+        return base.appendingPathComponent("Deskestro/recordings", isDirectory: true)
     }
 
     public func isRecording() -> Bool { stream != nil }

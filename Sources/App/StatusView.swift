@@ -9,10 +9,10 @@ struct StatusView: View {
         VStack(spacing: 0) {
             // Header
             HStack {
-                Image(systemName: "network")
+                Image(systemName: "rectangle.3.group.bubble.left.fill")
                     .font(.title2)
                     .foregroundStyle(.teal)
-                Text("Macoestro")
+                Text("Deskestro")
                     .font(.title2.bold())
                 Spacer()
                 Text("v" + (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""))
@@ -128,7 +128,7 @@ struct StatusView: View {
                     .font(.caption.bold())
                     .foregroundStyle(.secondary)
                 HStack {
-                    Text("~/.macoestro/macoestro-mcp-bridge.sh")
+                    Text("~/.deskestro/deskestro-mcp-bridge.sh")
                         .font(.system(.caption, design: .monospaced))
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
@@ -181,7 +181,7 @@ struct StatusView: View {
         """
         {
           "mcpServers": {
-            "macoestro": {
+            "deskestro": {
               "command": "\(SetupManager.bridgeScript.path)"
             }
           }

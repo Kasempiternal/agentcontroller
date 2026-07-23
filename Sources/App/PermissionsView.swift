@@ -13,7 +13,7 @@ struct PermissionsView: View {
             Text("Permissions Required")
                 .font(.title2.bold())
 
-            Text("Macoestro needs these permissions to inspect and control macOS applications for AI agents.")
+            Text("Deskestro needs these permissions to inspect and control macOS applications for AI agents.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal)
@@ -36,7 +36,7 @@ struct PermissionsView: View {
                     isGranted: state.screenRecordingGranted,
                     action: {
                         // Mirror the Accessibility row: fire the real TCC request FIRST so
-                        // macOS registers Macoestro in the Screen Recording list. Without
+                        // macOS registers Deskestro in the Screen Recording list. Without
                         // this, the deep-linked pane just shows a list the app isn't in yet
                         // (the system only lists an app once it attempts a capture).
                         PermissionChecker.requestScreenRecording()

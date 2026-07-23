@@ -34,6 +34,6 @@ public enum FocusGuard {
         "You almost never need it: screenshot_window captures background and even hidden windows, and " +
         "click/type_text/navigate_menu/scroll are background-safe by default — retry without it. " +
         "Only if the app genuinely ignores background (PID-targeted) input should you ask the user to " +
-        "toggle Focus Guard off in the Macoestro menu-bar icon."
+        "toggle Focus Guard off in the Deskestro menu-bar icon."
     }
 }

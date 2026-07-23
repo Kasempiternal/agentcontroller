@@ -1,14 +1,14 @@
 #!/bin/bash
-# Macoestro MCP stdio-to-HTTP bridge
-# Reads JSON-RPC from stdin, POSTs to Macoestro's local HTTP server, echoes response.
-# Authenticates with a per-launch bearer token written by Macoestro at 0600.
-# Keeps the process alive even if Macoestro isn't running yet — retries on each request.
+# Deskestro MCP stdio-to-HTTP bridge
+# Reads JSON-RPC from stdin, POSTs to Deskestro's local HTTP server, echoes response.
+# Authenticates with a per-launch bearer token written by Deskestro at 0600.
+# Keeps the process alive even if Deskestro isn't running yet — retries on each request.
 # Every request is deadline-bounded (--max-time) so a hung server can never wedge the
 # loop, and error replies echo the request's own id so the client can correlate them
 # (an id-less error is uncorrelatable and leaves the client waiting until timeout).
 
-PORT_FILE="$HOME/.macoestro/mcp-port"
-TOKEN_FILE="$HOME/.macoestro/mcp-token"
+PORT_FILE="$HOME/.deskestro/mcp-port"
+TOKEN_FILE="$HOME/.deskestro/mcp-token"
 # Generous ceiling: the longest legitimate tool calls (wait_for_element, recordings)
 # finish well inside this. Without it, one hung request wedges the serial loop forever.
 MAX_TIME=180
@@ -48,16 +48,16 @@ while IFS= read -r line; do
     [ -z "$line" ] && continue
     REQ_ID=$(extract_id "$line")
 
-    # Re-resolve port if empty (previous failure or Macoestro not yet running).
+    # Re-resolve port if empty (previous failure or Deskestro not yet running).
     if [ -z "$PORT" ]; then
         PORT=$(resolve_port)
         [ -z "$PORT" ] && sleep 2 && PORT=$(resolve_port)
     fi
-    # Re-resolve token if empty (Macoestro restarted with a fresh token).
+    # Re-resolve token if empty (Deskestro restarted with a fresh token).
     [ -z "$TOKEN" ] && TOKEN=$(resolve_token)
 
     if [ -z "$PORT" ] || [ -z "$TOKEN" ]; then
-        emit_error "$REQ_ID" "Macoestro is not running. Launch the Macoestro menu bar app first."
+        emit_error "$REQ_ID" "Deskestro is not running. Launch the Deskestro menu bar app first."
         continue
     fi
 
@@ -81,12 +81,12 @@ while IFS= read -r line; do
     # curl 28 = deadline hit: the server accepted the connection but never
     # finished answering. Retrying immediately would just burn another deadline.
     if [ "$curl_rc" = "28" ]; then
-        emit_error "$REQ_ID" "Macoestro did not respond within ${MAX_TIME}s (server busy or hung on the target app)."
+        emit_error "$REQ_ID" "Deskestro did not respond within ${MAX_TIME}s (server busy or hung on the target app)."
         continue
     fi
 
     if [ "$http_code" = "000" ]; then
-        # Connection failed — Macoestro restarted on a new port. Re-resolve both and retry once.
+        # Connection failed — Deskestro restarted on a new port. Re-resolve both and retry once.
         PORT=$(resolve_port)
         TOKEN=$(resolve_token)
         if [ -n "$PORT" ] && [ -n "$TOKEN" ]; then
@@ -96,12 +96,12 @@ while IFS= read -r line; do
         fi
         if [ "$http_code" = "000" ]; then
             PORT=""
-            emit_error "$REQ_ID" "Cannot connect to Macoestro. Retrying on next request."
+            emit_error "$REQ_ID" "Cannot connect to Deskestro. Retrying on next request."
             continue
         fi
     fi
 
-    # 401 = stale token (Macoestro restarted with a fresh token). Re-read and retry once.
+    # 401 = stale token (Deskestro restarted with a fresh token). Re-read and retry once.
     if [ "$http_code" = "401" ]; then
         TOKEN=$(resolve_token)
         if [ -n "$TOKEN" ]; then
@@ -117,7 +117,7 @@ while IFS= read -r line; do
     # Non-200 bodies (401/403/413) are plain {"error": ...} JSON, not JSON-RPC —
     # wrap them so the client can parse and correlate the failure.
     if [ "$http_code" != "200" ]; then
-        emit_error "$REQ_ID" "Macoestro rejected the request (HTTP ${http_code})."
+        emit_error "$REQ_ID" "Deskestro rejected the request (HTTP ${http_code})."
         continue
     fi
 

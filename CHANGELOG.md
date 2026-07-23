@@ -1,8 +1,39 @@
 # Changelog
 
-All notable changes to Macoestro are documented here. The format follows
+All notable changes to Deskestro are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
+
+## [2.0.0] - 2026-07-23
+
+Deskestro becomes a cross-platform desktop automation project with one MCP
+contract across native macOS and Windows backends.
+
+### Added
+- Native Windows 10/11 server built with .NET 9, Windows UI Automation, and
+  Win32 APIs, including stable element handles, assertions, screenshots,
+  flows, window control, menus, clipboard, and background UIA interactions.
+- Foreground-gated Windows implementations for `double_click`, `right_click`,
+  `send_shortcut`, `swipe`, and `drag_drop`. Each requires `foreground:true`,
+  verifies foreground acquisition, and restores the previous focus and cursor.
+- Self-contained Windows publishing, protocol smoke coverage, a disposable UI
+  fixture, and end-to-end integration checks for all five raw-input tools.
+- A new cross-platform application icon for the macOS bundle, Windows
+  executable, and repository identity.
+
+### Changed
+- Renamed the application, packages, namespaces, binaries, bundle identifier,
+  MCP server names, scripts, runtime directories, documentation, and CI paths
+  to the Deskestro identity.
+- Versioned both native backends together at 2.0.0.
+- The repository documentation now leads with the shared platform contract and
+  calls out capability and security differences explicitly.
+
+### Compatibility
+- Both backends register all 49 tool names. Windows implements 46 natively and
+  returns truthful unsupported errors for app-state reset and video recording.
+- Existing installations and runtime data are not deleted during migration;
+  v2 uses new application IDs and directories and must be registered once.
 
 ## [1.5.0] - 2026-07-17
 
@@ -24,7 +55,7 @@ dead session) and a process-killing crash, and modernizes the MCP surface.
   bodies stream via `--data-binary @-` (ARG_MAX-proof), and non-200 responses
   are wrapped as proper JSON-RPC errors.
 - **DMG-install first run**: the app now bundles the canonical bridge script
-  (Contents/Resources) and installs/refreshes `~/.macoestro/` from it. The
+  (Contents/Resources) and installs/refreshes `~/.deskestro/` from it. The
   old embedded bootstrap sent no bearer token — DMG installs (which never run
   build.sh) got a 401 on every request.
 - **run_steps**: a step whose handler throws is recorded as a failed step;
@@ -86,7 +117,7 @@ re-opening the app more confusing than it should be.
   pane — but macOS doesn't list an app under Screen Recording until it actually
   *requests* capture, so the pane showed a list the app wasn't in yet. (Mirrors
   the Accessibility row, which already did this.)
-- **Re-opening a running Macoestro** from Spotlight / Finder / Launchpad now
+- **Re-opening a running Deskestro** from Spotlight / Finder / Launchpad now
   resurfaces the main window via `applicationShouldHandleReopen`. As an
   `LSUIElement` (no Dock icon), a re-launch previously looked like a no-op.
 
@@ -152,7 +183,7 @@ their cursor, or even seeing the app under test.
 
 ## [1.2.0] - 2026-06-01
 
-Turned Macoestro from an automation toy into a QA harness, and hardened the
+Turned Deskestro from an automation toy into a QA harness, and hardened the
 transport. Includes everything shipped since 1.0.0 (April performance and
 TCC-persistence work).
 
