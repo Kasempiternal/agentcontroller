@@ -4,6 +4,18 @@ All notable changes to AgentController are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.4.1] - 2026-07-30
+
+Full-surface verification on a physical iPhone 11 Pro Max (55/57 checks;
+the two failures were suite assumptions about the iOS 18 Settings layout,
+not tool defects).
+
+### Fixed
+- `device_action` with a numeric HID keycode on a physical device claimed
+  success while doing nothing (WebDriverAgent has no keycode support). It
+  now returns an honest error telling the caller to pass a character
+  string; `key-sequence` of only keycodes does the same.
+
 ## [2.4.0] - 2026-07-30
 
 The iOS backend drops Python from every hot path: simulator input and
