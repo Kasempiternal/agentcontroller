@@ -72,11 +72,13 @@ export class WDAClient {
     WDAClient.instances.delete(`${udid}:${port}`)
   }
 
-  private async request<T>(method: string, path: string, body?: Record<string, unknown>, _retried?: boolean): Promise<T> {
+  private async request<T>(method: string, path: string, body?: Record<string, unknown>, _retried?: boolean, timeoutMs: number = 30_000): Promise<T> {
     const url = `${this.baseUrl}${path}`
     const options: RequestInit = {
       method,
       headers: { 'Content-Type': 'application/json' },
+      // fetch has no default deadline; a wedged WDA must not hang a tool call forever.
+      signal: AbortSignal.timeout(timeoutMs),
     }
     if (body) options.body = JSON.stringify(body)
 
@@ -109,7 +111,9 @@ export class WDAClient {
 
   async isReachable(): Promise<boolean> {
     try {
-      const status = await this.request<WDAStatusResponse>('GET', '/status')
+      // Short deadline: this runs once per device during discovery, so an
+      // unreachable WDA must fail fast rather than stall the device list.
+      const status = await this.request<WDAStatusResponse>('GET', '/status', undefined, undefined, 3_000)
       return status.value?.ready === true
     } catch {
       return false

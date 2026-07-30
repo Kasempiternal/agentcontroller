@@ -62,9 +62,17 @@ const singleActionSchema = z.object({
   params: z.record(z.string(), z.unknown()).describe('Action-specific parameters'),
 })
 
+const DEFAULT_FRAME = { width: 393, height: 852 }
 const referenceFrameCache = new Map<string, Promise<{ width: number; height: number }>>()
 const BOOTED_UDID_CACHE_TTL_MS = 5_000
 let cachedBootedUdid: { value: string; expiresAtMs: number } | null = null
+
+// Width/height from a PNG's IHDR chunk: 8-byte signature, 4-byte chunk
+// length, the ASCII type "IHDR", then two big-endian u32 dimensions.
+function pngDimensions(header: Buffer): { width: number; height: number } | null {
+  if (header.length < 24 || header.readUInt32BE(12) !== 0x49484452) return null
+  return { width: header.readUInt32BE(16), height: header.readUInt32BE(20) }
+}
 
 async function resolveActionUdid(udid: string): Promise<string> {
   if (udid !== 'booted') return udid
@@ -175,29 +183,18 @@ For finding tappable elements specifically, prefer scan_ui instead.`,
     async ({ udid = 'booted', nested = false }) => {
       log('MCP', 'log', `describe_screen udid=${udid} nested=${nested}`)
       try {
-        const resolvedUdid = udid === 'booted' ? await resolveBootedUdid() : udid
+        const resolvedUdid = await resolveActionUdid(udid)
         const client = await getDeviceClient(resolvedUdid)
-        const raw = await client.describeAll(nested)
-
-        let screenWidth = 393, screenHeight = 852
-        try {
-          if (isPhysicalDeviceUdid(resolvedUdid)) {
-            const size = await (client as unknown as WDAClient).getWindowSize()
-            screenWidth = size.width
-            screenHeight = size.height
-          } else {
-            const axClient = AXScanClient.getInstance(resolvedUdid)
-            const size = await axClient.getScreenSize()
-            screenWidth = size.width
-            screenHeight = size.height
-          }
-        } catch { /* use defaults */ }
+        const [raw, frame] = await Promise.all([
+          client.describeAll(nested),
+          resolveReferenceFrame(resolvedUdid).catch(() => DEFAULT_FRAME),
+        ])
 
         const rawArray = Array.isArray(raw) ? raw : [raw]
-        const filtered = applyDescribeScreenFilters(rawArray as UIElement[], screenWidth, screenHeight)
+        const filtered = applyDescribeScreenFilters(rawArray as UIElement[], frame.width, frame.height)
 
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify(filtered, null, 2) }],
+          content: [{ type: 'text' as const, text: JSON.stringify(filtered) }],
         }
       } catch (error) {
         return {
@@ -303,7 +300,7 @@ Use describe_after to see the screen state after the action.`,
         if (descriptionResult) result.screen_description = descriptionResult
 
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+          content: [{ type: 'text' as const, text: JSON.stringify(result) }],
         }
       } catch (error) {
         return {
@@ -406,7 +403,7 @@ Use describe_after to see the screen state after all actions complete.`,
         if (descriptionResult) result.screen_description = descriptionResult
 
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+          content: [{ type: 'text' as const, text: JSON.stringify(result) }],
         }
       } catch (error) {
         return {
@@ -432,10 +429,12 @@ Use describe_after to see the screen state after all actions complete.`,
         const rawFile = path.join(os.tmpdir(), `agentcontroller-ios-screenshot-${timestamp}.png`)
         const resizedFile = path.join(os.tmpdir(), `agentcontroller-ios-screenshot-${timestamp}-sm.png`)
 
+        let header: Buffer
         if (isPhysicalDeviceUdid(udid)) {
           const client = await getDeviceClient(udid)
           const pngBuffer = await client.screenshot()
           await fs.writeFile(rawFile, pngBuffer)
+          header = pngBuffer.subarray(0, 24)
         } else {
           await new Promise<void>((resolve, reject) => {
             execFile('xcrun', ['simctl', 'io', udid, 'screenshot', '--type=png', rawFile], { env: childEnv(), timeout: 10000 }, (error) => {
@@ -443,34 +442,42 @@ Use describe_after to see the screen state after all actions complete.`,
               else resolve()
             })
           })
+          const fh = await fs.open(rawFile, 'r')
+          try {
+            header = Buffer.alloc(24)
+            await fh.read(header, 0, 24, 0)
+          } finally {
+            await fh.close()
+          }
         }
 
-        const sizeOutput = await new Promise<string>((resolve, reject) => {
-          execFile('sips', ['-g', 'pixelWidth', '-g', 'pixelHeight', rawFile], { timeout: 5000 }, (error, stdout) => {
-            if (error) reject(error)
-            else resolve(stdout)
+        // PNG dimensions come straight from the IHDR chunk, avoiding a sips
+        // process spawn just to ask for the size.
+        const dims = pngDimensions(header)
+        let imageFile = rawFile
+        if (dims) {
+          await new Promise<void>((resolve, reject) => {
+            execFile(
+              'sips',
+              [
+                '--resampleWidth', String(Math.round(dims.width / 3)),
+                '--resampleHeight', String(Math.round(dims.height / 3)),
+                rawFile, '--out', resizedFile,
+              ],
+              { timeout: 5000 },
+              (error) => {
+                if (error) reject(error)
+                else resolve()
+              }
+            )
           })
-        })
-        const widthMatch = sizeOutput.match(/pixelWidth:\s*(\d+)/)
-        const heightMatch = sizeOutput.match(/pixelHeight:\s*(\d+)/)
-        const targetWidth = Math.round(Number(widthMatch![1]) / 3)
-        const targetHeight = Math.round(Number(heightMatch![1]) / 3)
-        await new Promise<void>((resolve, reject) => {
-          execFile(
-            'sips',
-            ['--resampleWidth', String(targetWidth), '--resampleHeight', String(targetHeight), rawFile, '--out', resizedFile],
-            { timeout: 5000 },
-            (error) => {
-              if (error) reject(error)
-              else resolve()
-            }
-          )
-        })
+          imageFile = resizedFile
+        }
 
         return {
           content: [
             { type: 'text' as const, text: rawFile },
-            { type: 'image' as const, data: (await fs.readFile(resizedFile)).toString('base64'), mimeType: 'image/png' },
+            { type: 'image' as const, data: (await fs.readFile(imageFile)).toString('base64'), mimeType: 'image/png' },
           ],
         }
       } catch (error) {
@@ -510,34 +517,21 @@ For the complete element tree (all types), use describe_screen instead.`,
     async ({ region, query, udid = 'booted' }) => {
       log('MCP', 'log', `scan_ui region=${region} query=${query ?? '(none)'} udid=${udid}`)
       try {
-        const resolvedUdid = udid === 'booted' ? await resolveBootedUdid() : udid
+        const resolvedUdid = await resolveActionUdid(udid)
 
-        let rawElements: unknown[]
-        let screenWidth = 393, screenHeight = 852
+        const scan = isPhysicalDeviceUdid(resolvedUdid)
+          ? getDeviceClient(resolvedUdid).then(c => wdaScanGrid(c as unknown as WDAClient, region as ScanRegion))
+          : AXScanClient.getInstance(resolvedUdid).scan(region as ScanRegion)
+        const [rawElements, frame] = await Promise.all([
+          scan,
+          resolveReferenceFrame(resolvedUdid).catch(() => DEFAULT_FRAME),
+        ])
 
-        if (isPhysicalDeviceUdid(resolvedUdid)) {
-          const client = await getDeviceClient(resolvedUdid) as unknown as WDAClient
-          rawElements = await wdaScanGrid(client, region as ScanRegion)
-          try {
-            const size = await client.getWindowSize()
-            screenWidth = size.width
-            screenHeight = size.height
-          } catch { /* use defaults */ }
-        } else {
-          const client = AXScanClient.getInstance(resolvedUdid)
-          rawElements = await client.scan(region as ScanRegion)
-          try {
-            const size = await client.getScreenSize()
-            screenWidth = size.width
-            screenHeight = size.height
-          } catch { /* use defaults */ }
-        }
-
-        const { elements, warning } = applyScanUiFilters(rawElements as UIElement[], screenWidth, screenHeight, query)
+        const { elements, warning } = applyScanUiFilters(rawElements as UIElement[], frame.width, frame.height, query)
 
         const content: { type: 'text'; text: string }[] = []
         if (warning) content.push({ type: 'text' as const, text: `Warning: ${warning}` })
-        content.push({ type: 'text' as const, text: JSON.stringify(elements, null, 2) })
+        content.push({ type: 'text' as const, text: JSON.stringify(elements) })
 
         return { content }
       } catch (error) {
@@ -558,30 +552,33 @@ For the complete element tree (all types), use describe_screen instead.`,
     async () => {
       log('MCP', 'log', 'list_devices')
       try {
-        let simulators: { udid: string; name: string; state: string }[] = []
-        try {
-          const { stdout } = await new Promise<{ stdout: string }>((resolve, reject) => {
-            execFile('xcrun', ['simctl', 'list', 'devices', 'booted', '-j'], { timeout: 10000 }, (error, stdout) => {
-              if (error) reject(error)
-              else resolve({ stdout })
+        const listBooted = async () => {
+          const simulators: { udid: string; name: string; state: string }[] = []
+          try {
+            const { stdout } = await new Promise<{ stdout: string }>((resolve, reject) => {
+              execFile('xcrun', ['simctl', 'list', 'devices', 'booted', '-j'], { timeout: 10000 }, (error, stdout) => {
+                if (error) reject(error)
+                else resolve({ stdout })
+              })
             })
-          })
-          const data = JSON.parse(stdout)
-          for (const runtime of Object.values(data.devices) as { udid: string; name: string; state: string }[][]) {
-            for (const device of runtime) {
-              if (device.state === 'Booted') {
-                simulators.push({ udid: device.udid, name: device.name, state: device.state })
+            const data = JSON.parse(stdout)
+            for (const runtime of Object.values(data.devices) as { udid: string; name: string; state: string }[][]) {
+              for (const device of runtime) {
+                if (device.state === 'Booted') {
+                  simulators.push({ udid: device.udid, name: device.name, state: device.state })
+                }
               }
             }
+          } catch {
+            // simctl not available
           }
-        } catch {
-          // simctl not available
+          return simulators
         }
 
-        const physicalDevices = await listPhysicalDevices()
+        const [simulators, physicalDevices] = await Promise.all([listBooted(), listPhysicalDevices()])
 
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify({ simulators, physicalDevices }, null, 2) }],
+          content: [{ type: 'text' as const, text: JSON.stringify({ simulators, physicalDevices }) }],
         }
       } catch (error) {
         return {
@@ -626,7 +623,7 @@ Pass the returned udid to all subsequent tool calls.`,
                 udid: ctx.udid,
                 name: ctx.name,
                 screen_size: screenSize,
-              }, null, 2),
+              }),
             }],
           }
         }
@@ -649,7 +646,7 @@ Pass the returned udid to all subsequent tool calls.`,
                 connection_type: ctx.connectionType,
                 viewer_url: ctx.viewerUrl,
                 screen_size: screenSize,
-              }, null, 2),
+              }),
             }],
           }
         }
@@ -663,7 +660,7 @@ Pass the returned udid to all subsequent tool calls.`,
                 message: 'Multiple devices found. Ask the user which device to target.',
                 simulators: ctx.simulators,
                 physical_devices: ctx.physicalDevices,
-              }, null, 2),
+              }),
             }],
           }
         }
@@ -671,7 +668,7 @@ Pass the returned udid to all subsequent tool calls.`,
         return {
           content: [{
             type: 'text' as const,
-            text: JSON.stringify({ target: 'none', message: ctx.message }, null, 2),
+            text: JSON.stringify({ target: 'none', message: ctx.message }),
           }],
         }
       } catch (error) {
@@ -715,7 +712,7 @@ After setup completes, use the returned udid for all subsequent tool calls. Also
           return {
             content: [{
               type: 'text' as const,
-              text: JSON.stringify({ status: 'connected', udid, viewer_url: viewerUrl, screen_size: screenSize }, null, 2)
+              text: JSON.stringify({ status: 'connected', udid, viewer_url: viewerUrl, screen_size: screenSize })
                 + `\n\nIMPORTANT: Tell the user to open this URL to see the device screen: ${viewerUrl}`,
             }],
           }

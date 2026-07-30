@@ -64,8 +64,10 @@ async function listBootedSimulators(): Promise<SimulatorInfo[]> {
 }
 
 export async function detectExecutionContext(viewerPort: number): Promise<ExecutionContext> {
-  const simulators = await listBootedSimulators()
-  const physicalDevices = await listPhysicalDevices()
+  const [simulators, physicalDevices] = await Promise.all([
+    listBootedSimulators(),
+    listPhysicalDevices(),
+  ])
 
   log('ExecutionContext', 'log', `Found ${simulators.length} simulator(s), ${physicalDevices.length} physical device(s)`)
 
