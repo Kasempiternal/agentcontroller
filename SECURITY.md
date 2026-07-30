@@ -20,6 +20,9 @@ compromise of the user's session. It is worth being explicit about that:
   together allow reading and driving any application's UI and capturing the
   screen.
 - On Windows it drives UI Automation and synthesizes input with `SendInput`.
+- The iOS backend drives simulators via `idb`/`simctl` and physical iPhones
+  via WebDriverAgent, including tapping, typing, reading the UI tree, the
+  clipboard, and capturing the screen.
 - Screenshots and accessibility trees routinely contain whatever is on screen,
   including secrets. Treat tool output as sensitive.
 
@@ -43,6 +46,15 @@ These are deliberate properties of the current design, not accidents:
 The Windows backend speaks MCP over stdio and opens **no listening socket**, so
 the loopback and token considerations above are macOS-specific.
 
+The iOS backend speaks MCP over stdio. Its live-screen viewer binds
+**127.0.0.1 only**, because the stream is unauthenticated. Child processes are
+invoked with argument arrays (never shell strings) so caller-supplied device
+and bundle identifiers cannot inject commands. Note one boundary this backend
+cannot enforce: **WebDriverAgent listens unauthenticated on the phone (port
+8100) while running** — anyone who can reach that port can drive the device.
+Prefer USB connections and stop WDA when not testing; this is an upstream
+property of WebDriverAgent.
+
 ## Out of scope
 
 The following are known and accepted, and are not treated as vulnerabilities:
@@ -60,5 +72,5 @@ Only the latest release receives security fixes.
 
 | Version | Supported |
 |---|---|
-| 2.0.x | yes |
-| < 2.0 | no |
+| 2.1.x | yes |
+| < 2.1 | no |

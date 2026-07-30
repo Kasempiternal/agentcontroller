@@ -5,15 +5,15 @@
 </p>
 
 [![CI](https://github.com/Kasempiternal/agentcontroller/actions/workflows/ci.yml/badge.svg)](https://github.com/Kasempiternal/agentcontroller/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-2.0.0-blue)
-![Platform](https://img.shields.io/badge/platform-macOS%2014%2B%20%7C%20Windows%2010%2F11-lightgrey)
+![Version](https://img.shields.io/badge/version-2.1.0-blue)
+![Platform](https://img.shields.io/badge/platform-macOS%2014%2B%20%7C%20Windows%2010%2F11%20%7C%20iOS-lightgrey)
 ![Swift](https://img.shields.io/badge/swift-5.10-orange)
 ![.NET](https://img.shields.io/badge/.NET-9.0-512BD4)
 ![License](https://img.shields.io/badge/license-personal%20use-red)
 
-**Native desktop app QA automation for AI agents, exposed over MCP (Model Context Protocol).**
+**Native app QA automation for AI agents, exposed over MCP (Model Context Protocol).**
 
-AgentController lets Claude Code—or any MCP client—drive and *test* desktop applications on **macOS and Windows**. It exposes one portable automation vocabulary for clicking, typing, screenshots, menus, accessibility inspection, assertions, and replayable flows, backed by native platform APIs rather than a browser-only abstraction.
+AgentController lets Claude Code—or any MCP client—drive and *test* native applications on **macOS, Windows, and iOS** (simulators and physical iPhones). It exposes a portable automation vocabulary for clicking, typing, screenshots, menus, accessibility inspection, assertions, and replayable flows, backed by native platform APIs rather than a browser-only abstraction.
 
 Its defining feature is background-first automation. On macOS, every tool is background-safe by default. On Windows, UI Automation patterns run without moving the pointer, while the five raw-input gestures require explicit `foreground:true` authorization and restore the prior focus and cursor afterward.
 
@@ -23,8 +23,9 @@ Its defining feature is background-first automation. On macOS, every tool is bac
 |---|---|---|---|
 | macOS 14+ | Swift, AXUIElement, CGEvent, ScreenCaptureKit | Local HTTP through a resilient stdio bridge | Signed `.app` and `.dmg` |
 | Windows 10/11 | C#/.NET, UI Automation, Win32 `SendInput` | MCP stdio directly | Self-contained `.exe` |
+| iOS (simulator + iPhone) | TypeScript/Node, `idb`, native AX scanner, WebDriverAgent | MCP stdio directly (runs on the Mac) | `node dist/cli.js` |
 
-Both backends register the same 49-tool contract. Windows currently has 46 native implementations and returns explicit unsupported errors for `reset_app_state`, `start_recording`, and `stop_recording`; see the [Windows guide](Windows/README.md) for platform-specific behavior.
+The two desktop backends register the same 49-tool contract. Windows currently has 46 native implementations and returns explicit unsupported errors for `reset_app_state`, `start_recording`, and `stop_recording`; see the [Windows guide](Windows/README.md) for platform-specific behavior. The iOS backend registers its own 21-tool surface shaped for phones (gestures, hardware buttons, device lifecycle) rather than force-fitting the desktop vocabulary — see the [iOS guide](iOS/README.md).
 
 ---
 
@@ -47,7 +48,7 @@ Both backends register the same 49-tool contract. Windows currently has 46 nativ
 
 ## Highlights
 
-- **49 MCP tools** covering app control, AX inspection, input, assertions, screenshots, video recording, menus, clipboard, windows, and replayable flows — see the full [Tool Reference](docs/TOOLS.md).
+- **49 desktop MCP tools** covering app control, AX inspection, input, assertions, screenshots, video recording, menus, clipboard, windows, and replayable flows — see the full [Tool Reference](docs/TOOLS.md) — plus a **21-tool iOS backend** for simulators and physical iPhones ([iOS guide](iOS/README.md)).
 - **Background by default** — apps launch without activating, input is delivered per-process (`CGEvent.postToPid`) or via pure AX actions, menus are resolved by *reading* the AX tree, and screenshots read the window's own backing store (works even fully covered or hidden).
 - **Real assertions** — `assert_visible` / `assert_not_visible` / `assert_value` poll until satisfied and return MCP `isError` on failure, so an agent's control loop gets an unambiguous PASS/FAIL instead of parsing prose.
 - **Stable element handles** — `snapshot` returns a compact `[{id, role, label, enabled, frame}]` list; interaction tools accept `elementId` for O(1) reuse without re-searching.
@@ -249,7 +250,7 @@ The HTTP server is pinned to **IPv4 loopback** (never `0.0.0.0`), so it is unrea
 
 Destructive operations are opt-in: `reset_app_state` only deletes an app's sandbox container behind an explicit `wipeData: true` flag, and the clipboard tools warn that they touch system-wide state.
 
-The Windows backend speaks MCP over stdio and opens **no listening socket**, so the loopback and token considerations above do not apply to it. Automating an app means reading its contents, and screenshots capture whatever is on screen — see [SECURITY.md](SECURITY.md) for the full threat model, what is explicitly out of scope, and how to report a vulnerability privately.
+The Windows backend speaks MCP over stdio and opens **no listening socket**, so the loopback and token considerations above do not apply to it. The iOS backend is stdio too; its only listening socket is a loopback-pinned live-screen viewer, and WebDriverAgent's own unauthenticated port on the phone is called out honestly in the [iOS guide](iOS/README.md). Automating an app means reading its contents, and screenshots capture whatever is on screen — see [SECURITY.md](SECURITY.md) for the full threat model, what is explicitly out of scope, and how to report a vulnerability privately.
 
 ## Development
 
@@ -273,11 +274,13 @@ documents exactly that set with descriptions matching the source strings, and
 that every tool count quoted in prose is the real one. It needs only bash and
 grep — no Swift, no .NET, no running server.
 
-CI (`.github/workflows/ci.yml`) runs three jobs per push: the contract check plus
-`shellcheck` on Ubuntu for the fastest signal, the Swift build and tests on a
-macOS 15 runner with warnings as errors, and the .NET build plus MCP protocol
-smoke on Windows. `Windows/integration.ps1` drives real UI Automation and needs
-an interactive desktop, so it stays a local pre-release step.
+CI (`.github/workflows/ci.yml`) runs four jobs per push: the contract check plus
+`shellcheck` on Ubuntu for the fastest signal, the iOS backend's TypeScript
+typecheck and build (also Ubuntu — Node compiles anywhere even though the
+runtime needs a Mac), the Swift build and tests on a macOS 15 runner with
+warnings as errors, and the .NET build plus MCP protocol smoke on Windows.
+`Windows/integration.ps1` drives real UI Automation and needs an interactive
+desktop, so it stays a local pre-release step.
 
 ## Troubleshooting
 
