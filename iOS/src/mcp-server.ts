@@ -4,7 +4,7 @@ import { promises as fs, readFileSync } from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import { execFile, spawn, type ChildProcess } from 'node:child_process'
-import { resolveBootedUdid, getIDBClient } from './idb/idb-client.js'
+import { resolveBootedUdid, getIDBClient, bootSimulator, shutdownSimulator, listAllSimulators } from './idb/idb-client.js'
 import { AXScanClient } from './idb/ax-scan-client.js'
 import { getDeviceClient } from './device-client.js'
 import { isPhysicalDeviceUdid, type ButtonType, type ScanRegion, type UIElement } from './types.js'
@@ -34,7 +34,7 @@ const swipeParamsSchema = z.object({
 })
 
 const buttonParamsSchema = z.object({
-  button: z.enum(['HOME', 'LOCK', 'SIDE_BUTTON', 'APPLE_PAY', 'SIRI']).describe('Button to press'),
+  button: z.enum(['HOME', 'LOCK', 'SIDE_BUTTON', 'APPLE_PAY', 'SIRI', 'VOLUME_UP', 'VOLUME_DOWN']).describe('Button to press (VOLUME_* are physical-device only)'),
   duration: z.number().optional().describe('Press duration in seconds'),
 })
 
@@ -216,7 +216,7 @@ Actions available:
 - tap: Tap at coordinates { x, y, duration? }
 - double-tap: Two quick taps at coordinates { x, y }
 - swipe: Swipe gesture { fromX, fromY, toX, toY, duration?, delta? }
-- button: Press button { button: 'HOME'|'LOCK'|'SIDE_BUTTON'|'APPLE_PAY'|'SIRI', duration? }
+- button: Press button { button: 'HOME'|'LOCK'|'SIDE_BUTTON'|'APPLE_PAY'|'SIRI'|'VOLUME_UP'|'VOLUME_DOWN', duration? } (VOLUME_* physical devices only)
 - input-text: Type text { text }
 - key: Press key { key: number (HID keycode) | string (character), duration? }
 - key-sequence: Press key sequence { keySequence: (number|string)[] }
@@ -452,7 +452,7 @@ Use describe_after to see the screen state after all actions complete.`,
   server.registerTool(
     'get_screenshot',
     {
-      description: 'Capture a screenshot of the current iPhone screen. Returns the file path to a PNG image.',
+      description: 'Capture a screenshot of the current iPhone screen. Returns the file path to the full-resolution PNG and an inline downscaled preview.',
       annotations: { readOnlyHint: true },
       inputSchema: {
         udid: z.string().optional().describe('Device identifier (default: "booted")'),
@@ -463,7 +463,7 @@ Use describe_after to see the screen state after all actions complete.`,
       try {
         const timestamp = Date.now()
         const rawFile = path.join(os.tmpdir(), `agentcontroller-ios-screenshot-${timestamp}.png`)
-        const resizedFile = path.join(os.tmpdir(), `agentcontroller-ios-screenshot-${timestamp}-sm.png`)
+        const resizedFile = path.join(os.tmpdir(), `agentcontroller-ios-screenshot-${timestamp}-sm.jpg`)
 
         let header: Buffer
         if (isPhysicalDeviceUdid(udid)) {
@@ -488,9 +488,12 @@ Use describe_after to see the screen state after all actions complete.`,
         }
 
         // PNG dimensions come straight from the IHDR chunk, avoiding a sips
-        // process spawn just to ask for the size.
+        // process spawn just to ask for the size. The inline preview is a
+        // downscaled JPEG: screenshots are photographic enough that JPEG cuts
+        // the base64 payload ~4x versus PNG at no practical fidelity cost.
         const dims = pngDimensions(header)
         let imageFile = rawFile
+        let mimeType = 'image/png'
         if (dims) {
           await new Promise<void>((resolve, reject) => {
             execFile(
@@ -498,6 +501,8 @@ Use describe_after to see the screen state after all actions complete.`,
               [
                 '--resampleWidth', String(Math.round(dims.width / 3)),
                 '--resampleHeight', String(Math.round(dims.height / 3)),
+                '-s', 'format', 'jpeg',
+                '-s', 'formatOptions', '80',
                 rawFile, '--out', resizedFile,
               ],
               { timeout: 5000 },
@@ -508,12 +513,13 @@ Use describe_after to see the screen state after all actions complete.`,
             )
           })
           imageFile = resizedFile
+          mimeType = 'image/jpeg'
         }
 
         return {
           content: [
             { type: 'text' as const, text: rawFile },
-            { type: 'image' as const, data: (await fs.readFile(imageFile)).toString('base64'), mimeType: 'image/png' },
+            { type: 'image' as const, data: (await fs.readFile(imageFile)).toString('base64'), mimeType },
           ],
         }
       } catch (error) {
@@ -583,37 +589,17 @@ For the complete element tree (all types), use describe_screen instead.`,
   server.registerTool(
     'list_devices',
     {
-      description: 'List all available iPhones and simulators.',
+      description: 'List all available iPhones and simulators. Simulators include shutdown ones, which can be started with boot_simulator.',
       inputSchema: {},
       annotations: { readOnlyHint: true },
     },
     async () => {
       log('MCP', 'log', 'list_devices')
       try {
-        const listBooted = async () => {
-          const simulators: { udid: string; name: string; state: string }[] = []
-          try {
-            const { stdout } = await new Promise<{ stdout: string }>((resolve, reject) => {
-              execFile('xcrun', ['simctl', 'list', 'devices', 'booted', '-j'], { timeout: 10000 }, (error, stdout) => {
-                if (error) reject(error)
-                else resolve({ stdout })
-              })
-            })
-            const data = JSON.parse(stdout)
-            for (const runtime of Object.values(data.devices) as { udid: string; name: string; state: string }[][]) {
-              for (const device of runtime) {
-                if (device.state === 'Booted') {
-                  simulators.push({ udid: device.udid, name: device.name, state: device.state })
-                }
-              }
-            }
-          } catch {
-            // simctl not available
-          }
-          return simulators
-        }
-
-        const [simulators, physicalDevices] = await Promise.all([listBooted(), listPhysicalDevices()])
+        const [simulators, physicalDevices] = await Promise.all([
+          listAllSimulators().catch(() => []),
+          listPhysicalDevices(),
+        ])
 
         return {
           content: [{ type: 'text' as const, text: JSON.stringify({ simulators, physicalDevices }) }],
@@ -1112,6 +1098,8 @@ Use after taps or navigation instead of guessing fixed delays — it returns as 
       }
       try {
         await (await getDeviceClient(udid) as unknown as WDAClient).setOrientation(orientation)
+        // Rotation swaps width/height, so the cached reference frame is stale.
+        referenceFrameCache.delete(udid)
         return ok(`Orientation set to ${orientation}`)
       } catch (error) {
         return err(`Error setting orientation: ${error instanceof Error ? error.message : String(error)}`)
@@ -1191,6 +1179,464 @@ Use after taps or navigation instead of guessing fixed delays — it returns as 
         return ok(JSON.stringify({ recording: false, path: recording.path }))
       } catch (error) {
         return err(`Error stopping recording: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+  )
+
+  server.registerTool(
+    'tap_element',
+    {
+      description: `Find an element by text and tap the center of it in one call — scan_ui + tap combined. Matches element labels, titles, and values (case-insensitive).
+
+Prefer this over separate scan_ui and device_action calls when you know what you want to tap.`,
+      annotations: { readOnlyHint: false, destructiveHint: false },
+      inputSchema: {
+        query: z.string().describe('Text identifying the element to tap (e.g. "Add to Cart", "Settings")'),
+        region: z.enum(['full', 'top-half', 'bottom-half', 'top-left', 'top-right', 'bottom-left', 'bottom-right'])
+          .optional().describe('Screen region to search (default: "full")'),
+        udid: z.string().optional().describe('Device identifier (default: "booted")'),
+      },
+    },
+    async ({ query, region = 'full', udid = 'booted' }) => {
+      log('MCP', 'log', `tap_element query=${query} region=${region} udid=${udid}`)
+      try {
+        const resolvedUdid = await resolveActionUdid(udid)
+        const scan = isPhysicalDeviceUdid(resolvedUdid)
+          ? getDeviceClient(resolvedUdid).then(c => wdaScanGrid(c as unknown as WDAClient, region as ScanRegion))
+          : AXScanClient.getInstance(resolvedUdid).scan(region as ScanRegion)
+        const [rawElements, frame] = await Promise.all([
+          scan,
+          resolveReferenceFrame(resolvedUdid).catch(() => DEFAULT_FRAME),
+        ])
+
+        const matches = queryVisibleMatches(rawElements as UIElement[], frame.width, frame.height, query)
+        if (matches.length === 0) {
+          return err(`No visible element matching "${query}" found. Use scan_ui to see what is on screen, or scroll if the element may be off-screen.`)
+        }
+
+        const target = matches[0]
+        const f = target.frame ?? { x: 0, y: 0, width: 0, height: 0 }
+        const x = Math.round(f.x + f.width / 2)
+        const y = Math.round(f.y + f.height / 2)
+
+        await emitVisualizationForAction({
+          action: 'tap',
+          udid: resolvedUdid,
+          actionCommand: 'tap_element',
+          actionIndex: 0,
+          tap: { x, y },
+        })
+        const client = await getDeviceClient(resolvedUdid)
+        await client.tap(x, y)
+
+        return ok(JSON.stringify({
+          tapped: { x, y },
+          element: target,
+          other_matches: matches.length - 1,
+        }))
+      } catch (error) {
+        return err(`Error tapping element: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+  )
+
+  server.registerTool(
+    'read_alert',
+    {
+      description: 'Read the currently displayed system or app alert on a physical iPhone: its text and available buttons. Returns text: null when no alert is showing. Not supported on simulators (use describe_screen there).',
+      annotations: { readOnlyHint: true },
+      inputSchema: {
+        udid: z.string().describe('Physical device identifier'),
+      },
+    },
+    async ({ udid }) => {
+      log('MCP', 'log', `read_alert udid=${udid}`)
+      if (!isPhysicalDeviceUdid(udid)) {
+        return err('read_alert is only available on physical devices via WebDriverAgent; on simulators alerts appear in describe_screen output.')
+      }
+      try {
+        const alert = await (await getDeviceClient(udid) as unknown as WDAClient).getAlert()
+        return ok(JSON.stringify(alert))
+      } catch (error) {
+        return err(`Error reading alert: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+  )
+
+  server.registerTool(
+    'handle_alert',
+    {
+      description: 'Accept or dismiss the currently displayed alert on a physical iPhone, optionally by tapping a specific button label. Not supported on simulators (tap the alert button directly there).',
+      annotations: { readOnlyHint: false, destructiveHint: false },
+      inputSchema: {
+        action: z.enum(['accept', 'dismiss']).describe('accept taps the default/confirm button; dismiss taps cancel'),
+        buttonLabel: z.string().optional().describe('Tap this specific button label instead of the default'),
+        udid: z.string().describe('Physical device identifier'),
+      },
+    },
+    async ({ action, buttonLabel, udid }) => {
+      log('MCP', 'log', `handle_alert action=${action} udid=${udid}`)
+      if (!isPhysicalDeviceUdid(udid)) {
+        return err('handle_alert is only available on physical devices via WebDriverAgent; on simulators tap the alert button directly.')
+      }
+      try {
+        const client = await getDeviceClient(udid) as unknown as WDAClient
+        if (action === 'accept') await client.acceptAlert(buttonLabel)
+        else await client.dismissAlert(buttonLabel)
+        return ok(`Alert ${action}ed${buttonLabel ? ` via "${buttonLabel}"` : ''}`)
+      } catch (error) {
+        return err(`Error handling alert: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+  )
+
+  server.registerTool(
+    'dismiss_keyboard',
+    {
+      description: 'Dismiss the on-screen keyboard on a physical iPhone. Not supported on simulators (press the keyboard\'s return/done key instead).',
+      annotations: { readOnlyHint: false, destructiveHint: false },
+      inputSchema: {
+        udid: z.string().describe('Physical device identifier'),
+      },
+    },
+    async ({ udid }) => {
+      log('MCP', 'log', `dismiss_keyboard udid=${udid}`)
+      if (!isPhysicalDeviceUdid(udid)) {
+        return err('dismiss_keyboard is only available on physical devices via WebDriverAgent.')
+      }
+      try {
+        await (await getDeviceClient(udid) as unknown as WDAClient).dismissKeyboard()
+        return ok('Keyboard dismissed')
+      } catch (error) {
+        return err(`Error dismissing keyboard: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+  )
+
+  server.registerTool(
+    'lock_screen',
+    {
+      description: 'Lock the screen of a physical iPhone (like pressing the side button). Not supported on simulators.',
+      annotations: { readOnlyHint: false, destructiveHint: false },
+      inputSchema: {
+        udid: z.string().describe('Physical device identifier'),
+      },
+    },
+    async ({ udid }) => {
+      log('MCP', 'log', `lock_screen udid=${udid}`)
+      if (!isPhysicalDeviceUdid(udid)) {
+        return err('lock_screen is only available on physical devices via WebDriverAgent.')
+      }
+      try {
+        await (await getDeviceClient(udid) as unknown as WDAClient).lock()
+        return ok('Screen locked')
+      } catch (error) {
+        return err(`Error locking screen: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+  )
+
+  server.registerTool(
+    'unlock_screen',
+    {
+      description: 'Unlock the screen of a physical iPhone. Only works when the device has no passcode, or is passcode-unlocked but showing the lock screen.',
+      annotations: { readOnlyHint: false, destructiveHint: false },
+      inputSchema: {
+        udid: z.string().describe('Physical device identifier'),
+      },
+    },
+    async ({ udid }) => {
+      log('MCP', 'log', `unlock_screen udid=${udid}`)
+      if (!isPhysicalDeviceUdid(udid)) {
+        return err('unlock_screen is only available on physical devices via WebDriverAgent.')
+      }
+      try {
+        await (await getDeviceClient(udid) as unknown as WDAClient).unlock()
+        return ok('Screen unlocked')
+      } catch (error) {
+        return err(`Error unlocking screen: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+  )
+
+  server.registerTool(
+    'get_device_info',
+    {
+      description: `Get device details. Physical iPhones report model, OS, battery level and charging state, thermal state, lock state, and the currently active app. Simulators report name, runtime, state, and light/dark appearance.`,
+      annotations: { readOnlyHint: true },
+      inputSchema: {
+        udid: z.string().optional().describe('Device identifier (default: "booted")'),
+      },
+    },
+    async ({ udid = 'booted' }) => {
+      log('MCP', 'log', `get_device_info udid=${udid}`)
+      try {
+        if (isPhysicalDeviceUdid(udid)) {
+          const client = await getDeviceClient(udid) as unknown as WDAClient
+          const [device, battery, locked, activeApp] = await Promise.all([
+            client.getDeviceInfo().catch(() => null),
+            client.getBatteryInfo().catch(() => null),
+            client.isLocked().catch(() => null),
+            client.getActiveAppInfo().catch(() => null),
+          ])
+          const batteryStates = ['unknown', 'unplugged', 'charging', 'full']
+          return ok(JSON.stringify({
+            target: 'device',
+            udid,
+            device,
+            battery: battery ? { level: battery.level, state: batteryStates[battery.state] ?? battery.state } : null,
+            locked,
+            active_app: activeApp,
+          }))
+        }
+
+        const resolvedUdid = await resolveActionUdid(udid)
+        const [simulators, appearance, contentSize] = await Promise.all([
+          listAllSimulators(),
+          getIDBClient(resolvedUdid).getAppearance().catch(() => null),
+          getIDBClient(resolvedUdid).getContentSize().catch(() => null),
+        ])
+        const sim = simulators.find(s => s.udid === resolvedUdid)
+        if (!sim) return err(`Simulator ${resolvedUdid} not found.`)
+        return ok(JSON.stringify({ target: 'simulator', ...sim, appearance, content_size: contentSize }))
+      } catch (error) {
+        return err(`Error getting device info: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+  )
+
+  server.registerTool(
+    'send_push',
+    {
+      description: `Send a simulated push notification to an app on an iOS simulator. The payload is a full APNS dictionary, e.g. {"aps":{"alert":{"title":"Hi","body":"There"},"badge":1,"sound":"default"}}. Not supported on physical devices.`,
+      annotations: { readOnlyHint: false, destructiveHint: false },
+      inputSchema: {
+        bundleId: z.string().describe('Bundle ID of the app to receive the notification'),
+        payload: z.record(z.string(), z.unknown()).describe('APNS payload object; must contain an "aps" key'),
+        udid: z.string().optional().describe('Simulator identifier (default: "booted")'),
+      },
+    },
+    async ({ bundleId, payload, udid = 'booted' }) => {
+      log('MCP', 'log', `send_push bundleId=${bundleId} udid=${udid}`)
+      if (isPhysicalDeviceUdid(udid)) {
+        return err('send_push is not supported on physical devices; simctl can only inject notifications into simulators.')
+      }
+      if (!('aps' in payload)) {
+        return err('The payload must contain an "aps" key, e.g. {"aps":{"alert":"Hello"}}.')
+      }
+      try {
+        await getIDBClient(udid).sendPush(bundleId, payload)
+        return ok(`Push notification delivered to ${bundleId}`)
+      } catch (error) {
+        return err(`Error sending push: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+  )
+
+  server.registerTool(
+    'set_location',
+    {
+      description: 'Set (or clear) the simulated GPS location of an iOS simulator. Not supported on physical devices.',
+      annotations: { readOnlyHint: false, destructiveHint: false },
+      inputSchema: {
+        latitude: z.number().optional().describe('Latitude in decimal degrees'),
+        longitude: z.number().optional().describe('Longitude in decimal degrees'),
+        clear: z.boolean().optional().describe('Clear the simulated location instead of setting one'),
+        udid: z.string().optional().describe('Simulator identifier (default: "booted")'),
+      },
+    },
+    async ({ latitude, longitude, clear, udid = 'booted' }) => {
+      log('MCP', 'log', `set_location lat=${latitude} lon=${longitude} clear=${clear} udid=${udid}`)
+      if (isPhysicalDeviceUdid(udid)) {
+        return err('set_location is not supported on physical devices; simctl can only simulate location on simulators.')
+      }
+      try {
+        if (clear) {
+          await getIDBClient(udid).clearLocation()
+          return ok('Simulated location cleared')
+        }
+        if (latitude === undefined || longitude === undefined) {
+          return err('Provide latitude and longitude, or clear: true.')
+        }
+        await getIDBClient(udid).setLocation(latitude, longitude)
+        return ok(`Location set to (${latitude}, ${longitude})`)
+      } catch (error) {
+        return err(`Error setting location: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+  )
+
+  server.registerTool(
+    'set_permission',
+    {
+      description: `Grant, revoke, or reset a privacy permission for an app on an iOS simulator — bypasses the permission prompt entirely. Not supported on physical devices.
+
+Services: all, calendar, contacts, contacts-limited, location, location-always, media-library, microphone, motion, photos, photos-add, reminders, siri.`,
+      annotations: { readOnlyHint: false, destructiveHint: true },
+      inputSchema: {
+        action: z.enum(['grant', 'revoke', 'reset']).describe('What to do with the permission'),
+        service: z.enum(['all', 'calendar', 'contacts', 'contacts-limited', 'location', 'location-always', 'media-library', 'microphone', 'motion', 'photos', 'photos-add', 'reminders', 'siri'])
+          .describe('The privacy service to modify'),
+        bundleId: z.string().optional().describe('App bundle ID (omit to affect all apps, only valid with reset)'),
+        udid: z.string().optional().describe('Simulator identifier (default: "booted")'),
+      },
+    },
+    async ({ action, service, bundleId, udid = 'booted' }) => {
+      log('MCP', 'log', `set_permission action=${action} service=${service} bundleId=${bundleId} udid=${udid}`)
+      if (isPhysicalDeviceUdid(udid)) {
+        return err('set_permission is not supported on physical devices; simctl privacy only works on simulators.')
+      }
+      try {
+        await getIDBClient(udid).setPermission(action, service, bundleId)
+        return ok(`Permission ${service}: ${action}${bundleId ? ` for ${bundleId}` : ''}`)
+      } catch (error) {
+        return err(`Error setting permission: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+  )
+
+  server.registerTool(
+    'set_appearance',
+    {
+      description: 'Switch an iOS simulator between light and dark appearance. Not supported on physical devices.',
+      annotations: { readOnlyHint: false, destructiveHint: false },
+      inputSchema: {
+        appearance: z.enum(['light', 'dark']).describe('Target appearance'),
+        udid: z.string().optional().describe('Simulator identifier (default: "booted")'),
+      },
+    },
+    async ({ appearance, udid = 'booted' }) => {
+      log('MCP', 'log', `set_appearance appearance=${appearance} udid=${udid}`)
+      if (isPhysicalDeviceUdid(udid)) {
+        return err('set_appearance is not supported on physical devices; simctl ui only works on simulators.')
+      }
+      try {
+        await getIDBClient(udid).setAppearance(appearance)
+        return ok(`Appearance set to ${appearance}`)
+      } catch (error) {
+        return err(`Error setting appearance: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+  )
+
+  server.registerTool(
+    'set_status_bar',
+    {
+      description: 'Override the status bar of an iOS simulator (time, battery, network) — useful for clean screenshots. Pass clear: true to remove all overrides. Not supported on physical devices.',
+      annotations: { readOnlyHint: false, destructiveHint: false },
+      inputSchema: {
+        time: z.string().optional().describe('Time string to display, e.g. "9:41"'),
+        batteryLevel: z.number().optional().describe('Battery percentage 0-100'),
+        batteryState: z.enum(['charging', 'charged', 'discharging']).optional().describe('Battery state'),
+        operatorName: z.string().optional().describe('Carrier name to display'),
+        dataNetwork: z.enum(['wifi', '3g', '4g', 'lte', 'lte-a', 'lte+', '5g', '5g+', '5g-uwb', '5g-uc']).optional().describe('Data network indicator'),
+        wifiBars: z.number().optional().describe('Wi-Fi signal bars 0-3'),
+        cellularBars: z.number().optional().describe('Cellular signal bars 0-4'),
+        clear: z.boolean().optional().describe('Remove all status bar overrides'),
+        udid: z.string().optional().describe('Simulator identifier (default: "booted")'),
+      },
+    },
+    async ({ time, batteryLevel, batteryState, operatorName, dataNetwork, wifiBars, cellularBars, clear, udid = 'booted' }) => {
+      log('MCP', 'log', `set_status_bar udid=${udid} clear=${clear}`)
+      if (isPhysicalDeviceUdid(udid)) {
+        return err('set_status_bar is not supported on physical devices; simctl status_bar only works on simulators.')
+      }
+      try {
+        if (clear) {
+          await getIDBClient(udid).clearStatusBar()
+          return ok('Status bar overrides cleared')
+        }
+        const overrides: string[] = []
+        if (time !== undefined) overrides.push('--time', time)
+        if (batteryLevel !== undefined) overrides.push('--batteryLevel', String(batteryLevel))
+        if (batteryState !== undefined) overrides.push('--batteryState', batteryState)
+        if (operatorName !== undefined) overrides.push('--operatorName', operatorName)
+        if (dataNetwork !== undefined) overrides.push('--dataNetwork', dataNetwork)
+        if (wifiBars !== undefined) overrides.push('--wifiMode', 'active', '--wifiBars', String(wifiBars))
+        if (cellularBars !== undefined) overrides.push('--cellularMode', 'active', '--cellularBars', String(cellularBars))
+        if (overrides.length === 0) {
+          return err('Provide at least one override (time, batteryLevel, ...) or clear: true.')
+        }
+        await getIDBClient(udid).setStatusBar(overrides)
+        return ok('Status bar overridden')
+      } catch (error) {
+        return err(`Error setting status bar: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+  )
+
+  server.registerTool(
+    'set_content_size',
+    {
+      description: 'Set the Dynamic Type content size of an iOS simulator — essential for accessibility/text-scaling QA. An oversized setting also shrinks how much fits on screen, which affects what scan_ui can find. Not supported on physical devices.',
+      annotations: { readOnlyHint: false, destructiveHint: false },
+      inputSchema: {
+        size: z.enum([
+          'extra-small', 'small', 'medium', 'large', 'extra-large', 'extra-extra-large', 'extra-extra-extra-large',
+          'accessibility-medium', 'accessibility-large', 'accessibility-extra-large', 'accessibility-extra-extra-large', 'accessibility-extra-extra-extra-large',
+        ]).describe('Dynamic Type size ("large" is the iOS default)'),
+        udid: z.string().optional().describe('Simulator identifier (default: "booted")'),
+      },
+    },
+    async ({ size, udid = 'booted' }) => {
+      log('MCP', 'log', `set_content_size size=${size} udid=${udid}`)
+      if (isPhysicalDeviceUdid(udid)) {
+        return err('set_content_size is not supported on physical devices; simctl ui only works on simulators.')
+      }
+      try {
+        await getIDBClient(udid).setContentSize(size)
+        return ok(`Content size set to ${size}`)
+      } catch (error) {
+        return err(`Error setting content size: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+  )
+
+  server.registerTool(
+    'boot_simulator',
+    {
+      description: 'Boot a shutdown iOS simulator by UDID and wait until it finishes booting. Get UDIDs from list_devices. The simulator runs headless; all tools work against it without the Simulator app being open.',
+      annotations: { readOnlyHint: false, destructiveHint: false },
+      inputSchema: {
+        udid: z.string().describe('Simulator UDID to boot'),
+      },
+    },
+    async ({ udid }) => {
+      log('MCP', 'log', `boot_simulator udid=${udid}`)
+      if (isPhysicalDeviceUdid(udid)) {
+        return err('boot_simulator only boots simulators; physical devices boot themselves.')
+      }
+      try {
+        await bootSimulator(udid)
+        return ok(`Simulator ${udid} booted`)
+      } catch (error) {
+        return err(`Error booting simulator: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+  )
+
+  server.registerTool(
+    'shutdown_simulator',
+    {
+      description: 'Shut down a running iOS simulator by UDID, closing all its apps.',
+      annotations: { readOnlyHint: false, destructiveHint: true },
+      inputSchema: {
+        udid: z.string().describe('Simulator UDID to shut down'),
+      },
+    },
+    async ({ udid }) => {
+      log('MCP', 'log', `shutdown_simulator udid=${udid}`)
+      if (isPhysicalDeviceUdid(udid)) {
+        return err('shutdown_simulator only shuts down simulators.')
+      }
+      try {
+        await shutdownSimulator(udid)
+        // The booted-udid cache may now point at a dead simulator.
+        cachedBootedUdid = null
+        referenceFrameCache.delete(udid)
+        return ok(`Simulator ${udid} shut down`)
+      } catch (error) {
+        return err(`Error shutting down simulator: ${error instanceof Error ? error.message : String(error)}`)
       }
     }
   )

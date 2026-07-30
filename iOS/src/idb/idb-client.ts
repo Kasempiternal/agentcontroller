@@ -1,19 +1,24 @@
-import { spawn, type ChildProcess, exec, execFile } from 'child_process'
+import { spawn, type ChildProcess, execFile } from 'child_process'
 import { promisify } from 'util'
 import { join } from 'path'
 import { tmpdir } from 'os'
+import { writeFile, unlink } from 'fs/promises'
 import { log } from '../logger.js'
 import { childEnv } from '../child-env.js'
 import { resolveRuntimeFile } from '../paths.js'
+import type { ButtonType } from '../types.js'
 
-const execAsync = promisify(exec)
 const execFileAsync = promisify(execFile)
+
+// Every simctl call gets a deadline: a wedged CoreSimulator must surface as a
+// tool error, not an MCP call that hangs forever.
+const SIMCTL_TIMEOUT_MS = 15_000
 
 const IDB_PATH = resolveRuntimeFile('python', 'bin', 'idb') ?? 'idb'
 const IDB_COMPANION_PATH = resolveRuntimeFile('idb-companion', 'bin', 'idb_companion')
 
 export async function resolveBootedUdid(): Promise<string> {
-  const { stdout } = await execAsync('xcrun simctl list devices booted -j')
+  const { stdout } = await execFileAsync('xcrun', ['simctl', 'list', 'devices', 'booted', '-j'], { env: childEnv(), timeout: SIMCTL_TIMEOUT_MS })
   const data = JSON.parse(stdout)
   for (const runtime of Object.values(data.devices) as { udid: string; state: string }[][]) {
     for (const device of runtime) {
@@ -181,7 +186,10 @@ export class IDBClient {
     await this.runInShell(args)
   }
 
-  async pressButton(button: 'HOME' | 'LOCK' | 'SIDE_BUTTON' | 'APPLE_PAY' | 'SIRI', duration?: number): Promise<void> {
+  async pressButton(button: ButtonType, duration?: number): Promise<void> {
+    if (button === 'VOLUME_UP' || button === 'VOLUME_DOWN') {
+      throw new Error(`${button} is only supported on physical devices via WebDriverAgent; simulators have no hardware volume buttons idb can press.`)
+    }
     let args = `ui button ${button}`
     if (duration !== undefined) args += ` --duration ${duration}`
     args += ' --json'
@@ -241,12 +249,11 @@ export class IDBClient {
   async screenshot(): Promise<Buffer> {
     const resolvedUdid = await this.getResolvedUdid()
     const filePath = join(tmpdir(), `agentcontroller-idb-screenshot-${Date.now()}.png`)
-    const execFileAsync = promisify(execFile)
     await execFileAsync('xcrun', ['simctl', 'io', resolvedUdid, 'screenshot', '--type=png', filePath], {
       env: childEnv(),
-      timeout: 10000,
+      timeout: SIMCTL_TIMEOUT_MS,
     })
-    const { readFile, unlink } = await import('fs/promises')
+    const { readFile } = await import('fs/promises')
     const buffer = await readFile(filePath)
     await unlink(filePath).catch(() => {})
     return buffer
@@ -254,38 +261,38 @@ export class IDBClient {
 
   async listApps(): Promise<{ bundleId: string; name: string; type: 'System' | 'User' }[]> {
     const resolvedUdid = await this.getResolvedUdid()
-    const { stdout } = await execFileAsync('xcrun', ['simctl', 'listapps', resolvedUdid], { env: childEnv() })
+    const { stdout } = await execFileAsync('xcrun', ['simctl', 'listapps', resolvedUdid], { env: childEnv(), timeout: SIMCTL_TIMEOUT_MS })
     return parseSimctlAppList(stdout)
   }
 
   async launch(bundleId: string): Promise<void> {
     const resolvedUdid = await this.getResolvedUdid()
-    await execFileAsync('xcrun', ['simctl', 'launch', resolvedUdid, bundleId], { env: childEnv() })
+    await execFileAsync('xcrun', ['simctl', 'launch', resolvedUdid, bundleId], { env: childEnv(), timeout: SIMCTL_TIMEOUT_MS })
   }
 
   async terminateApp(bundleId: string): Promise<void> {
     const resolvedUdid = await this.getResolvedUdid()
-    await execFileAsync('xcrun', ['simctl', 'terminate', resolvedUdid, bundleId], { env: childEnv() })
+    await execFileAsync('xcrun', ['simctl', 'terminate', resolvedUdid, bundleId], { env: childEnv(), timeout: SIMCTL_TIMEOUT_MS })
   }
 
   async openUrl(url: string): Promise<void> {
     const resolvedUdid = await this.getResolvedUdid()
-    await execFileAsync('xcrun', ['simctl', 'openurl', resolvedUdid, url], { env: childEnv() })
+    await execFileAsync('xcrun', ['simctl', 'openurl', resolvedUdid, url], { env: childEnv(), timeout: SIMCTL_TIMEOUT_MS })
   }
 
   async installApp(appPath: string): Promise<void> {
     const resolvedUdid = await this.getResolvedUdid()
-    await execFileAsync('xcrun', ['simctl', 'install', resolvedUdid, appPath], { env: childEnv() })
+    await execFileAsync('xcrun', ['simctl', 'install', resolvedUdid, appPath], { env: childEnv(), timeout: SIMCTL_TIMEOUT_MS })
   }
 
   async uninstallApp(bundleId: string): Promise<void> {
     const resolvedUdid = await this.getResolvedUdid()
-    await execFileAsync('xcrun', ['simctl', 'uninstall', resolvedUdid, bundleId], { env: childEnv() })
+    await execFileAsync('xcrun', ['simctl', 'uninstall', resolvedUdid, bundleId], { env: childEnv(), timeout: SIMCTL_TIMEOUT_MS })
   }
 
   async getClipboard(): Promise<string> {
     const resolvedUdid = await this.getResolvedUdid()
-    const { stdout } = await execFileAsync('xcrun', ['simctl', 'pbpaste', resolvedUdid], { env: childEnv() })
+    const { stdout } = await execFileAsync('xcrun', ['simctl', 'pbpaste', resolvedUdid], { env: childEnv(), timeout: SIMCTL_TIMEOUT_MS })
     return stdout
   }
 
@@ -304,6 +311,93 @@ export class IDBClient {
       proc.stdin?.end(content)
     })
   }
+
+  async sendPush(bundleId: string, payload: Record<string, unknown>): Promise<void> {
+    const resolvedUdid = await this.getResolvedUdid()
+    // simctl push wants the APNS payload as a file on disk.
+    const payloadPath = join(tmpdir(), `agentcontroller-push-${Date.now()}.json`)
+    await writeFile(payloadPath, JSON.stringify(payload))
+    try {
+      await execFileAsync('xcrun', ['simctl', 'push', resolvedUdid, bundleId, payloadPath], { env: childEnv(), timeout: SIMCTL_TIMEOUT_MS })
+    } finally {
+      await unlink(payloadPath).catch(() => {})
+    }
+  }
+
+  async setLocation(latitude: number, longitude: number): Promise<void> {
+    const resolvedUdid = await this.getResolvedUdid()
+    await execFileAsync('xcrun', ['simctl', 'location', resolvedUdid, 'set', `${latitude},${longitude}`], { env: childEnv(), timeout: SIMCTL_TIMEOUT_MS })
+  }
+
+  async clearLocation(): Promise<void> {
+    const resolvedUdid = await this.getResolvedUdid()
+    await execFileAsync('xcrun', ['simctl', 'location', resolvedUdid, 'clear'], { env: childEnv(), timeout: SIMCTL_TIMEOUT_MS })
+  }
+
+  async setPermission(action: 'grant' | 'revoke' | 'reset', service: string, bundleId?: string): Promise<void> {
+    const resolvedUdid = await this.getResolvedUdid()
+    const args = ['simctl', 'privacy', resolvedUdid, action, service]
+    if (bundleId) args.push(bundleId)
+    await execFileAsync('xcrun', args, { env: childEnv(), timeout: SIMCTL_TIMEOUT_MS })
+  }
+
+  async setAppearance(appearance: 'light' | 'dark'): Promise<void> {
+    const resolvedUdid = await this.getResolvedUdid()
+    await execFileAsync('xcrun', ['simctl', 'ui', resolvedUdid, 'appearance', appearance], { env: childEnv(), timeout: SIMCTL_TIMEOUT_MS })
+  }
+
+  async getAppearance(): Promise<string> {
+    const resolvedUdid = await this.getResolvedUdid()
+    const { stdout } = await execFileAsync('xcrun', ['simctl', 'ui', resolvedUdid, 'appearance'], { env: childEnv(), timeout: SIMCTL_TIMEOUT_MS })
+    return stdout.trim()
+  }
+
+  async setContentSize(size: string): Promise<void> {
+    const resolvedUdid = await this.getResolvedUdid()
+    await execFileAsync('xcrun', ['simctl', 'ui', resolvedUdid, 'content_size', size], { env: childEnv(), timeout: SIMCTL_TIMEOUT_MS })
+  }
+
+  async getContentSize(): Promise<string> {
+    const resolvedUdid = await this.getResolvedUdid()
+    const { stdout } = await execFileAsync('xcrun', ['simctl', 'ui', resolvedUdid, 'content_size'], { env: childEnv(), timeout: SIMCTL_TIMEOUT_MS })
+    return stdout.trim()
+  }
+
+  async setStatusBar(overrides: string[]): Promise<void> {
+    const resolvedUdid = await this.getResolvedUdid()
+    await execFileAsync('xcrun', ['simctl', 'status_bar', resolvedUdid, 'override', ...overrides], { env: childEnv(), timeout: SIMCTL_TIMEOUT_MS })
+  }
+
+  async clearStatusBar(): Promise<void> {
+    const resolvedUdid = await this.getResolvedUdid()
+    await execFileAsync('xcrun', ['simctl', 'status_bar', resolvedUdid, 'clear'], { env: childEnv(), timeout: SIMCTL_TIMEOUT_MS })
+  }
+}
+
+// Simulator lifecycle is device-level, not client-level: booting can't go
+// through an IDBClient instance because the target isn't running yet.
+export async function bootSimulator(udid: string): Promise<void> {
+  await execFileAsync('xcrun', ['simctl', 'boot', udid], { env: childEnv(), timeout: SIMCTL_TIMEOUT_MS })
+  // bootstatus -b blocks until the simulator finishes booting.
+  await execFileAsync('xcrun', ['simctl', 'bootstatus', udid, '-b'], { env: childEnv(), timeout: 90_000 })
+}
+
+export async function shutdownSimulator(udid: string): Promise<void> {
+  await execFileAsync('xcrun', ['simctl', 'shutdown', udid], { env: childEnv(), timeout: 30_000 })
+}
+
+export async function listAllSimulators(): Promise<{ udid: string; name: string; state: string; runtime: string }[]> {
+  const { stdout } = await execFileAsync('xcrun', ['simctl', 'list', 'devices', 'available', '-j'], { env: childEnv(), timeout: SIMCTL_TIMEOUT_MS })
+  const data = JSON.parse(stdout) as { devices: Record<string, { udid: string; name: string; state: string }[]> }
+  const simulators: { udid: string; name: string; state: string; runtime: string }[] = []
+  for (const [runtimeId, devices] of Object.entries(data.devices)) {
+    // "com.apple.CoreSimulator.SimRuntime.iOS-18-2" -> "iOS-18-2"
+    const runtime = runtimeId.split('.').pop() ?? runtimeId
+    for (const device of devices) {
+      simulators.push({ udid: device.udid, name: device.name, state: device.state, runtime })
+    }
+  }
+  return simulators
 }
 
 export function getIDBClient(udid: string = 'booted'): IDBClient {

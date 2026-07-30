@@ -1,4 +1,4 @@
-export type ButtonType = 'HOME' | 'LOCK' | 'SIDE_BUTTON' | 'APPLE_PAY' | 'SIRI'
+export type ButtonType = 'HOME' | 'LOCK' | 'SIDE_BUTTON' | 'APPLE_PAY' | 'SIRI' | 'VOLUME_UP' | 'VOLUME_DOWN'
 
 export interface DeviceActionMap {
   tap: { x: number; y: number; duration?: number }

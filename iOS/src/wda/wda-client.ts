@@ -226,18 +226,10 @@ export class WDAClient {
   }
 
   async screenshot(): Promise<Buffer> {
-    let sessionId = await this.ensureSession()
-    try {
-      const response = await this.request<WDAScreenshotResponse>('GET', `/session/${sessionId}/screenshot`)
-      return Buffer.from(response.value, 'base64')
-    } catch (e) {
-      if (!this.sessionId) {
-        sessionId = await this.ensureSession()
-        const response = await this.request<WDAScreenshotResponse>('GET', `/session/${sessionId}/screenshot`)
-        return Buffer.from(response.value, 'base64')
-      }
-      throw e
-    }
+    // WDA serves /screenshot at the root too, so no session round-trip
+    // (or stale-session retry dance) is needed just to grab pixels.
+    const response = await this.request<WDAScreenshotResponse>('GET', '/screenshot')
+    return Buffer.from(response.value, 'base64')
   }
 
   async getWindowSize(): Promise<{ width: number; height: number }> {
@@ -387,6 +379,72 @@ export class WDAClient {
       content: Buffer.from(content, 'utf-8').toString('base64'),
       contentType: 'plaintext',
     })
+  }
+
+  async getAlert(): Promise<{ text: string | null; buttons: string[] }> {
+    const sessionId = await this.ensureSession()
+    let text: string | null = null
+    try {
+      const response = await this.request<{ value: string }>('GET', `/session/${sessionId}/alert/text`)
+      text = response.value
+    } catch {
+      return { text: null, buttons: [] }
+    }
+    let buttons: string[] = []
+    try {
+      const response = await this.request<{ value: string[] }>('GET', `/session/${sessionId}/wda/alert/buttons`)
+      buttons = response.value ?? []
+    } catch { /* alert may have vanished between the two reads */ }
+    return { text, buttons }
+  }
+
+  async acceptAlert(buttonLabel?: string): Promise<void> {
+    const sessionId = await this.ensureSession()
+    await this.request<unknown>('POST', `/session/${sessionId}/alert/accept`, buttonLabel ? { name: buttonLabel } : {})
+  }
+
+  async dismissAlert(buttonLabel?: string): Promise<void> {
+    const sessionId = await this.ensureSession()
+    await this.request<unknown>('POST', `/session/${sessionId}/alert/dismiss`, buttonLabel ? { name: buttonLabel } : {})
+  }
+
+  async dismissKeyboard(): Promise<void> {
+    const sessionId = await this.ensureSession()
+    await this.request<unknown>('POST', `/session/${sessionId}/wda/keyboard/dismiss`, {})
+  }
+
+  async lock(): Promise<void> {
+    const sessionId = await this.ensureSession()
+    await this.request<unknown>('POST', `/session/${sessionId}/wda/lock`, {})
+  }
+
+  async unlock(): Promise<void> {
+    const sessionId = await this.ensureSession()
+    await this.request<unknown>('POST', `/session/${sessionId}/wda/unlock`, {})
+  }
+
+  async isLocked(): Promise<boolean> {
+    const sessionId = await this.ensureSession()
+    const response = await this.request<{ value: boolean }>('GET', `/session/${sessionId}/wda/locked`)
+    return response.value === true
+  }
+
+  async getDeviceInfo(): Promise<Record<string, unknown>> {
+    const sessionId = await this.ensureSession()
+    const response = await this.request<{ value: Record<string, unknown> }>('GET', `/session/${sessionId}/wda/device/info`)
+    return response.value ?? {}
+  }
+
+  async getBatteryInfo(): Promise<{ level: number; state: number }> {
+    const sessionId = await this.ensureSession()
+    const response = await this.request<{ value: { level: number; state: number } }>('GET', `/session/${sessionId}/wda/batteryInfo`)
+    return response.value
+  }
+
+  async getActiveAppInfo(): Promise<Record<string, unknown>> {
+    // Root-scoped in WDA, so it works without a session.
+    const response = await this.request<{ value: Record<string, unknown> }>('GET', '/wda/activeAppInfo')
+    return response.value ?? {}
   }
 
   async getOrientation(): Promise<string> {
