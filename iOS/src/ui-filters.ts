@@ -122,6 +122,14 @@ export function applyScanUiFilters(
 }
 
 // Visible elements matching a query — the predicate wait_for_element polls.
+// Containers and chrome that also carry the queried text (a NavigationBar is
+// titled after the screen it heads) must rank below genuinely tappable
+// elements, or tap_element taps the chrome instead of the row.
+const LOW_PRIORITY_MATCH_TYPES = new Set([
+  'NavigationBar', 'TabBar', 'ToolBar', 'StatusBar', 'Window', 'Application',
+  'Group', 'ScrollView', 'Table', 'CollectionView', 'Other',
+])
+
 export function queryVisibleMatches(
   rawElements: UIElement[],
   screenWidth: number,
@@ -129,7 +137,12 @@ export function queryVisibleMatches(
   query: string,
 ): UIElement[] {
   const visible = filterVisibleCoords(dedup(filterUnlabeledOther(rawElements)), screenWidth, screenHeight)
-  return grepElements(visible, query)
+  const matches = grepElements(visible, query)
+  return [...matches].sort((a, b) => {
+    const aLow = LOW_PRIORITY_MATCH_TYPES.has(String(a.type ?? '')) ? 1 : 0
+    const bLow = LOW_PRIORITY_MATCH_TYPES.has(String(b.type ?? '')) ? 1 : 0
+    return aLow - bLow
+  })
 }
 
 export function applyDescribeScreenFilters(
