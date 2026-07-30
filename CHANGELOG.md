@@ -4,6 +4,15 @@ All notable changes to AgentController are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.4.2] - 2026-07-30
+
+### Fixed
+- `dismiss_keyboard` failed on keyboards without a toolbar Done button (a
+  search keyboard has only its return key): WDA is now given the standard
+  return-key labels (done/return/search/go/send/...) it may tap to close
+  the keyboard. Verified against the iOS 18 Settings search keyboard on a
+  physical iPhone; the corrected keyboard flow passes 11/11.
+
 ## [2.4.1] - 2026-07-30
 
 Full-surface verification on a physical iPhone 11 Pro Max (55/57 checks;
