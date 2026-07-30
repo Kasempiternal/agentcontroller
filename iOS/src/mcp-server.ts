@@ -11,8 +11,9 @@ import { isPhysicalDeviceUdid, type ButtonType, type ScanRegion, type UIElement 
 import { WDAClient } from './wda/wda-client.js'
 import { wdaScanGrid } from './wda/wda-scan.js'
 import { listPhysicalDevices } from './wda/device-discovery.js'
-import { applyScanUiFilters, applyDescribeScreenFilters, queryVisibleMatches } from './ui-filters.js'
+import { applyScanUiFilters, applyDescribeScreenFilters, queryVisibleMatches, compactElements } from './ui-filters.js'
 import { detectExecutionContext } from './execution-context.js'
+import { prewarmSimulator } from './prewarm.js'
 import { wdaManager } from './wda/wda-manager.js'
 import { childEnv } from './child-env.js'
 import { log } from './logger.js'
@@ -89,6 +90,31 @@ async function resolveActionUdid(udid: string): Promise<string> {
     expiresAtMs: now + BOOTED_UDID_CACHE_TTL_MS,
   }
   return resolvedUdid
+}
+
+// Center-in-bounds test used to keep the describe-all fast path honest about
+// the caller's region parameter (describe-all always sees the whole screen).
+function elementInRegion(
+  el: UIElement,
+  region: ScanRegion,
+  screenWidth: number,
+  screenHeight: number,
+): boolean {
+  if (region === 'full') return true
+  const f = el.frame
+  if (!f) return false
+  const cx = f.x + f.width / 2
+  const cy = f.y + f.height / 2
+  const midX = screenWidth / 2
+  const midY = screenHeight / 2
+  switch (region) {
+    case 'top-half': return cy < midY
+    case 'bottom-half': return cy >= midY
+    case 'top-left': return cx < midX && cy < midY
+    case 'top-right': return cx >= midX && cy < midY
+    case 'bottom-left': return cx < midX && cy >= midY
+    case 'bottom-right': return cx >= midX && cy >= midY
+  }
 }
 
 async function resolveReferenceFrame(udid: string): Promise<{ width: number; height: number }> {
@@ -196,7 +222,7 @@ For finding tappable elements specifically, prefer scan_ui instead.`,
         const filtered = applyDescribeScreenFilters(rawArray as UIElement[], frame.width, frame.height)
 
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify(filtered) }],
+          content: [{ type: 'text' as const, text: JSON.stringify(compactElements(filtered)) }],
         }
       } catch (error) {
         return {
@@ -309,9 +335,11 @@ Use describe_after to see the screen state after the action.`,
         if (describe_after) {
           await new Promise(resolve => setTimeout(resolve, describe_after.delay ?? 500))
           if (describe_after.all) {
-            descriptionResult = await client.describeAll(false)
+            const raw = await client.describeAll(false)
+            descriptionResult = compactElements((Array.isArray(raw) ? raw : [raw]) as UIElement[])
           } else if (describe_after.point) {
-            descriptionResult = await client.describePoint(describe_after.point.x, describe_after.point.y, false)
+            const raw = await client.describePoint(describe_after.point.x, describe_after.point.y, false)
+            descriptionResult = raw ? compactElements([raw as UIElement])[0] : raw
           }
         }
 
@@ -428,9 +456,11 @@ Use describe_after to see the screen state after all actions complete.`,
         if (describe_after) {
           await new Promise(resolve => setTimeout(resolve, describe_after.delay ?? 500))
           if (describe_after.all) {
-            descriptionResult = await client.describeAll(false)
+            const raw = await client.describeAll(false)
+            descriptionResult = compactElements((Array.isArray(raw) ? raw : [raw]) as UIElement[])
           } else if (describe_after.point) {
-            descriptionResult = await client.describePoint(describe_after.point.x, describe_after.point.y, false)
+            const raw = await client.describePoint(describe_after.point.x, describe_after.point.y, false)
+            descriptionResult = raw ? compactElements([raw as UIElement])[0] : raw
           }
         }
 
@@ -574,7 +604,7 @@ For the complete element tree (all types), use describe_screen instead.`,
 
         const content: { type: 'text'; text: string }[] = []
         if (warning) content.push({ type: 'text' as const, text: `Warning: ${warning}` })
-        content.push({ type: 'text' as const, text: JSON.stringify(elements) })
+        content.push({ type: 'text' as const, text: JSON.stringify(compactElements(elements)) })
 
         return { content }
       } catch (error) {
@@ -1027,28 +1057,50 @@ Use after taps or navigation instead of guessing fixed delays — it returns as 
       inputSchema: {
         query: z.string().describe('Text to match against element labels/titles/values (case-insensitive)'),
         timeoutMs: z.number().optional().describe('How long to keep polling in ms (default: 10000)'),
-        intervalMs: z.number().optional().describe('Delay between polls in ms (default: 500)'),
+        intervalMs: z.number().optional().describe('Delay between polls in ms (default: adaptive, 250ms growing to 1000ms)'),
         udid: z.string().optional().describe('Device identifier (default: "booted")'),
       },
     },
-    async ({ query, timeoutMs = 10_000, intervalMs = 500, udid = 'booted' }) => {
+    async ({ query, timeoutMs = 10_000, intervalMs, udid = 'booted' }) => {
       log('MCP', 'log', `wait_for_element query=${query} timeoutMs=${timeoutMs} udid=${udid}`)
       try {
         const resolvedUdid = await resolveActionUdid(udid)
         const frame = await resolveReferenceFrame(resolvedUdid).catch(() => DEFAULT_FRAME)
+        const physical = isPhysicalDeviceUdid(resolvedUdid)
         const deadline = Date.now() + timeoutMs
         const startedAt = Date.now()
 
+        // Simulators poll with cheap describe-all round-trips (~100ms warm)
+        // and confirm misses with the authoritative grid scan every third
+        // attempt and on the final one — an element only the point-probe can
+        // see is still caught before giving up.
+        let interval = intervalMs ?? 250
+        let attempt = 0
         for (;;) {
-          const raw = isPhysicalDeviceUdid(resolvedUdid)
-            ? await wdaScanGrid(await getDeviceClient(resolvedUdid) as unknown as WDAClient, 'full')
-            : await AXScanClient.getInstance(resolvedUdid).scan('full')
-          const matches = queryVisibleMatches(raw as UIElement[], frame.width, frame.height, query)
-          if (matches.length > 0) {
-            return ok(JSON.stringify({ found: true, elapsedMs: Date.now() - startedAt, elements: matches }))
+          attempt++
+          let matches: UIElement[] = []
+          try {
+            const raw = physical
+              ? await wdaScanGrid(await getDeviceClient(resolvedUdid) as unknown as WDAClient, 'full')
+              : await (await getDeviceClient(resolvedUdid)).describeAll(false)
+            const rawArray = (Array.isArray(raw) ? raw : [raw]) as UIElement[]
+            matches = queryVisibleMatches(rawArray, frame.width, frame.height, query)
+          } catch { /* transient scan failure — retry until deadline */ }
+
+          const lastChance = Date.now() + interval > deadline
+          if (matches.length === 0 && !physical && (attempt % 3 === 0 || lastChance)) {
+            try {
+              const raw = await AXScanClient.getInstance(resolvedUdid).scan('full')
+              matches = queryVisibleMatches(raw as UIElement[], frame.width, frame.height, query)
+            } catch { /* grid scan unavailable — describe-all polls carry on */ }
           }
-          if (Date.now() + intervalMs > deadline) break
-          await new Promise(resolve => setTimeout(resolve, intervalMs))
+
+          if (matches.length > 0) {
+            return ok(JSON.stringify({ found: true, elapsedMs: Date.now() - startedAt, elements: compactElements(matches) }))
+          }
+          if (lastChance) break
+          await new Promise(resolve => setTimeout(resolve, interval))
+          if (intervalMs === undefined) interval = Math.min(Math.round(interval * 1.5), 1000)
         }
 
         return err(`No element matching "${query}" appeared within ${timeoutMs}ms.`)
@@ -1201,15 +1253,28 @@ Prefer this over separate scan_ui and device_action calls when you know what you
       log('MCP', 'log', `tap_element query=${query} region=${region} udid=${udid}`)
       try {
         const resolvedUdid = await resolveActionUdid(udid)
-        const scan = isPhysicalDeviceUdid(resolvedUdid)
-          ? getDeviceClient(resolvedUdid).then(c => wdaScanGrid(c as unknown as WDAClient, region as ScanRegion))
-          : AXScanClient.getInstance(resolvedUdid).scan(region as ScanRegion)
-        const [rawElements, frame] = await Promise.all([
-          scan,
-          resolveReferenceFrame(resolvedUdid).catch(() => DEFAULT_FRAME),
-        ])
+        const frame = await resolveReferenceFrame(resolvedUdid).catch(() => DEFAULT_FRAME)
+        let matches: UIElement[] = []
 
-        const matches = queryVisibleMatches(rawElements as UIElement[], frame.width, frame.height, query)
+        if (isPhysicalDeviceUdid(resolvedUdid)) {
+          const raw = await wdaScanGrid(await getDeviceClient(resolvedUdid) as unknown as WDAClient, region as ScanRegion)
+          matches = queryVisibleMatches(raw as UIElement[], frame.width, frame.height, query)
+        } else {
+          // Fast path: one describe-all round-trip (~100ms warm) instead of a
+          // grid scan (~1-2.5s). The grid scan runs only when describe-all
+          // finds nothing, so elements only the point-probe surfaces are
+          // still found — speed without losing recall.
+          try {
+            const raw = await (await getDeviceClient(resolvedUdid)).describeAll(false)
+            matches = queryVisibleMatches((Array.isArray(raw) ? raw : [raw]) as UIElement[], frame.width, frame.height, query)
+              .filter(el => elementInRegion(el, region as ScanRegion, frame.width, frame.height))
+          } catch { /* fast path unavailable — grid scan decides */ }
+          if (matches.length === 0) {
+            const raw = await AXScanClient.getInstance(resolvedUdid).scan(region as ScanRegion)
+            matches = queryVisibleMatches(raw as UIElement[], frame.width, frame.height, query)
+          }
+        }
+
         if (matches.length === 0) {
           return err(`No visible element matching "${query}" found. Use scan_ui to see what is on screen, or scroll if the element may be off-screen.`)
         }
@@ -1231,7 +1296,7 @@ Prefer this over separate scan_ui and device_action calls when you know what you
 
         return ok(JSON.stringify({
           tapped: { x, y },
-          element: target,
+          element: compactElements([target])[0],
           other_matches: matches.length - 1,
         }))
       } catch (error) {
@@ -1608,6 +1673,9 @@ Services: all, calendar, contacts, contacts-limited, location, location-always, 
       }
       try {
         await bootSimulator(udid)
+        // Heat the transports for the fresh simulator in the background so
+        // the first scan/tap against it doesn't pay the cold starts.
+        prewarmSimulator(udid)
         return ok(`Simulator ${udid} booted`)
       } catch (error) {
         return err(`Error booting simulator: ${error instanceof Error ? error.message : String(error)}`)

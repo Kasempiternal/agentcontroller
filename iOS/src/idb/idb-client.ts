@@ -46,10 +46,24 @@ function parseSimctlAppList(raw: string): { bundleId: string; name: string; type
   return apps
 }
 
+// One in-flight shell command: resolved with its stdout payload when the
+// SUCCESS= terminator line arrives, rejected on failure/timeout/shell death.
+interface ShellPending {
+  resolve: (output: string) => void
+  reject: (error: Error) => void
+  timer: NodeJS.Timeout
+  output: string[]
+  settled: boolean
+  command: string
+}
+
 export class IDBClient {
   private static instances: Map<string, IDBClient> = new Map()
   private udid: string
   private shellProcess: ChildProcess | null = null
+  private shellStarting: Promise<void> | null = null
+  private shellPending: ShellPending[] = []
+  private shellBuf = ''
   private isShuttingDown = false
   private companionKillAttempts = 0
   private static readonly MAX_COMPANION_KILL_ATTEMPTS = 5
@@ -80,9 +94,17 @@ export class IDBClient {
 
   private async startShell(): Promise<void> {
     if (this.shellProcess || this.isShuttingDown) return
+    // Two concurrent callers must share one spawn: startShell awaits the udid
+    // lookup before spawning, so without this both would pass the null check.
+    if (this.shellStarting) return this.shellStarting
+    this.shellStarting = this.doStartShell().finally(() => { this.shellStarting = null })
+    return this.shellStarting
+  }
 
+  private async doStartShell(): Promise<void> {
     log('IDBClient', 'log', `Starting idb shell for ${this.udid}...`)
     const resolvedUdid = await this.getResolvedUdid()
+    if (this.shellProcess || this.isShuttingDown) return
 
     const args: string[] = []
     if (IDB_COMPANION_PATH) {
@@ -94,6 +116,14 @@ export class IDBClient {
 
     const proc = spawn(IDB_PATH, args, { stdio: ['pipe', 'pipe', 'pipe'] })
     this.shellProcess = proc
+
+    // A write racing shell death surfaces as a stream error (EPIPE); without
+    // a listener that's an uncaught exception that kills the whole server.
+    proc.stdin?.on('error', (error) => {
+      log('IDBClient', 'warn', `[${this.udid}] Shell stdin error: ${error}`)
+    })
+
+    proc.stdout?.on('data', (data: Buffer) => this.onShellStdout(proc, data))
 
     proc.stderr?.on('data', (data: Buffer) => {
       const text = data.toString()
@@ -118,23 +148,114 @@ export class IDBClient {
     proc.on('error', (error) => {
       log('IDBClient', 'error', `[${this.udid}] Shell process error: ${error}`)
       if (this.shellProcess === proc) this.shellProcess = null
+      this.failAllPending(`idb shell failed to start: ${error}`)
     })
 
     proc.on('exit', (code, signal) => {
       log('IDBClient', 'log', `[${this.udid}] Shell exited code=${code} signal=${signal}`)
       if (this.shellProcess === proc) this.shellProcess = null
+      this.failAllPending(`idb shell exited (code=${code}, signal=${signal})`)
     })
-
-    await new Promise(resolve => setTimeout(resolve, 300))
-    log('IDBClient', 'log', `idb shell started for ${this.udid}`)
   }
 
-  private async runInShell(args: string): Promise<void> {
+  // The shell answers every command with its output lines followed by a
+  // SUCCESS=<0|1> terminator line. Commands run strictly in order, so the
+  // oldest pending entry always owns the incoming lines.
+  private onShellStdout(proc: ChildProcess, data: Buffer): void {
+    if (proc !== this.shellProcess) return
+    this.shellBuf += data.toString()
+    let idx: number
+    while ((idx = this.shellBuf.indexOf('\n')) >= 0) {
+      const line = this.shellBuf.slice(0, idx)
+      this.shellBuf = this.shellBuf.slice(idx + 1)
+      if (!line.trim()) continue
+      const head = this.shellPending[0]
+      if (!head) {
+        log('IDBClient', 'warn', `[${this.udid}] Stray shell output dropped: ${line.slice(0, 120)}`)
+        continue
+      }
+      if (line.startsWith('SUCCESS=')) {
+        this.shellPending.shift()
+        clearTimeout(head.timer)
+        if (head.settled) continue
+        head.settled = true
+        if (line === 'SUCCESS=1') {
+          head.resolve(head.output.join('\n'))
+        } else {
+          head.reject(new Error(`idb reported failure for "${head.command}"${head.output.length ? `: ${head.output.join(' ').slice(0, 200)}` : ''}`))
+        }
+      } else {
+        head.output.push(line)
+      }
+    }
+  }
+
+  private failAllPending(reason: string): void {
+    const pending = this.shellPending
+    this.shellPending = []
+    this.shellBuf = ''
+    for (const p of pending) {
+      clearTimeout(p.timer)
+      if (!p.settled) {
+        p.settled = true
+        p.reject(new Error(reason))
+      }
+    }
+  }
+
+  // A timed-out command means the response framing can no longer be trusted
+  // (its terminator may arrive later and would be credited to the next
+  // command), so the only safe recovery is a fresh shell. The companion
+  // process survives, so the restart costs one Python boot, not a re-attach.
+  private restartShellAfterTimeout(): void {
+    const proc = this.shellProcess
+    this.shellProcess = null
+    this.failAllPending('idb shell command timed out; shell restarted')
+    proc?.kill('SIGKILL')
+  }
+
+  private async runInShell(args: string, timeoutMs = 30_000): Promise<string> {
     if (this.isShuttingDown) throw new Error('IDB client is shutting down')
     if (!this.shellProcess) await this.startShell()
-    if (!this.shellProcess?.stdin) throw new Error('Shell process not available')
+    const proc = this.shellProcess
+    if (!proc?.stdin) throw new Error('Shell process not available')
     log('IDBClient', 'log', `[${this.udid}] Executing: ${args}`)
-    this.shellProcess.stdin.write(args + '\n')
+
+    return new Promise<string>((resolve, reject) => {
+      const entry: ShellPending = {
+        resolve,
+        reject,
+        output: [],
+        settled: false,
+        command: args,
+        timer: setTimeout(() => {
+          if (!entry.settled) {
+            entry.settled = true
+            entry.reject(new Error(`idb shell command timed out after ${timeoutMs}ms: ${args}`))
+            this.restartShellAfterTimeout()
+          }
+        }, timeoutMs),
+      }
+      this.shellPending.push(entry)
+      try {
+        proc.stdin!.write(args + '\n')
+      } catch (error) {
+        clearTimeout(entry.timer)
+        this.shellPending = this.shellPending.filter(p => p !== entry)
+        if (!entry.settled) {
+          entry.settled = true
+          reject(error instanceof Error ? error : new Error(String(error)))
+        }
+      }
+    })
+  }
+
+  // Boots the shell and pushes one throwaway command through it so the
+  // Python interpreter and the companion connection are both hot before the
+  // first real tool call arrives.
+  async warmup(): Promise<void> {
+    await this.startShell()
+    await this.runInShell('ui describe-point 1 1 --json', 20_000).catch(() => {})
   }
 
   // Argument array, never a shell string: udid and tool parameters are
@@ -147,15 +268,29 @@ export class IDBClient {
       '--udid', resolvedUdid,
     ]
     log('IDBClient', 'log', `[${this.udid}] Running direct: ${IDB_PATH} ${fullArgs.join(' ')}`)
-    const { stdout, stderr } = await execFileAsync(IDB_PATH, fullArgs, { env: childEnv() })
+    const { stdout, stderr } = await execFileAsync(IDB_PATH, fullArgs, { env: childEnv(), timeout: 30_000 })
     if (stderr) log('IDBClient', 'log', `[${this.udid}] stderr: ${stderr}`)
     return stdout.trim()
+  }
+
+  // Describe queries prefer the persistent shell: a one-shot `idb` invocation
+  // pays the Python interpreter boot (~150ms) on every call, the warm shell
+  // answers in tens of milliseconds. The one-shot path stays as the fallback
+  // for a shell that won't start.
+  private async runDescribe(shellArgs: string, directArgs: string[]): Promise<string> {
+    try {
+      return await this.runInShell(shellArgs, 20_000)
+    } catch (error) {
+      log('IDBClient', 'warn', `[${this.udid}] Shell describe failed (${error instanceof Error ? error.message : error}); falling back to one-shot idb`)
+      return await this.runDirect(directArgs)
+    }
   }
 
   async shutdown(): Promise<void> {
     if (this.isShuttingDown) return
     log('IDBClient', 'log', `[${this.udid}] Shutting down...`)
     this.isShuttingDown = true
+    this.failAllPending('IDB client is shutting down')
 
     if (this.shellProcess) {
       this.shellProcess.stdin?.end()
@@ -217,31 +352,35 @@ export class IDBClient {
   }
 
   async describeAll(nested?: boolean): Promise<unknown> {
-    const args = ['ui', 'describe-all', '--json']
-    if (nested) args.push('--nested')
+    const nestedFlag = nested ? ' --nested' : ''
+    const directArgs = ['ui', 'describe-all', '--json', ...(nested ? ['--nested'] : [])]
 
     let output = ''
     try {
-      output = await this.runDirect(args)
+      output = await this.runDescribe(`ui describe-all --json${nestedFlag}`, directArgs)
       const jsonMatch = output.match(/[{[][\s\S]*[}\]]/)
       if (jsonMatch) return JSON.parse(jsonMatch[0])
       return JSON.parse(output)
     } catch (error) {
+      if (!output) throw error instanceof Error ? error : new Error(String(error))
       throw new Error(`Failed to parse UI description. Raw output: ${output.substring(0, 300)}`)
     }
   }
 
   async describePoint(x: number, y: number, nested?: boolean): Promise<unknown> {
-    const args = ['ui', 'describe-point', String(Math.round(x)), String(Math.round(y)), '--json']
-    if (nested) args.push('--nested')
+    const px = String(Math.round(x))
+    const py = String(Math.round(y))
+    const nestedFlag = nested ? ' --nested' : ''
+    const directArgs = ['ui', 'describe-point', px, py, '--json', ...(nested ? ['--nested'] : [])]
 
     let output = ''
     try {
-      output = await this.runDirect(args)
+      output = await this.runDescribe(`ui describe-point ${px} ${py} --json${nestedFlag}`, directArgs)
       const jsonMatch = output.match(/[{[][\s\S]*[}\]]/)
       if (jsonMatch) return JSON.parse(jsonMatch[0])
       return JSON.parse(output)
     } catch (error) {
+      if (!output) throw error instanceof Error ? error : new Error(String(error))
       throw new Error(`Failed to parse UI description at point (${x}, ${y}). Raw output: ${output.substring(0, 300)}`)
     }
   }
@@ -272,7 +411,18 @@ export class IDBClient {
 
   async terminateApp(bundleId: string): Promise<void> {
     const resolvedUdid = await this.getResolvedUdid()
-    await execFileAsync('xcrun', ['simctl', 'terminate', resolvedUdid, bundleId], { env: childEnv(), timeout: SIMCTL_TIMEOUT_MS })
+    try {
+      await execFileAsync('xcrun', ['simctl', 'terminate', resolvedUdid, bundleId], { env: childEnv(), timeout: SIMCTL_TIMEOUT_MS })
+    } catch (error) {
+      // The caller wants "app not running"; an app that was never running
+      // already satisfies that, so simctl's exit-3 for it is not a failure.
+      const message = error instanceof Error ? error.message : String(error)
+      if (message.includes('found nothing to terminate')) {
+        log('IDBClient', 'log', `[${this.udid}] terminate ${bundleId}: was not running`)
+        return
+      }
+      throw error
+    }
   }
 
   async openUrl(url: string): Promise<void> {

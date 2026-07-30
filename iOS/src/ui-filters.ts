@@ -152,3 +152,42 @@ export function applyDescribeScreenFilters(
 ): UIElement[] {
   return filterVisibleCoords(filterUnlabeledOther(rawElements), screenWidth, screenHeight)
 }
+
+function meaningful(v: unknown): v is string {
+  return typeof v === 'string' && v.trim() !== ''
+}
+
+// Tool-output shape for elements. Raw idb elements carry fields that either
+// duplicate one another (AXFrame/role/role_description mirror frame and type)
+// or are always-noise (pid, content_required, nulls); every scan the agent
+// reads pays for those tokens. Emit one compact shape for both transports:
+// label/value/title/id are deduplicated, frames are integer points, and
+// enabled/visible appear only in the non-default (false) case.
+export function compactElements(elements: UIElement[]): Record<string, unknown>[] {
+  return elements.map(el => {
+    const e = el as Record<string, unknown>
+    const out: Record<string, unknown> = {}
+    if (meaningful(e.type)) out.type = e.type
+    const label = meaningful(e.AXLabel) ? e.AXLabel : meaningful(e.label) ? e.label : null
+    if (label !== null) out.label = label
+    const value = meaningful(e.AXValue) ? e.AXValue : meaningful(e.value) ? e.value : null
+    if (value !== null) out.value = value
+    if (meaningful(e.title) && e.title !== label) out.title = e.title
+    if (meaningful(e.name) && e.name !== label && e.name !== e.title) out.name = e.name
+    if (meaningful(e.AXUniqueId) && e.AXUniqueId !== label) out.id = e.AXUniqueId
+    const f = e.frame as { x?: number; y?: number; width?: number; height?: number } | undefined
+    if (f) {
+      out.frame = {
+        x: Math.round(f.x ?? 0),
+        y: Math.round(f.y ?? 0),
+        width: Math.round(f.width ?? 0),
+        height: Math.round(f.height ?? 0),
+      }
+    }
+    if (e.enabled === false) out.enabled = false
+    if (e.visible === false) out.visible = false
+    if (meaningful(e.help)) out.help = e.help
+    if (Array.isArray(e.custom_actions) && e.custom_actions.length > 0) out.actions = e.custom_actions
+    return out
+  })
+}

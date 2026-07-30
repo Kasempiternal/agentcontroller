@@ -1,10 +1,11 @@
-import { spawn, type ChildProcess, exec } from 'child_process'
+import { spawn, type ChildProcess, execFile } from 'child_process'
 import { promisify } from 'util'
 import { log } from '../logger.js'
 import { resolveRuntimeFile } from '../paths.js'
+import { childEnv } from '../child-env.js'
 import type { ScanRegion, ScanCommand } from '../types.js'
 
-const execAsync = promisify(exec)
+const execFileAsync = promisify(execFile)
 
 function resolveAxScanPath(): string | null {
   return resolveRuntimeFile('bin', 'ax-scan')
@@ -12,41 +13,72 @@ function resolveAxScanPath(): string | null {
 
 const DEFAULT_SCREEN_SIZE = { width: 393, height: 852 }
 
+// Fallback only: measuring the live AX tree is authoritative. This map is for
+// a simulator whose describe-all is unavailable (idb broken/not installed).
+const KNOWN_DEVICE_SIZES: Record<string, { width: number; height: number }> = {
+  'iPhone Air': { width: 420, height: 912 },
+  'iPhone 17 Pro Max': { width: 440, height: 956 },
+  'iPhone 17 Pro': { width: 402, height: 874 },
+  'iPhone 17': { width: 402, height: 874 },
+  'iPhone 16 Pro Max': { width: 440, height: 956 },
+  'iPhone 16 Pro': { width: 402, height: 874 },
+  'iPhone 16 Plus': { width: 430, height: 932 },
+  'iPhone 16e': { width: 390, height: 844 },
+  'iPhone 16': { width: 393, height: 852 },
+  'iPhone 15 Pro Max': { width: 430, height: 932 },
+  'iPhone 15 Pro': { width: 393, height: 852 },
+  'iPhone 15 Plus': { width: 430, height: 932 },
+  'iPhone 15': { width: 393, height: 852 },
+  'iPhone 14 Pro Max': { width: 430, height: 932 },
+  'iPhone 14 Pro': { width: 393, height: 852 },
+  'iPhone 14': { width: 390, height: 844 },
+  'iPhone SE (3rd generation)': { width: 375, height: 667 },
+  'iPad Pro (12.9-inch)': { width: 1024, height: 1366 },
+  'iPad Pro (11-inch)': { width: 834, height: 1194 },
+  'iPad Air': { width: 820, height: 1180 },
+}
+
+// The screen size bounds the scan grid: an undersized guess leaves screen
+// edge columns unprobed, so elements there become invisible to scan_ui.
 async function resolveDeviceScreenSize(udid: string): Promise<{ width: number; height: number }> {
+  // 1) Measure: the root Application/Window element of the AX tree spans the
+  // screen, so its frame is the exact size for ANY model, in the simulator's
+  // current orientation — no lookup table can go stale on it.
   try {
-    const { stdout } = await execAsync('xcrun simctl list devices -j')
-    const data = JSON.parse(stdout)
-    for (const runtime of Object.values(data.devices) as { udid: string; name: string; state: string }[][]) {
-      for (const device of runtime) {
-        if (device.udid === udid) {
-          const name = device.name
-          // Common device screen sizes (points)
-          const deviceSizes: Record<string, { width: number; height: number }> = {
-            'iPhone 17 Pro': { width: 402, height: 874 },
-            'iPhone 17 Pro Max': { width: 440, height: 956 },
-            'iPhone 16 Pro': { width: 402, height: 874 },
-            'iPhone 16 Pro Max': { width: 440, height: 956 },
-            'iPhone 16': { width: 393, height: 852 },
-            'iPhone 16 Plus': { width: 430, height: 932 },
-            'iPhone 15 Pro': { width: 393, height: 852 },
-            'iPhone 15 Pro Max': { width: 430, height: 932 },
-            'iPhone 15': { width: 393, height: 852 },
-            'iPhone 15 Plus': { width: 430, height: 932 },
-            'iPhone 14 Pro': { width: 393, height: 852 },
-            'iPhone 14 Pro Max': { width: 430, height: 932 },
-            'iPhone 14': { width: 390, height: 844 },
-            'iPhone SE (3rd generation)': { width: 375, height: 667 },
-            'iPad Pro (12.9-inch)': { width: 1024, height: 1366 },
-            'iPad Pro (11-inch)': { width: 834, height: 1194 },
-            'iPad Air': { width: 820, height: 1180 },
-          }
-          if (deviceSizes[name]) return deviceSizes[name]
-          for (const key of Object.keys(deviceSizes)) {
-            if (name.includes(key) || key.includes(name)) return deviceSizes[key]
-          }
-          log('AXScan', 'warn', `Unknown device model "${name}", using default screen size`)
-          return DEFAULT_SCREEN_SIZE
+    const { getIDBClient } = await import('./idb-client.js')
+    const raw = await getIDBClient(udid).describeAll(false)
+    const elements = (Array.isArray(raw) ? raw : [raw]) as { frame?: { x: number; y: number; width: number; height: number } }[]
+    let best: { width: number; height: number } | null = null
+    for (const el of elements) {
+      const f = el?.frame
+      if (f && f.x === 0 && f.y === 0 && f.width >= 100 && f.height >= 100) {
+        if (!best || f.width * f.height > best.width * best.height) {
+          best = { width: Math.round(f.width), height: Math.round(f.height) }
         }
+      }
+    }
+    if (best) {
+      log('AXScan', 'log', `Measured screen size for ${udid}: ${best.width}x${best.height}`)
+      return best
+    }
+  } catch (e) {
+    log('AXScan', 'warn', `Could not measure screen size via AX tree for ${udid}: ${e}`)
+  }
+
+  // 2) Fall back to the model map keyed off the simulator's device name.
+  try {
+    const { stdout } = await execFileAsync('xcrun', ['simctl', 'list', 'devices', '-j'], { env: childEnv(), timeout: 10_000 })
+    const data = JSON.parse(stdout)
+    for (const runtime of Object.values(data.devices) as { udid: string; name: string }[][]) {
+      for (const device of runtime) {
+        if (device.udid !== udid) continue
+        const name = device.name
+        if (KNOWN_DEVICE_SIZES[name]) return KNOWN_DEVICE_SIZES[name]
+        for (const key of Object.keys(KNOWN_DEVICE_SIZES)) {
+          if (name.includes(key) || key.includes(name)) return KNOWN_DEVICE_SIZES[key]
+        }
+        log('AXScan', 'warn', `Unknown device model "${name}", using default screen size`)
+        return DEFAULT_SCREEN_SIZE
       }
     }
   } catch (e) {
