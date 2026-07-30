@@ -249,19 +249,35 @@ The HTTP server is pinned to **IPv4 loopback** (never `0.0.0.0`), so it is unrea
 
 Destructive operations are opt-in: `reset_app_state` only deletes an app's sandbox container behind an explicit `wipeData: true` flag, and the clipboard tools warn that they touch system-wide state.
 
+The Windows backend speaks MCP over stdio and opens **no listening socket**, so the loopback and token considerations above do not apply to it. Automating an app means reading its contents, and screenshots capture whatever is on screen — see [SECURITY.md](SECURITY.md) for the full threat model, what is explicitly out of scope, and how to report a vulnerability privately.
+
 ## Development
 
-- Swift Package Manager, Swift 5.10+, no third-party dependencies
+- Swift Package Manager, Swift 5.10+, **no third-party dependencies** on either platform (no `.package(url:)`, no `PackageReference`)
 - Entry point: `Sources/App/AppDelegate.swift`; Info.plist is injected at link time via `-sectcreate` (see `Package.swift`)
 - Rebuild loop: edit → `./build.sh --skip-notarize` → fresh binary in `/Applications` → the bridge reconnects automatically, tools keep working in any open Claude Code session
+- Copy `.mcp.json.example` to `.mcp.json` for a project-scoped server; `.mcp.json` is gitignored because the client requires a machine-specific absolute path
 
 ```bash
 swift build          # debug build
 swift test           # unit tests (transport, JSON, selectors, input mapping)
 swift build -c release -Xswiftc -warnings-as-errors   # what CI runs
+
+./Scripts/check-tool-contract.sh   # tool contract: both backends + docs in sync
 ```
 
-CI builds and tests every push on a macOS 15 runner (`.github/workflows/ci.yml`).
+`check-tool-contract.sh` is the guard on this repo's central promise. The two
+backends share no code, so only convention keeps their registries identical; the
+script enforces that both expose the same tool set, that `docs/TOOLS.md`
+documents exactly that set with descriptions matching the source strings, and
+that every tool count quoted in prose is the real one. It needs only bash and
+grep — no Swift, no .NET, no running server.
+
+CI (`.github/workflows/ci.yml`) runs three jobs per push: the contract check plus
+`shellcheck` on Ubuntu for the fastest signal, the Swift build and tests on a
+macOS 15 runner with warnings as errors, and the .NET build plus MCP protocol
+smoke on Windows. `Windows/integration.ps1` drives real UI Automation and needs
+an interactive desktop, so it stays a local pre-release step.
 
 ## Troubleshooting
 
