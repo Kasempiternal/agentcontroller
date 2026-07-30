@@ -4,6 +4,35 @@ All notable changes to AgentController are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.2.0] - 2026-07-30
+
+The iOS backend grows from 21 to 36 tools and gets a second performance pass.
+
+### Added
+- Fifteen new iOS tools: `tap_element` (find-by-text + tap in one call),
+  `read_alert`, `handle_alert`, `dismiss_keyboard`, `lock_screen`,
+  `unlock_screen`, `get_device_info` (battery, thermal, lock state, active
+  app), `send_push`, `set_location`, `set_permission`, `set_appearance`,
+  `set_status_bar`, `set_content_size` (Dynamic Type), `boot_simulator`,
+  `shutdown_simulator`. Simulator-only
+  and device-only tools return honest unsupported errors on the other target.
+- `VOLUME_UP`/`VOLUME_DOWN` buttons in `device_action` (physical devices).
+- `list_devices` now lists shutdown simulators too, so an agent can pick one
+  and boot it with `boot_simulator`.
+
+### Changed
+- Screenshot previews ship as downscaled JPEG instead of PNG, cutting the
+  inline payload roughly 4x; the full-resolution PNG path is still returned.
+- Physical-device screenshots use WebDriverAgent's session-less root endpoint,
+  removing a session round-trip and a stale-session failure mode.
+- Every `simctl` invocation now carries a timeout so a wedged CoreSimulator
+  surfaces as a tool error instead of a hung call, and booted-udid resolution
+  no longer goes through a shell.
+
+### Fixed
+- `set_orientation` invalidates the cached screen frame, so coordinate
+  filtering is correct after rotating the device.
+
 ## [2.1.0] - 2026-07-30
 
 AgentController gains an iOS backend: one MCP family now drives macOS,

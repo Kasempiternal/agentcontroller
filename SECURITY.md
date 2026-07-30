@@ -72,5 +72,5 @@ Only the latest release receives security fixes.
 
 | Version | Supported |
 |---|---|
-| 2.1.x | yes |
-| < 2.1 | no |
+| 2.2.x | yes |
+| < 2.2 | no |
