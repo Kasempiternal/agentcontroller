@@ -226,11 +226,15 @@ export class WDAClient {
       await this.inputText(key)
       return
     }
-    log('WDAClient', 'warn', `pressKey with HID keycode ${key} not supported on physical device`)
+    // Silently succeeding here would report a keypress that never happened.
+    throw new Error(`HID keycode ${key} is not supported on physical devices via WebDriverAgent; pass a character string instead.`)
   }
 
   async pressKeySequence(keySequence: (number | string)[]): Promise<void> {
     const text = keySequence.filter((k): k is string => typeof k === 'string').join('')
+    if (!text && keySequence.length > 0) {
+      throw new Error('HID keycodes are not supported on physical devices via WebDriverAgent; pass character strings instead.')
+    }
     if (text) await this.inputText(text)
   }
 
