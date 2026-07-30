@@ -423,7 +423,12 @@ export class WDAClient {
 
   async dismissKeyboard(): Promise<void> {
     const sessionId = await this.ensureSession()
-    await this.request<unknown>('POST', `/session/${sessionId}/wda/keyboard/dismiss`, {})
+    // With an empty body WDA only knows toolbar Done-style buttons and gives
+    // up on keyboards without one (e.g. a search keyboard). keyNames lists
+    // the return-key labels it may tap to close the keyboard instead.
+    await this.request<unknown>('POST', `/session/${sessionId}/wda/keyboard/dismiss`, {
+      keyNames: ['done', 'Done', 'return', 'Return', 'search', 'Search', 'go', 'Go', 'send', 'Send', 'next', 'Next', 'continue', 'Continue', 'join', 'Join', 'route', 'Route'],
+    })
   }
 
   async lock(): Promise<void> {
