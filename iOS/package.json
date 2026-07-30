@@ -1,0 +1,33 @@
+{
+  "name": "agentcontroller-ios",
+  "version": "2.1.0",
+  "description": "AgentController iOS backend — MCP server for controlling iOS simulators and physical iPhones. Derived from @blitzdev/iphone-mcp (MIT).",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "bin": {
+    "agentcontroller-ios": "dist/cli.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "express": "^5.1.0",
+    "ws": "^8.18.3",
+    "zod": "^3.23.0"
+  },
+  "optionalDependencies": {
+    "unix-dgram": "^2.0.7"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.0",
+    "typescript": "^5.7.0"
+  }
+}
