@@ -4,6 +4,40 @@ All notable changes to AgentController are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.1.0] - 2026-07-30
+
+AgentController gains an iOS backend: one MCP family now drives macOS,
+Windows, and iOS (simulators and physical iPhones).
+
+### Added
+- iOS backend (`iOS/`, TypeScript/Node, MCP stdio) derived from
+  blitzdotdev/iPhone-mcp (MIT, notice retained), driving simulators via
+  `idb`/`simctl` plus a native accessibility scanner, and physical iPhones via
+  WebDriverAgent.
+- Eleven new iOS tools beyond the upstream ten: `open_url`, `terminate_app`,
+  `install_app`, `uninstall_app`, `get_clipboard`, `set_clipboard`,
+  `wait_for_element`, `get_orientation`, `set_orientation`,
+  `start_recording`, `stop_recording` — plus a `double-tap` gesture.
+  Simulator-only and device-only tools return honest unsupported errors on
+  the other target.
+- MCP `readOnly`/`destructive`/`openWorld` annotations on all 21 iOS tools,
+  and `serverInfo` sourced from package.json instead of a hardcoded string.
+- CI job typechecking and building the iOS backend; the tool-contract guard
+  now also verifies the iOS registry against its documentation.
+
+### Fixed
+- The iOS live-screen viewer listened on all interfaces, exposing an
+  unauthenticated device screen stream to the local network; it now binds
+  loopback only.
+- iOS child processes interpolated caller-supplied identifiers into shell
+  strings; they now use argument arrays.
+
+### Changed
+- iOS tool output is compact JSON, device discovery and UI reads run
+  concurrently, screenshots derive dimensions from the PNG header instead of
+  a second `sips` exec, and WebDriverAgent requests carry deadlines (3s for
+  reachability probes) so a wedged WDA cannot hang tool calls.
+
 ## [2.0.0] - 2026-07-30
 
 AgentController becomes a cross-platform desktop automation project with one MCP
