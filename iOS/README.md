@@ -12,13 +12,15 @@ requests carry deadlines, every simctl call has a timeout, screenshots ship as
 downscaled JPEG previews (~4x smaller payloads), and the tool surface grew
 from 10 to 36 with MCP annotations on every tool.
 
-Built for agent speed: the idb shell is a framed request/response channel, so
-every tap/swipe/keystroke is acknowledged by the simulator (~2ms) instead of
-fired blind; `describe_screen` answers in ~45-70ms off the warm shell;
-`tap_element` and `wait_for_element` take a describe-all fast path (~40-90ms
-on a hit) and fall back to the exhaustive grid scan only when it finds
-nothing; transports prewarm in the background at server start so the first
-tool call skips the cold starts; and element payloads are a compact
+Built for agent speed: simulator input and describes speak gRPC directly to
+`idb_companion` — no Python interpreter in any hot path, and the backend runs
+on a machine with no working Python at all (the venv-based `idb` CLI survives
+only as an automatic fallback). Every tap/swipe/keystroke is acknowledged by
+the simulator (~2ms) instead of fired blind; `describe_screen` answers in
+~50-90ms; `tap_element` and `wait_for_element` take a describe-all fast path
+(~40-90ms on a hit) and fall back to the exhaustive grid scan only when it
+finds nothing; transports prewarm in the background at server start so the
+first tool call skips the cold starts; and element payloads are a compact
 normalized shape (~60% smaller) so every scan costs the calling agent fewer
 tokens.
 
@@ -26,7 +28,7 @@ tokens.
 
 | Target | UI reading | Input | Screenshots |
 |---|---|---|---|
-| Simulator | `ax-scan` daemon (native AX API), `idb` fallback | `idb` | `simctl io screenshot` |
+| Simulator | `idb_companion` gRPC (direct), `ax-scan` daemon for grid scans, Python `idb` fallback | `idb_companion` gRPC (acked HID), Python `idb` fallback | `simctl io screenshot` |
 | Physical iPhone | WebDriverAgent HTTP (`/source`) | WebDriverAgent (W3C actions) | WebDriverAgent |
 
 Physical devices need [WebDriverAgent](https://github.com/appium/WebDriverAgent)

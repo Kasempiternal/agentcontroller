@@ -4,6 +4,44 @@ All notable changes to AgentController are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.4.0] - 2026-07-30
+
+The iOS backend drops Python from every hot path: simulator input and
+describe operations now speak gRPC directly to `idb_companion`, the native
+daemon the Python `idb` CLI itself talks to. The backend runs fully on a
+machine with no working Python; the venv-based CLI survives only as an
+automatic fallback.
+
+### Added
+- Direct gRPC companion transport (`companion-client.ts`), with the
+  `idb.proto` service definition vendored unmodified from facebook/idb (MIT).
+  Runtime deps: `@grpc/grpc-js` + `@grpc/proto-loader` (both pure JS).
+- HID event construction ported from fb-idb to TypeScript: taps, swipes,
+  buttons, keycodes, and the full ASCII keymap including shifted symbols.
+- `key-sequence` accepts mixed characters and keycodes on the companion path
+  (the Python CLI path only took keycodes).
+
+### Changed
+- Transport order for simulator input and describes: companion gRPC → warm
+  Python shell → one-shot `idb`, falling back per call. A companion that
+  fails to start enters a 60s cooldown so every subsequent call degrades to
+  the fallback instantly instead of re-paying the startup timeout.
+- The companion is spawned with `--only simulator` (it otherwise pair-probes
+  every USB-connected iPhone at startup) and `--log-level info`, and its
+  stderr is consumed without being mirrored into the server log (the default
+  debug level dumps entire accessibility payloads per query).
+
+### Fixed
+- The companion's gRPC server binds IPv6 `[::]` and ACCEPTS IPv4-mapped
+  connections without ever serving HTTP/2 on them, so connecting to
+  `localhost`/127.0.0.1 produced calls that hang until deadline. The client
+  now connects to the `[::1]` literal first, with 127.0.0.1 kept only for a
+  v4-only companion build (where the v6 attempt fails fast instead).
+- The companion's accessibility attach is flaky: an instance that attaches at
+  a bad moment serves a single zero-frame stub element forever while a fresh
+  attach sees the full tree. Every attach is now validated with a probe and
+  respawned once before the transport gives up and falls back.
+
 ## [2.3.0] - 2026-07-30
 
 A deep performance pass on the iOS backend: the agent-facing hot paths now

@@ -78,7 +78,7 @@ internal sealed class StdioMcpServer(ToolRegistry registry)
             ["serverInfo"] = new JsonObject
             {
                 ["name"] = "agentcontroller-windows",
-                ["version"] = "2.3.0"
+                ["version"] = "2.4.0"
             },
             ["instructions"] =
                 "AgentController Windows drives desktop applications through Windows UI Automation. " +
