@@ -120,14 +120,23 @@ export class WDAClient {
     }
   }
 
+  private sessionPromise: Promise<void> | null = null
+
   async createSession(): Promise<void> {
     if (this.sessionId) return
-    log('WDAClient', 'log', `Creating WDA session for ${this.udid}...`)
-    const response = await this.request<WDASessionResponse>('POST', '/session', {
-      capabilities: { alwaysMatch: {}, firstMatch: [{}] },
-    })
-    this.sessionId = response.value?.sessionId ?? response.sessionId
-    log('WDAClient', 'log', `WDA session created: ${this.sessionId}`)
+    // Parallel tool calls (get_device_info fans out four requests) must share
+    // one POST /session — racing them leaks sessions on the WDA side.
+    if (!this.sessionPromise) {
+      this.sessionPromise = (async () => {
+        log('WDAClient', 'log', `Creating WDA session for ${this.udid}...`)
+        const response = await this.request<WDASessionResponse>('POST', '/session', {
+          capabilities: { alwaysMatch: {}, firstMatch: [{}] },
+        })
+        this.sessionId = response.value?.sessionId ?? response.sessionId
+        log('WDAClient', 'log', `WDA session created: ${this.sessionId}`)
+      })().finally(() => { this.sessionPromise = null })
+    }
+    return this.sessionPromise
   }
 
   async destroySession(): Promise<void> {
