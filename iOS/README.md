@@ -12,6 +12,16 @@ requests carry deadlines, every simctl call has a timeout, screenshots ship as
 downscaled JPEG previews (~4x smaller payloads), and the tool surface grew
 from 10 to 36 with MCP annotations on every tool.
 
+Built for agent speed: the idb shell is a framed request/response channel, so
+every tap/swipe/keystroke is acknowledged by the simulator (~2ms) instead of
+fired blind; `describe_screen` answers in ~45-70ms off the warm shell;
+`tap_element` and `wait_for_element` take a describe-all fast path (~40-90ms
+on a hit) and fall back to the exhaustive grid scan only when it finds
+nothing; transports prewarm in the background at server start so the first
+tool call skips the cold starts; and element payloads are a compact
+normalized shape (~60% smaller) so every scan costs the calling agent fewer
+tokens.
+
 ## How it reaches the device
 
 | Target | UI reading | Input | Screenshots |
