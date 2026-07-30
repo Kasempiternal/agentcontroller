@@ -39,9 +39,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// LSUIElement apps have no Dock icon, so re-launching Deskestro from Spotlight,
+    /// LSUIElement apps have no Dock icon, so re-launching AgentController from Spotlight,
     /// Finder, or Launchpad while it's already running routes here instead of doing a
-    /// fresh launch. Without handling it, "opening" a running Deskestro looks like a
+    /// fresh launch. Without handling it, "opening" a running AgentController looks like a
     /// no-op. Resurface the main window when nothing is already visible.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !flag { showMainWindow() }
@@ -96,7 +96,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             SetupManager.writePort(port)
             appState.isServerRunning = true
             appState.serverPort = port
-            print("Deskestro MCP server running on port \(port)")
+            print("AgentController MCP server running on port \(port)")
         } catch {
             print("Failed to start MCP server: \(error)")
             appState.isServerRunning = false

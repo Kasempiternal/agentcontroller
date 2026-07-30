@@ -1,10 +1,10 @@
 import Foundation
 
 struct SetupManager {
-    static let baseDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".deskestro")
+    static let baseDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".agentcontroller")
     static let portFile = baseDir.appendingPathComponent("mcp-port")
     static let tokenFile = baseDir.appendingPathComponent("mcp-token")
-    static let bridgeScript = baseDir.appendingPathComponent("deskestro-mcp-bridge.sh")
+    static let bridgeScript = baseDir.appendingPathComponent("agentcontroller-mcp-bridge.sh")
 
     static func setup() {
         createDirectories()
@@ -42,11 +42,11 @@ struct SetupManager {
 
     private static func installBridgeScript() {
         // Preferred source: the canonical script bundled into the .app by build.sh
-        // (Contents/Resources/deskestro-mcp-bridge.sh). Install it when missing and
+        // (Contents/Resources/agentcontroller-mcp-bridge.sh). Install it when missing and
         // refresh it when the content differs — this is how DMG installs (which
         // never run build.sh) get the bridge at all, and how app updates ship
         // bridge fixes without a manual deploy step.
-        if let bundled = Bundle.main.url(forResource: "deskestro-mcp-bridge", withExtension: "sh"),
+        if let bundled = Bundle.main.url(forResource: "agentcontroller-mcp-bridge", withExtension: "sh"),
            let bundledData = try? Data(contentsOf: bundled) {
             let deployed = try? Data(contentsOf: bridgeScript)
             if deployed != bundledData {
@@ -64,8 +64,8 @@ struct SetupManager {
 
         let script = """
         #!/bin/bash
-        PORT_FILE="$HOME/.deskestro/mcp-port"
-        TOKEN_FILE="$HOME/.deskestro/mcp-token"
+        PORT_FILE="$HOME/.agentcontroller/mcp-port"
+        TOKEN_FILE="$HOME/.agentcontroller/mcp-token"
         while [ ! -f "$PORT_FILE" ] || [ ! -f "$TOKEN_FILE" ]; do sleep 1; done
         PORT=$(cat "$PORT_FILE")
         TOKEN=$(cat "$TOKEN_FILE")

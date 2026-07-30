@@ -1,5 +1,5 @@
 param(
-    [string] $Server = (Join-Path $PSScriptRoot 'Deskestro.Windows\bin\Release\net9.0-windows\deskestro-windows.exe')
+    [string] $Server = (Join-Path $PSScriptRoot 'AgentController.Windows\bin\Release\net9.0-windows\agentcontroller-windows.exe')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -15,7 +15,7 @@ $requests = @(
 
 $responses = @($requests | & $Server | ForEach-Object { $_ | ConvertFrom-Json })
 if ($responses.Count -ne 3) { throw "Expected 3 MCP responses, got $($responses.Count)." }
-if ($responses[0].result.serverInfo.name -ne 'deskestro-windows') { throw 'Initialize response has the wrong server name.' }
+if ($responses[0].result.serverInfo.name -ne 'agentcontroller-windows') { throw 'Initialize response has the wrong server name.' }
 if ($responses[1].result.tools.Count -lt 20) { throw 'Tool registry is unexpectedly incomplete.' }
 if ($responses[2].result.isError) { throw 'check_permissions returned an MCP error.' }
 

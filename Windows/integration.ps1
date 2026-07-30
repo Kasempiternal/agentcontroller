@@ -1,6 +1,6 @@
 param(
-    [string] $Server = (Join-Path $PSScriptRoot 'Deskestro.Windows\bin\Release\net9.0-windows\deskestro-windows.exe'),
-    [string] $Fixture = (Join-Path $PSScriptRoot 'Deskestro.Windows.TestApp\bin\Release\net9.0-windows\Deskestro.Windows.TestApp.exe')
+    [string] $Server = (Join-Path $PSScriptRoot 'AgentController.Windows\bin\Release\net9.0-windows\agentcontroller-windows.exe'),
+    [string] $Fixture = (Join-Path $PSScriptRoot 'AgentController.Windows.TestApp\bin\Release\net9.0-windows\AgentController.Windows.TestApp.exe')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -13,13 +13,13 @@ try {
     Start-Sleep -Milliseconds 250
 
     $requests = @(
-        '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"snapshot","arguments":{"app":"Deskestro.Windows.TestApp","maxElements":50}}}',
-        '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"type_text","arguments":{"app":"Deskestro.Windows.TestApp","role":"Edit","text":"Windows UIA works"}}}',
-        '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"click","arguments":{"app":"Deskestro.Windows.TestApp","title":"Apply"}}}',
-        '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"assert_visible","arguments":{"app":"Deskestro.Windows.TestApp","labelContains":"Windows UIA works","timeoutMs":3000}}}',
-        '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"screenshot_window","arguments":{"app":"Deskestro.Windows.TestApp"}}}'
+        '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"snapshot","arguments":{"app":"AgentController.Windows.TestApp","maxElements":50}}}',
+        '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"type_text","arguments":{"app":"AgentController.Windows.TestApp","role":"Edit","text":"Windows UIA works"}}}',
+        '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"click","arguments":{"app":"AgentController.Windows.TestApp","title":"Apply"}}}',
+        '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"assert_visible","arguments":{"app":"AgentController.Windows.TestApp","labelContains":"Windows UIA works","timeoutMs":3000}}}',
+        '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"screenshot_window","arguments":{"app":"AgentController.Windows.TestApp"}}}'
     )
-    $requests = $requests | ForEach-Object { $_.Replace('Deskestro.Windows.TestApp', $fixtureProcess.Id.ToString()) }
+    $requests = $requests | ForEach-Object { $_.Replace('AgentController.Windows.TestApp', $fixtureProcess.Id.ToString()) }
 
     $responses = @($requests | & $Server | ForEach-Object { $_ | ConvertFrom-Json })
     if ($responses.Count -ne 5) { throw "Expected 5 responses, got $($responses.Count)." }

@@ -36,10 +36,10 @@ jobs:
           dotnet-version: 9.0.x
 
       - name: Build Windows server
-        run: dotnet build Windows\Deskestro.Windows\Deskestro.Windows.csproj --configuration Release
+        run: dotnet build Windows\AgentController.Windows\AgentController.Windows.csproj --configuration Release
 
       - name: Build Windows UI test fixture
-        run: dotnet build Windows\Deskestro.Windows.TestApp\Deskestro.Windows.TestApp.csproj --configuration Release
+        run: dotnet build Windows\AgentController.Windows.TestApp\AgentController.Windows.TestApp.csproj --configuration Release
 
       - name: MCP protocol smoke
         shell: pwsh

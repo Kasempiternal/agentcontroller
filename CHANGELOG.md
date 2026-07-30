@@ -1,12 +1,12 @@
 # Changelog
 
-All notable changes to Deskestro are documented here. The format follows
+All notable changes to AgentController are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
-## [2.0.0] - 2026-07-23
+## [2.0.0] - 2026-07-30
 
-Deskestro becomes a cross-platform desktop automation project with one MCP
+AgentController becomes a cross-platform desktop automation project with one MCP
 contract across native macOS and Windows backends.
 
 ### Added
@@ -24,7 +24,7 @@ contract across native macOS and Windows backends.
 ### Changed
 - Renamed the application, packages, namespaces, binaries, bundle identifier,
   MCP server names, scripts, runtime directories, documentation, and CI paths
-  to the Deskestro identity.
+  to the AgentController identity.
 - Versioned both native backends together at 2.0.0.
 - The repository documentation now leads with the shared platform contract and
   calls out capability and security differences explicitly.
@@ -55,7 +55,7 @@ dead session) and a process-killing crash, and modernizes the MCP surface.
   bodies stream via `--data-binary @-` (ARG_MAX-proof), and non-200 responses
   are wrapped as proper JSON-RPC errors.
 - **DMG-install first run**: the app now bundles the canonical bridge script
-  (Contents/Resources) and installs/refreshes `~/.deskestro/` from it. The
+  (Contents/Resources) and installs/refreshes `~/.agentcontroller/` from it. The
   old embedded bootstrap sent no bearer token — DMG installs (which never run
   build.sh) got a 401 on every request.
 - **run_steps**: a step whose handler throws is recorded as a failed step;
@@ -117,7 +117,7 @@ re-opening the app more confusing than it should be.
   pane — but macOS doesn't list an app under Screen Recording until it actually
   *requests* capture, so the pane showed a list the app wasn't in yet. (Mirrors
   the Accessibility row, which already did this.)
-- **Re-opening a running Deskestro** from Spotlight / Finder / Launchpad now
+- **Re-opening a running AgentController** from Spotlight / Finder / Launchpad now
   resurfaces the main window via `applicationShouldHandleReopen`. As an
   `LSUIElement` (no Dock icon), a re-launch previously looked like a no-op.
 
@@ -183,7 +183,7 @@ their cursor, or even seeing the app under test.
 
 ## [1.2.0] - 2026-06-01
 
-Turned Deskestro from an automation toy into a QA harness, and hardened the
+Turned AgentController from an automation toy into a QA harness, and hardened the
 transport. Includes everything shipped since 1.0.0 (April performance and
 TCC-persistence work).
 

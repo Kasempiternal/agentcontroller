@@ -1,6 +1,6 @@
 # Tool Reference
 
-Deskestro exposes **49 MCP tools**. This file is generated from the live server's `tools/list` response (v1.3.0), so descriptions match exactly what an agent sees.
+AgentController exposes **49 MCP tools**. This file is generated from the live server's `tools/list` response (v1.3.0), so descriptions match exactly what an agent sees.
 
 ## Index
 
@@ -627,7 +627,7 @@ Load a saved flow by name and run it through the same engine as run_steps. Retur
 
 ### `check_permissions`
 
-Check if Deskestro has the required macOS permissions (Accessibility and Screen Recording)
+Check if AgentController has the required macOS permissions (Accessibility and Screen Recording)
 
 _No parameters._
 

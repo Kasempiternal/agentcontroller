@@ -7,7 +7,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $env:DOTNET_CLI_HOME = Join-Path $PSScriptRoot '.dotnet-cli'
 $env:DOTNET_NOLOGO = '1'
-$project = Join-Path $PSScriptRoot 'Deskestro.Windows\Deskestro.Windows.csproj'
+$project = Join-Path $PSScriptRoot 'AgentController.Windows\AgentController.Windows.csproj'
 $output = Join-Path $PSScriptRoot "publish\$Runtime"
 $selfContained = if ($FrameworkDependent) { 'false' } else { 'true' }
 
@@ -21,4 +21,4 @@ dotnet publish $project `
 
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE." }
 
-Write-Host "Published Deskestro Windows to $output"
+Write-Host "Published AgentController Windows to $output"

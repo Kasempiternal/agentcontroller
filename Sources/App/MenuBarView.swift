@@ -27,12 +27,12 @@ struct MenuBarView: View {
 
             Divider()
 
-            Button("Open Deskestro") {
+            Button("Open AgentController") {
                 NSApplication.shared.activate(ignoringOtherApps: true)
                 openWindow(id: "main")
             }
 
-            Button("Quit Deskestro") {
+            Button("Quit AgentController") {
                 NSApplication.shared.terminate(nil)
             }
             .keyboardShortcut("q")

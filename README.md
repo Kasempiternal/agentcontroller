@@ -1,10 +1,10 @@
-# Deskestro
+# AgentController
 
 <p align="center">
-  <img src="Resources/DeskestroIcon.png" width="180" alt="Deskestro icon">
+  <img src="Resources/AgentControllerIcon.png" width="180" alt="AgentController icon">
 </p>
 
-[![CI](https://github.com/Kasempiternal/deskestro/actions/workflows/ci.yml/badge.svg)](https://github.com/Kasempiternal/deskestro/actions/workflows/ci.yml)
+[![CI](https://github.com/Kasempiternal/agentcontroller/actions/workflows/ci.yml/badge.svg)](https://github.com/Kasempiternal/agentcontroller/actions/workflows/ci.yml)
 ![Version](https://img.shields.io/badge/version-2.0.0-blue)
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B%20%7C%20Windows%2010%2F11-lightgrey)
 ![Swift](https://img.shields.io/badge/swift-5.10-orange)
@@ -13,7 +13,7 @@
 
 **Native desktop app QA automation for AI agents, exposed over MCP (Model Context Protocol).**
 
-Deskestro lets Claude Code—or any MCP client—drive and *test* desktop applications on **macOS and Windows**. It exposes one portable automation vocabulary for clicking, typing, screenshots, menus, accessibility inspection, assertions, and replayable flows, backed by native platform APIs rather than a browser-only abstraction.
+AgentController lets Claude Code—or any MCP client—drive and *test* desktop applications on **macOS and Windows**. It exposes one portable automation vocabulary for clicking, typing, screenshots, menus, accessibility inspection, assertions, and replayable flows, backed by native platform APIs rather than a browser-only abstraction.
 
 Its defining feature is background-first automation. On macOS, every tool is background-safe by default. On Windows, UI Automation patterns run without moving the pointer, while the five raw-input gestures require explicit `foreground:true` authorization and restore the prior focus and cursor afterward.
 
@@ -58,8 +58,8 @@ Both backends register the same 49-tool contract. Windows currently has 46 nativ
 ## How it works
 
 ```
-Claude Code ──stdio──▶ deskestro-mcp-bridge.sh ──HTTP POST──▶ Deskestro.app
- (MCP client)           (~/.deskestro/)           localhost     (menu-bar app)
+Claude Code ──stdio──▶ agentcontroller-mcp-bridge.sh ──HTTP POST──▶ AgentController.app
+ (MCP client)           (~/.agentcontroller/)           localhost     (menu-bar app)
                                                                  │
                                                   Accessibility API + CGEvent
                                                   ScreenCaptureKit
@@ -68,7 +68,7 @@ Claude Code ──stdio──▶ deskestro-mcp-bridge.sh ──HTTP POST──�
                                                           App under test
 ```
 
-Deskestro runs as a menu-bar app (`LSUIElement`, no Dock icon) hosting a bespoke HTTP + JSON-RPC 2.0 server on a random loopback port. A resilient stdio bridge script translates MCP's stdio transport to HTTP, re-resolving the port and auth token automatically — so rebuilding or restarting Deskestro never kills an active Claude Code session.
+AgentController runs as a menu-bar app (`LSUIElement`, no Dock icon) hosting a bespoke HTTP + JSON-RPC 2.0 server on a random loopback port. A resilient stdio bridge script translates MCP's stdio transport to HTTP, re-resolving the port and auth token automatically — so rebuilding or restarting AgentController never kills an active Claude Code session.
 
 | Module | Responsibility |
 |---|---|
@@ -89,8 +89,8 @@ Deskestro runs as a menu-bar app (`LSUIElement`, no Dock icon) hosting a bespoke
 Clone once for either platform:
 
 ```bash
-git clone https://github.com/Kasempiternal/deskestro.git
-cd deskestro
+git clone https://github.com/Kasempiternal/agentcontroller.git
+cd agentcontroller
 ```
 
 ### macOS
@@ -106,16 +106,16 @@ cd deskestro
 ./build.sh --dev
 ```
 
-`build.sh` kills any running instance, builds, signs, installs to `/Applications/Deskestro.app`, deploys the bridge script to `~/.deskestro/`, and relaunches the app.
+`build.sh` kills any running instance, builds, signs, installs to `/Applications/AgentController.app`, deploys the bridge script to `~/.agentcontroller/`, and relaunches the app.
 
 ### Windows
 
 ```powershell
 .\Windows\build.ps1
-.\Windows\smoke.ps1 -Server .\Windows\publish\win-x64\deskestro-windows.exe
+.\Windows\smoke.ps1 -Server .\Windows\publish\win-x64\agentcontroller-windows.exe
 ```
 
-Register `Windows\publish\win-x64\deskestro-windows.exe` directly as an MCP stdio server. Full configuration and the elevated interactive integration test are documented in [Windows/README.md](Windows/README.md).
+Register `Windows\publish\win-x64\agentcontroller-windows.exe` directly as an MCP stdio server. Full configuration and the elevated interactive integration test are documented in [Windows/README.md](Windows/README.md).
 
 The default signing identity is set at the top of `build.sh`; override per-invocation with:
 
@@ -126,7 +126,7 @@ SIGN_ID='Apple Development: Your Name (TEAMID1234)' ./build.sh --skip-notarize
 For notarized release builds, store notarization credentials once (create an app-specific password at [appleid.apple.com](https://appleid.apple.com) first):
 
 ```bash
-xcrun notarytool store-credentials deskestro-notary \
+xcrun notarytool store-credentials agentcontroller-notary \
   --apple-id <your-apple-id> --team-id <your-team-id> --password <app-specific-password>
 ```
 
@@ -136,15 +136,15 @@ macOS TCC keys Accessibility and Screen Recording grants to the signing identity
 
 ## Setup
 
-**1. Grant permissions (one time).** On first launch Deskestro prompts for the two permissions it needs — grant them to **Deskestro.app** (not your terminal):
+**1. Grant permissions (one time).** On first launch AgentController prompts for the two permissions it needs — grant them to **AgentController.app** (not your terminal):
 
-- *System Settings → Privacy & Security → Accessibility → Deskestro*
-- *System Settings → Privacy & Security → Screen Recording → Deskestro*
+- *System Settings → Privacy & Security → Accessibility → AgentController*
+- *System Settings → Privacy & Security → Screen Recording → AgentController*
 
 **2. Register the MCP server with Claude Code.** Either user-scoped (available in all projects):
 
 ```bash
-claude mcp add --scope user deskestro -- ~/.deskestro/deskestro-mcp-bridge.sh
+claude mcp add --scope user agentcontroller -- ~/.agentcontroller/agentcontroller-mcp-bridge.sh
 ```
 
 …or per-project, by adding to the project's `.mcp.json`:
@@ -152,22 +152,22 @@ claude mcp add --scope user deskestro -- ~/.deskestro/deskestro-mcp-bridge.sh
 ```json
 {
   "mcpServers": {
-    "deskestro": {
-      "command": "/Users/<you>/.deskestro/deskestro-mcp-bridge.sh"
+    "agentcontroller": {
+      "command": "/Users/<you>/.agentcontroller/agentcontroller-mcp-bridge.sh"
     }
   }
 }
 ```
 
-**3. Verify.** Restart Claude Code; the tools appear as `mcp__deskestro__*`. Ask Claude to run `check_permissions` — it should report `"allGranted": true`. (Auto-start on login: *System Settings → General → Login Items → add Deskestro*.)
+**3. Verify.** Restart Claude Code; the tools appear as `mcp__agentcontroller__*`. Ask Claude to run `check_permissions` — it should report `"allGranted": true`. (Auto-start on login: *System Settings → General → Login Items → add AgentController*.)
 
 ## Migrating from v1
 
 Version 2.0 changes the product name, executable names, bundle identifier, MCP server names, and runtime directories. Existing installations are intentionally not deleted automatically.
 
-- On macOS, remove the old MCP registration, install `Deskestro.app`, grant Accessibility and Screen Recording again for the new `izotz.deskestro` bundle identifier, then register `deskestro` using `~/.deskestro/deskestro-mcp-bridge.sh`.
-- On Windows, update the MCP command to `deskestro-windows.exe`; saved flow files now live under `%LOCALAPPDATA%\Deskestro\flows`.
-- After confirming v2 works, the previous app and its legacy runtime directory can be removed manually. They are not read or overwritten by Deskestro.
+- On macOS, remove the old MCP registration, install `AgentController.app`, grant Accessibility and Screen Recording again for the new `izotz.agentcontroller` bundle identifier, then register `agentcontroller` using `~/.agentcontroller/agentcontroller-mcp-bridge.sh`.
+- On Windows, update the MCP command to `agentcontroller-windows.exe`; saved flow files now live under `%LOCALAPPDATA%\AgentController\flows`.
+- After confirming v2 works, the previous app and its legacy runtime directory can be removed manually. They are not read or overwritten by AgentController.
 
 ## Quick start
 
@@ -245,7 +245,7 @@ The single intentionally focus-changing tool is `activate_app`; everything else 
 
 ## Security
 
-The HTTP server is pinned to **IPv4 loopback** (never `0.0.0.0`), so it is unreachable from the network. Every request must carry `Authorization: Bearer <token>`; the server generates a fresh 256-bit token per launch, writes it to `~/.deskestro/mcp-token` (mode `0600`, alongside `mcp-port`), and the bridge replays it on each call with automatic re-resolution after restarts. Bearer comparison is constant-time. Requests carrying an `Origin` header or a non-loopback `Host` are rejected (`403`) to defeat DNS rebinding from a browser. Request bodies are size-capped (16 MiB) and reads are deadline-bounded (slowloris protection).
+The HTTP server is pinned to **IPv4 loopback** (never `0.0.0.0`), so it is unreachable from the network. Every request must carry `Authorization: Bearer <token>`; the server generates a fresh 256-bit token per launch, writes it to `~/.agentcontroller/mcp-token` (mode `0600`, alongside `mcp-port`), and the bridge replays it on each call with automatic re-resolution after restarts. Bearer comparison is constant-time. Requests carrying an `Origin` header or a non-loopback `Host` are rejected (`403`) to defeat DNS rebinding from a browser. Request bodies are size-capped (16 MiB) and reads are deadline-bounded (slowloris protection).
 
 Destructive operations are opt-in: `reset_app_state` only deletes an app's sandbox container behind an explicit `wipeData: true` flag, and the clipboard tools warn that they touch system-wide state.
 
@@ -267,9 +267,9 @@ CI builds and tests every push on a macOS 15 runner (`.github/workflows/ci.yml`)
 
 | Symptom | Fix |
 |---|---|
-| Tools don't appear in Claude Code | Is Deskestro running (menu-bar icon)? Re-add the MCP server, restart Claude Code |
-| `Deskestro is not running` errors from the bridge | Launch `/Applications/Deskestro.app`; the bridge retries automatically on the next request |
-| `check_permissions` shows a missing grant | Re-grant in System Settings → Privacy & Security; make sure the grant is for **Deskestro.app**, not your terminal |
+| Tools don't appear in Claude Code | Is AgentController running (menu-bar icon)? Re-add the MCP server, restart Claude Code |
+| `AgentController is not running` errors from the bridge | Launch `/Applications/AgentController.app`; the bridge retries automatically on the next request |
+| `check_permissions` shows a missing grant | Re-grant in System Settings → Privacy & Security; make sure the grant is for **AgentController.app**, not your terminal |
 | Permissions reset after a rebuild | You built with `--dev` (ad-hoc). Use a real certificate so the Team ID stays stable |
 | `Signing identity not found` from `build.sh` | Pass your own: `SIGN_ID='Apple Development: …' ./build.sh --skip-notarize` |
 | Screenshot of a minimized window fails | By design — `restore_window` first |

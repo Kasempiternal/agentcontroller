@@ -12,7 +12,7 @@ struct StatusView: View {
                 Image(systemName: "rectangle.3.group.bubble.left.fill")
                     .font(.title2)
                     .foregroundStyle(.teal)
-                Text("Deskestro")
+                Text("AgentController")
                     .font(.title2.bold())
                 Spacer()
                 Text("v" + (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""))
@@ -128,7 +128,7 @@ struct StatusView: View {
                     .font(.caption.bold())
                     .foregroundStyle(.secondary)
                 HStack {
-                    Text("~/.deskestro/deskestro-mcp-bridge.sh")
+                    Text("~/.agentcontroller/agentcontroller-mcp-bridge.sh")
                         .font(.system(.caption, design: .monospaced))
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
@@ -181,7 +181,7 @@ struct StatusView: View {
         """
         {
           "mcpServers": {
-            "deskestro": {
+            "agentcontroller": {
               "command": "\(SetupManager.bridgeScript.path)"
             }
           }
