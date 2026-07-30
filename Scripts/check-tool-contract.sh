@@ -41,15 +41,29 @@ note() { printf '       %s\n' "$*" >&2; }
 { grep -oE '^###?[[:space:]]+`?[a-z_]+' docs/TOOLS.md || true; } \
     | grep -oE '[a-z_]+$' | sort -u > "$WORK/docs"
 
+# iOS: each tool is a `server.registerTool(` call with the name on the next
+# line. The iOS surface is deliberately its own contract (phones are not
+# desktops), so it is checked against its own docs, not the desktop set.
+{ grep -A1 -E 'registerTool\($' iOS/src/mcp-server.ts 2>/dev/null || true; } \
+    | grep -oE "'[a-z_]+'" | tr -d "'" | sort -u > "$WORK/ios"
+
+# iOS docs: the tool table in iOS/README.md, one `| `tool` |` row each.
+{ grep -oE '^\| `[a-z_]+`' iOS/README.md 2>/dev/null || true; } \
+    | grep -oE '[a-z_]+' | sort -u > "$WORK/ios_docs"
+
 MACOS_N=$(wc -l < "$WORK/macos" | tr -d ' ')
 WINDOWS_N=$(wc -l < "$WORK/windows" | tr -d ' ')
 DOCS_N=$(wc -l < "$WORK/docs" | tr -d ' ')
+IOS_N=$(wc -l < "$WORK/ios" | tr -d ' ')
+IOS_DOCS_N=$(wc -l < "$WORK/ios_docs" | tr -d ' ')
 
 # An empty extraction means a declaration shape changed and the patterns above
 # need updating. Never let that pass as "the sets match".
-[ "$MACOS_N" -gt 0 ]   || fail "extracted 0 tools from Sources/MCPTools — did the declaration shape change?"
-[ "$WINDOWS_N" -gt 0 ] || fail "extracted 0 tools from Windows/ — did the declaration shape change?"
-[ "$DOCS_N" -gt 0 ]    || fail "extracted 0 tools from docs/TOOLS.md — did the heading shape change?"
+[ "$MACOS_N" -gt 0 ]    || fail "extracted 0 tools from Sources/MCPTools — did the declaration shape change?"
+[ "$WINDOWS_N" -gt 0 ]  || fail "extracted 0 tools from Windows/ — did the declaration shape change?"
+[ "$DOCS_N" -gt 0 ]     || fail "extracted 0 tools from docs/TOOLS.md — did the heading shape change?"
+[ "$IOS_N" -gt 0 ]      || fail "extracted 0 tools from iOS/src/mcp-server.ts — did the declaration shape change?"
+[ "$IOS_DOCS_N" -gt 0 ] || fail "extracted 0 tools from the iOS/README.md table — did the table shape change?"
 
 if [ "$FAILED" != 0 ]; then
     printf '\n\033[1;31mTool contract check could not run.\033[0m\n' >&2
@@ -74,22 +88,31 @@ else
     comm -13 "$WORK/macos" "$WORK/docs" | while read -r t; do note "documented but unregistered: $t"; done
 fi
 
+# --- iOS registry must match its own docs -----------------------------------
+if diff -q "$WORK/ios" "$WORK/ios_docs" >/dev/null 2>&1; then
+    ok "iOS/README.md documents all $IOS_N iOS tools and no others"
+else
+    fail "iOS/README.md tool table is out of sync with the iOS registry"
+    comm -23 "$WORK/ios" "$WORK/ios_docs" | while read -r t; do note "registered but undocumented: $t"; done
+    comm -13 "$WORK/ios" "$WORK/ios_docs" | while read -r t; do note "documented but unregistered: $t"; done
+fi
+
 # --- Prose tool counts must match reality -----------------------------------
-# Any "<N> tools" / "<N>-tool" / "<N> MCP tools" claim must equal the real
-# count, so the number in the README can never quietly rot.
+# Any "<N> tools" / "<N>-tool" / "<N> MCP tools" claim must equal one of the
+# real counts (desktop or iOS), so a number in the README can never quietly rot.
 COUNT_DRIFT=0
-for doc in README.md Windows/README.md CHANGELOG.md docs/TOOLS.md; do
+for doc in README.md Windows/README.md iOS/README.md CHANGELOG.md docs/TOOLS.md; do
     [ -f "$doc" ] || continue
     claims=$({ grep -ohE '[0-9]+\*?\*?[[:space:]-]+(MCP[[:space:]]+)?tools?\b' "$doc" || true; } \
                 | grep -oE '^[0-9]+' | sort -u)
     for claimed in $claims; do
-        if [ "$claimed" != "$MACOS_N" ]; then
-            fail "$doc claims $claimed tools, registries have $MACOS_N"
+        if [ "$claimed" != "$MACOS_N" ] && [ "$claimed" != "$IOS_N" ]; then
+            fail "$doc claims $claimed tools, registries have $MACOS_N (desktop) and $IOS_N (iOS)"
             COUNT_DRIFT=1
         fi
     done
 done
-[ "$COUNT_DRIFT" = 0 ] && ok "every tool-count claim in the docs matches the registries"
+[ "$COUNT_DRIFT" = 0 ] && ok "every tool-count claim in the docs matches a registry ($MACOS_N desktop, $IOS_N iOS)"
 
 # --- Windows native-vs-unsupported split ------------------------------------
 # Windows deliberately returns explicit errors rather than faking these three.
@@ -152,4 +175,4 @@ if [ "$FAILED" != 0 ]; then
     printf '\n\033[1;31mTool contract check failed.\033[0m\n' >&2
     exit 1
 fi
-printf '\n\033[1;32mTool contract intact: %s tools, both backends, docs in sync.\033[0m\n' "$MACOS_N"
+printf '\n\033[1;32mTool contract intact: %s desktop tools on both backends, %s iOS tools, docs in sync.\033[0m\n' "$MACOS_N" "$IOS_N"
