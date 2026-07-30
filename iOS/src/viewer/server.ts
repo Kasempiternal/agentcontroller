@@ -232,7 +232,9 @@ export function createViewerServer(): { server: Server; start: (port: number) =>
             reject(err)
           }
         })
-        httpServer.listen(p, () => {
+        // Loopback only: the viewer streams the device screen unauthenticated,
+        // so it must never be reachable from the network.
+        httpServer.listen(p, '127.0.0.1', () => {
           const addr = httpServer.address()
           const boundPort = typeof addr === 'object' && addr ? addr.port : p
           log('Viewer', 'log', `Viewer server listening on http://localhost:${boundPort}`)

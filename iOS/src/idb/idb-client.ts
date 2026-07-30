@@ -7,6 +7,7 @@ import { childEnv } from '../child-env.js'
 import { resolveRuntimeFile } from '../paths.js'
 
 const execAsync = promisify(exec)
+const execFileAsync = promisify(execFile)
 
 const IDB_PATH = resolveRuntimeFile('python', 'bin', 'idb') ?? 'idb'
 const IDB_COMPANION_PATH = resolveRuntimeFile('idb-companion', 'bin', 'idb_companion')
@@ -102,7 +103,7 @@ export class IDBClient {
         log('IDBClient', 'warn', `[${this.udid}] Companion connection refused (attempt ${this.companionKillAttempts}/${IDBClient.MAX_COMPANION_KILL_ATTEMPTS}) — restarting shell`)
         proc.kill('SIGTERM')
         if (this.shellProcess === proc) this.shellProcess = null
-        execAsync(`${IDB_PATH} kill`)
+        execFileAsync(IDB_PATH, ['kill'])
           .catch(e => log('IDBClient', 'log', `[${this.udid}] idb kill error: ${e}`))
           .then(() => new Promise(resolve => setTimeout(resolve, 2000)))
           .then(() => this.startShell())
@@ -131,13 +132,17 @@ export class IDBClient {
     this.shellProcess.stdin.write(args + '\n')
   }
 
-  private async runDirect(args: string): Promise<string> {
+  // Argument array, never a shell string: udid and tool parameters are
+  // caller-controlled and must not be interpreted by a shell.
+  private async runDirect(args: string[]): Promise<string> {
     const resolvedUdid = await this.getResolvedUdid()
-    const companionArg = IDB_COMPANION_PATH ? `--companion-path ${IDB_COMPANION_PATH}` : ''
-    const udidArg = `--udid ${resolvedUdid}`
-    const cmd = `${IDB_PATH} ${companionArg} ${args} ${udidArg}`.trim()
-    log('IDBClient', 'log', `[${this.udid}] Running direct: ${cmd}`)
-    const { stdout, stderr } = await execAsync(cmd)
+    const fullArgs = [
+      ...(IDB_COMPANION_PATH ? ['--companion-path', IDB_COMPANION_PATH] : []),
+      ...args,
+      '--udid', resolvedUdid,
+    ]
+    log('IDBClient', 'log', `[${this.udid}] Running direct: ${IDB_PATH} ${fullArgs.join(' ')}`)
+    const { stdout, stderr } = await execFileAsync(IDB_PATH, fullArgs, { env: childEnv() })
     if (stderr) log('IDBClient', 'log', `[${this.udid}] stderr: ${stderr}`)
     return stdout.trim()
   }
@@ -204,8 +209,8 @@ export class IDBClient {
   }
 
   async describeAll(nested?: boolean): Promise<unknown> {
-    let args = 'ui describe-all --json'
-    if (nested) args += ' --nested'
+    const args = ['ui', 'describe-all', '--json']
+    if (nested) args.push('--nested')
 
     let output = ''
     try {
@@ -219,8 +224,8 @@ export class IDBClient {
   }
 
   async describePoint(x: number, y: number, nested?: boolean): Promise<unknown> {
-    let args = `ui describe-point ${Math.round(x)} ${Math.round(y)} --json`
-    if (nested) args += ' --nested'
+    const args = ['ui', 'describe-point', String(Math.round(x)), String(Math.round(y)), '--json']
+    if (nested) args.push('--nested')
 
     let output = ''
     try {
@@ -249,13 +254,13 @@ export class IDBClient {
 
   async listApps(): Promise<{ bundleId: string; name: string; type: 'System' | 'User' }[]> {
     const resolvedUdid = await this.getResolvedUdid()
-    const { stdout } = await execAsync(`xcrun simctl listapps ${resolvedUdid}`)
+    const { stdout } = await execFileAsync('xcrun', ['simctl', 'listapps', resolvedUdid], { env: childEnv() })
     return parseSimctlAppList(stdout)
   }
 
   async launch(bundleId: string): Promise<void> {
     const resolvedUdid = await this.getResolvedUdid()
-    await execAsync(`xcrun simctl launch ${resolvedUdid} ${bundleId}`)
+    await execFileAsync('xcrun', ['simctl', 'launch', resolvedUdid, bundleId], { env: childEnv() })
   }
 }
 
