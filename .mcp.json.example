@@ -1,0 +1,8 @@
+{
+  "_comment": "Copy to .mcp.json and replace <you> with your macOS username. .mcp.json is gitignored because the MCP client requires an absolute path, which is machine-specific. On Windows, point the command at Windows\\publish\\win-x64\\agentcontroller-windows.exe instead — see Windows/README.md.",
+  "mcpServers": {
+    "agentcontroller": {
+      "command": "/Users/<you>/.agentcontroller/agentcontroller-mcp-bridge.sh"
+    }
+  }
+}

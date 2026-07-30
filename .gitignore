@@ -11,3 +11,7 @@ obj/
 publish/
 *.user
 .dotnet-cli/
+
+# Local MCP client registration. The client needs an absolute path, which is
+# machine-specific, so this is per-checkout. Copy .mcp.json.example instead.
+.mcp.json

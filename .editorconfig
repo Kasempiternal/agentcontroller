@@ -1,0 +1,26 @@
+# Matches the conventions already in the tree rather than imposing new ones.
+# https://editorconfig.org
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.{yml,yaml,json}]
+indent_size = 2
+
+[*.md]
+indent_size = 2
+# Markdown uses two trailing spaces as a hard line break.
+trim_trailing_whitespace = false
+
+# Info.plist and the entitlements are tab-indented, as Xcode writes them.
+[*.{plist,entitlements}]
+indent_style = tab
+
+[Makefile]
+indent_style = tab

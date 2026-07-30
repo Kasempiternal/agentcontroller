@@ -1,7 +1,0 @@
-{
-  "mcpServers": {
-    "agentcontroller": {
-      "command": "/Users/izotz.cristobal/.agentcontroller/agentcontroller-mcp-bridge.sh"
-    }
-  }
-}
