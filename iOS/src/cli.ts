@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, symlinkSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, symlinkSync, rmSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 import { fileURLToPath } from 'url'
@@ -42,6 +42,31 @@ async function prompt(question: string): Promise<string> {
   })
 }
 
+// fb-idb still calls asyncio.get_event_loop() at import time, which Python
+// 3.14 removed for non-running contexts — so the venv must be built on an
+// older interpreter, never whatever "python3" happens to resolve to.
+function pickPython(): string {
+  for (const v of ['3.13', '3.12', '3.11']) {
+    try {
+      execSync(`command -v python${v}`, { stdio: 'pipe', shell: '/bin/sh' })
+      return `python${v}`
+    } catch { /* not installed */ }
+  }
+  return 'python3'
+}
+
+// A prior install root may hold a venv broken by a Homebrew Python upgrade
+// (the interpreter it was created against is gone or too new). Only reuse
+// an idb that still actually runs.
+function idbWorks(idbPath: string): boolean {
+  try {
+    execSync(`"${idbPath}" --help`, { stdio: 'pipe', timeout: 15_000 })
+    return true
+  } catch {
+    return false
+  }
+}
+
 async function installDependencies(): Promise<void> {
   try {
     execSync('xcode-select -p', { stdio: 'pipe' })
@@ -63,11 +88,14 @@ async function installDependencies(): Promise<void> {
   const priorRoots = runtimeRoots().filter(r => r !== RUNTIME_HOME)
 
   const idbPath = join(RUNTIME_HOME, 'python', 'bin', 'idb')
-  const priorIdbRoot = priorRoots.find(r => existsSync(join(r, 'python', 'bin', 'idb')))
-  if (existsSync(idbPath)) {
-    // already installed
+  const priorIdbRoot = priorRoots.find(r =>
+    existsSync(join(r, 'python', 'bin', 'idb')) && idbWorks(join(r, 'python', 'bin', 'idb')))
+  if (existsSync(idbPath) && idbWorks(idbPath)) {
+    // already installed and healthy
   } else if (priorIdbRoot) {
     mkdirSync(RUNTIME_HOME, { recursive: true })
+    // Clear a broken venv (or stale symlink) so the reuse link can land.
+    rmSync(join(RUNTIME_HOME, 'python'), { recursive: true, force: true })
     try { symlinkSync(join(priorIdbRoot, 'python'), join(RUNTIME_HOME, 'python')) } catch { /* ignore */ }
     const priorCompanion = join(priorIdbRoot, 'idb-companion')
     if (existsSync(priorCompanion) && !existsSync(join(RUNTIME_HOME, 'idb-companion'))) {
@@ -75,13 +103,14 @@ async function installDependencies(): Promise<void> {
     }
   } else {
     process.stderr.write('\n  Installing idb (this may take a few minutes)...\n')
+    rmSync(join(RUNTIME_HOME, 'python'), { recursive: true, force: true })
     mkdirSync(join(RUNTIME_HOME, 'python'), { recursive: true })
     mkdirSync(join(RUNTIME_HOME, 'idb-companion'), { recursive: true })
     try {
       process.stderr.write('    Installing idb_companion via Homebrew...\n')
       await execAsync('brew tap facebook/fb && brew install idb-companion', { timeout: 300_000 })
       process.stderr.write('    Installing fb-idb via pip...\n')
-      await execAsync(`python3 -m venv "${join(RUNTIME_HOME, 'python')}" && "${join(RUNTIME_HOME, 'python', 'bin', 'pip')}" install fb-idb`, { timeout: 300_000 })
+      await execAsync(`${pickPython()} -m venv "${join(RUNTIME_HOME, 'python')}" && "${join(RUNTIME_HOME, 'python', 'bin', 'pip')}" install fb-idb`, { timeout: 300_000 })
       process.stderr.write('    idb installed successfully\n')
     } catch (e) {
       process.stderr.write(`    Warning: idb installation failed: ${(e as Error).message}\n`)

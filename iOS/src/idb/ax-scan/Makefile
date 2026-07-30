@@ -1,12 +1,19 @@
-IDB_FRAMEWORKS = $(HOME)/.blitz-ios-mcp/idb-companion/Frameworks
-IDB_FRAMEWORKS_FALLBACK = $(HOME)/.blitz/idb-companion/Frameworks
 XCODE_FRAMEWORKS = /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks
 OUTPUT = ax-scan
 
-INSTALL_DIR = $(HOME)/.blitz-ios-mcp/bin
+INSTALL_DIR = $(HOME)/.agentcontroller/ios/bin
 
-# Use blitz-ios-mcp frameworks if available, otherwise fall back to blitz
-EFFECTIVE_IDB_FRAMEWORKS = $(shell if [ -d "$(IDB_FRAMEWORKS)" ]; then echo "$(IDB_FRAMEWORKS)"; else echo "$(IDB_FRAMEWORKS_FALLBACK)"; fi)
+# FBControlCore/FBSimulatorControl ship with idb-companion. Search every known
+# runtime root (ours first, then upstream iPhone-mcp layouts), and finally the
+# Homebrew install itself.
+FRAMEWORK_CANDIDATES = \
+	$(HOME)/.agentcontroller/ios/idb-companion/Frameworks \
+	$(HOME)/.blitz-iphone-mcp/idb-companion/Frameworks \
+	$(HOME)/.blitz-ios-mcp/idb-companion/Frameworks \
+	$(HOME)/.blitz/idb-companion/Frameworks \
+	$(shell brew --prefix idb-companion 2>/dev/null)/Frameworks
+
+EFFECTIVE_IDB_FRAMEWORKS = $(shell for d in $(FRAMEWORK_CANDIDATES); do if [ -d "$$d" ]; then echo "$$d"; break; fi; done)
 
 .PHONY: all clean install
 
@@ -17,6 +24,7 @@ install: $(OUTPUT)
 	cp $(OUTPUT) $(INSTALL_DIR)/$(OUTPUT)
 
 $(OUTPUT): ax-scan.m
+	@if [ -z "$(EFFECTIVE_IDB_FRAMEWORKS)" ]; then echo "error: idb-companion frameworks not found (brew install idb-companion)"; exit 1; fi
 	clang -fobjc-arc -fmodules \
 		-F$(EFFECTIVE_IDB_FRAMEWORKS) \
 		-F$(XCODE_FRAMEWORKS) \

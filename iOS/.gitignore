@@ -1,5 +1,6 @@
 node_modules/
 dist/
+src/idb/ax-scan/ax-scan
 *.tsbuildinfo
 .DS_Store
 .idea/

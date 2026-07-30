@@ -93,6 +93,7 @@ export class AXScanClient {
   private buffer = ''
   private pendingResolve: ((result: string) => void) | null = null
   private pendingReject: ((err: Error) => void) | null = null
+  private pendingTimer: NodeJS.Timeout | null = null
 
   private screenWidth = 0
   private screenHeight = 0
@@ -180,6 +181,8 @@ export class AXScanClient {
           const response = this.buffer.slice(0, sentinelIdx)
           this.buffer = this.buffer.slice(sentinelIdx + 5)
           const res = this.pendingResolve
+          if (this.pendingTimer) clearTimeout(this.pendingTimer)
+          this.pendingTimer = null
           this.pendingResolve = null
           this.pendingReject = null
           res(response)
@@ -207,11 +210,14 @@ export class AXScanClient {
       this.pendingReject = reject
       this.proc.stdin.write(JSON.stringify(cmd) + '\n')
 
-      setTimeout(() => {
+      // The timer must be cleared when the response arrives — a stale timer
+      // from a completed scan would otherwise reject a later, unrelated one.
+      this.pendingTimer = setTimeout(() => {
         if (this.pendingReject) {
           this.pendingReject(new Error('Scan timed out'))
           this.pendingResolve = null
           this.pendingReject = null
+          this.pendingTimer = null
         }
       }, 15000)
     })
