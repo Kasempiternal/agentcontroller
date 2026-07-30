@@ -1,6 +1,6 @@
 {
   "name": "agentcontroller-ios",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "description": "AgentController iOS backend \u2014 MCP server for controlling iOS simulators and physical iPhones. Derived from @blitzdev/iphone-mcp (MIT).",
   "type": "module",
   "private": true,
@@ -16,6 +16,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@grpc/grpc-js": "^1.14.4",
+    "@grpc/proto-loader": "^0.8.1",
     "@modelcontextprotocol/sdk": "^1.12.1",
     "express": "^5.1.0",
     "ws": "^8.18.3",

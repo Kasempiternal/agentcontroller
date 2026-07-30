@@ -6,6 +6,7 @@ import { writeFile, unlink } from 'fs/promises'
 import { log } from '../logger.js'
 import { childEnv } from '../child-env.js'
 import { resolveRuntimeFile } from '../paths.js'
+import { CompanionClient, tapEvents, swipeEvents, buttonEvents, keyEvents, textEvents } from './companion-client.js'
 import type { ButtonType } from '../types.js'
 
 const execFileAsync = promisify(execFile)
@@ -250,11 +251,30 @@ export class IDBClient {
     })
   }
 
-  // Boots the shell and pushes one throwaway command through it so the
-  // Python interpreter and the companion connection are both hot before the
-  // first real tool call arrives.
+  // Input and describe operations go to idb_companion over gRPC directly;
+  // the Python shell exists only as the fallback transport when the
+  // companion is missing or broken on a machine.
+  private async getCompanion(): Promise<CompanionClient> {
+    return CompanionClient.getInstance(await this.getResolvedUdid())
+  }
+
+  // Deadline for an HID stream: gesture duration plus generous slack.
+  private static hidTimeout(duration?: number): number {
+    return Math.max(15_000, Math.round((duration ?? 0) * 1000) + 10_000)
+  }
+
+  // Warms the primary transport (companion spawn, gRPC channel, first AX
+  // query). Only if the companion cannot start does it heat the Python shell
+  // fallback instead — the happy path never touches Python.
   async warmup(): Promise<void> {
-    await this.startShell()
+    try {
+      const companion = await this.getCompanion()
+      await companion.ping()
+      return
+    } catch (error) {
+      log('IDBClient', 'warn', `[${this.udid}] Companion warmup failed (${error instanceof Error ? error.message : error}); warming shell fallback`)
+    }
+    await this.startShell().catch(() => {})
     await this.runInShell('ui describe-point 1 1 --json', 20_000).catch(() => {})
   }
 
@@ -306,19 +326,36 @@ export class IDBClient {
     log('IDBClient', 'log', `[${this.udid}] Shutdown complete`)
   }
 
+  // Runs an HID event stream via the companion, falling back to the Python
+  // shell command on any companion failure. Event-construction errors (an
+  // untypeable character) are the same on both transports, so they throw
+  // rather than pointlessly retrying through Python.
+  private async runHid(events: () => ReturnType<typeof tapEvents>, shellArgs: string, duration?: number): Promise<void> {
+    // Built outside the transport try: a construction error (untypeable
+    // character) fails identically on both transports, so it must not
+    // trigger the shell fallback.
+    const built = events()
+    try {
+      const companion = await this.getCompanion()
+      await companion.hid(built, IDBClient.hidTimeout(duration))
+      return
+    } catch (error) {
+      log('IDBClient', 'warn', `[${this.udid}] Companion HID failed (${error instanceof Error ? error.message : error}); using shell fallback`)
+    }
+    await this.runInShell(shellArgs)
+  }
+
   async tap(x: number, y: number, duration?: number): Promise<void> {
     let args = `ui tap ${x} ${y}`
     if (duration !== undefined) args += ` --duration ${duration}`
-    args += ' --json'
-    await this.runInShell(args)
+    await this.runHid(() => tapEvents(x, y, duration), args + ' --json', duration)
   }
 
   async swipe(fromX: number, fromY: number, toX: number, toY: number, duration?: number, delta?: number): Promise<void> {
     let args = `ui swipe ${fromX} ${fromY} ${toX} ${toY}`
     if (duration !== undefined) args += ` --duration ${duration}`
     if (delta !== undefined) args += ` --delta ${delta}`
-    args += ' --json'
-    await this.runInShell(args)
+    await this.runHid(() => swipeEvents(fromX, fromY, toX, toY, duration, delta), args + ' --json', duration)
   }
 
   async pressButton(button: ButtonType, duration?: number): Promise<void> {
@@ -327,12 +364,11 @@ export class IDBClient {
     }
     let args = `ui button ${button}`
     if (duration !== undefined) args += ` --duration ${duration}`
-    args += ' --json'
-    await this.runInShell(args)
+    await this.runHid(() => buttonEvents(button, duration), args + ' --json', duration)
   }
 
   async inputText(text: string): Promise<void> {
-    await this.runInShell(`ui text ${JSON.stringify(text)} --json`)
+    await this.runHid(() => textEvents(text), `ui text ${JSON.stringify(text)} --json`)
   }
 
   async pressKey(key: number | string, duration?: number): Promise<void> {
@@ -342,16 +378,25 @@ export class IDBClient {
     }
     let args = `ui key ${key}`
     if (duration !== undefined) args += ` --duration ${duration}`
-    args += ' --json'
-    await this.runInShell(args)
+    await this.runHid(() => keyEvents(key, duration), args + ' --json', duration)
   }
 
   async pressKeySequence(keySequence: (number | string)[]): Promise<void> {
     const keys = keySequence.join(' ')
-    await this.runInShell(`ui key-sequence ${keys} --json`)
+    await this.runHid(
+      () => keySequence.flatMap(key => typeof key === 'string' ? textEvents(key) : keyEvents(key)),
+      `ui key-sequence ${keys} --json`,
+    )
   }
 
   async describeAll(nested?: boolean): Promise<unknown> {
+    try {
+      const companion = await this.getCompanion()
+      return await companion.accessibilityInfo(nested ?? false)
+    } catch (error) {
+      log('IDBClient', 'warn', `[${this.udid}] Companion describe failed (${error instanceof Error ? error.message : error}); using shell fallback`)
+    }
+
     const nestedFlag = nested ? ' --nested' : ''
     const directArgs = ['ui', 'describe-all', '--json', ...(nested ? ['--nested'] : [])]
 
@@ -370,6 +415,13 @@ export class IDBClient {
   async describePoint(x: number, y: number, nested?: boolean): Promise<unknown> {
     const px = String(Math.round(x))
     const py = String(Math.round(y))
+    try {
+      const companion = await this.getCompanion()
+      return await companion.accessibilityInfo(nested ?? false, { x: Number(px), y: Number(py) })
+    } catch (error) {
+      log('IDBClient', 'warn', `[${this.udid}] Companion describe-point failed (${error instanceof Error ? error.message : error}); using shell fallback`)
+    }
+
     const nestedFlag = nested ? ' --nested' : ''
     const directArgs = ['ui', 'describe-point', px, py, '--json', ...(nested ? ['--nested'] : [])]
 
@@ -559,6 +611,7 @@ let isCleaningUp = false
 async function cleanupAllInstances(): Promise<void> {
   if (isCleaningUp) return
   isCleaningUp = true
+  CompanionClient.shutdownAll()
   const instances = Array.from((IDBClient as unknown as { instances: Map<string, IDBClient> }).instances.values())
   if (instances.length > 0) {
     log('IDBClient', 'log', `Cleaning up ${instances.length} IDB client instance(s)...`)
