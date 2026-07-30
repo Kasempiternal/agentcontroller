@@ -363,6 +363,43 @@ export class WDAClient {
     await this.request<unknown>('POST', `/session/${sessionId}/wda/apps/activate`, { bundleId })
   }
 
+  async terminateApp(bundleId: string): Promise<void> {
+    const sessionId = await this.ensureSession()
+    await this.request<unknown>('POST', `/session/${sessionId}/wda/apps/terminate`, { bundleId })
+  }
+
+  async openUrl(url: string): Promise<void> {
+    const sessionId = await this.ensureSession()
+    await this.request<unknown>('POST', `/session/${sessionId}/url`, { url })
+  }
+
+  async getPasteboard(): Promise<string> {
+    const sessionId = await this.ensureSession()
+    const response = await this.request<{ value: string }>('POST', `/session/${sessionId}/wda/getPasteboard`, {
+      contentType: 'plaintext',
+    })
+    return Buffer.from(response.value ?? '', 'base64').toString('utf-8')
+  }
+
+  async setPasteboard(content: string): Promise<void> {
+    const sessionId = await this.ensureSession()
+    await this.request<unknown>('POST', `/session/${sessionId}/wda/setPasteboard`, {
+      content: Buffer.from(content, 'utf-8').toString('base64'),
+      contentType: 'plaintext',
+    })
+  }
+
+  async getOrientation(): Promise<string> {
+    const sessionId = await this.ensureSession()
+    const response = await this.request<{ value: string }>('GET', `/session/${sessionId}/orientation`)
+    return response.value
+  }
+
+  async setOrientation(orientation: 'PORTRAIT' | 'LANDSCAPE'): Promise<void> {
+    const sessionId = await this.ensureSession()
+    await this.request<unknown>('POST', `/session/${sessionId}/orientation`, { orientation })
+  }
+
   async shutdown(): Promise<void> {
     await this.destroySession()
     WDAClient.removeInstance(this.udid, this.port)

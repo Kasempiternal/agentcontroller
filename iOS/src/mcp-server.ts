@@ -3,15 +3,15 @@ import { z } from 'zod'
 import { promises as fs, readFileSync } from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
-import { execFile } from 'node:child_process'
-import { resolveBootedUdid } from './idb/idb-client.js'
+import { execFile, spawn, type ChildProcess } from 'node:child_process'
+import { resolveBootedUdid, getIDBClient } from './idb/idb-client.js'
 import { AXScanClient } from './idb/ax-scan-client.js'
 import { getDeviceClient } from './device-client.js'
 import { isPhysicalDeviceUdid, type ButtonType, type ScanRegion, type UIElement } from './types.js'
 import { WDAClient } from './wda/wda-client.js'
 import { wdaScanGrid } from './wda/wda-scan.js'
 import { listPhysicalDevices } from './wda/device-discovery.js'
-import { applyScanUiFilters, applyDescribeScreenFilters } from './ui-filters.js'
+import { applyScanUiFilters, applyDescribeScreenFilters, queryVisibleMatches } from './ui-filters.js'
 import { detectExecutionContext } from './execution-context.js'
 import { wdaManager } from './wda/wda-manager.js'
 import { childEnv } from './child-env.js'
@@ -58,12 +58,13 @@ const describeAfterSchema = z.object({
 }).optional()
 
 const singleActionSchema = z.object({
-  action: z.enum(['tap', 'swipe', 'button', 'input-text', 'key', 'key-sequence']).describe('Type of action to perform'),
+  action: z.enum(['tap', 'double-tap', 'swipe', 'button', 'input-text', 'key', 'key-sequence']).describe('Type of action to perform'),
   params: z.record(z.string(), z.unknown()).describe('Action-specific parameters'),
 })
 
 const DEFAULT_FRAME = { width: 393, height: 852 }
 const referenceFrameCache = new Map<string, Promise<{ width: number; height: number }>>()
+const activeRecordings = new Map<string, { proc: ChildProcess; path: string }>()
 const BOOTED_UDID_CACHE_TTL_MS = 5_000
 let cachedBootedUdid: { value: string; expiresAtMs: number } | null = null
 
@@ -179,6 +180,7 @@ For finding tappable elements specifically, prefer scan_ui instead.`,
         udid: z.string().optional().describe('Device identifier (default: "booted" for current simulator)'),
         nested: z.boolean().optional().describe('Include nested element hierarchy'),
       },
+      annotations: { readOnlyHint: true },
     },
     async ({ udid = 'booted', nested = false }) => {
       log('MCP', 'log', `describe_screen udid=${udid} nested=${nested}`)
@@ -212,6 +214,7 @@ For finding tappable elements specifically, prefer scan_ui instead.`,
 
 Actions available:
 - tap: Tap at coordinates { x, y, duration? }
+- double-tap: Two quick taps at coordinates { x, y }
 - swipe: Swipe gesture { fromX, fromY, toX, toY, duration?, delta? }
 - button: Press button { button: 'HOME'|'LOCK'|'SIDE_BUTTON'|'APPLE_PAY'|'SIRI', duration? }
 - input-text: Type text { text }
@@ -220,11 +223,12 @@ Actions available:
 
 Use describe_after to see the screen state after the action.`,
       inputSchema: {
-        action: z.enum(['tap', 'swipe', 'button', 'input-text', 'key', 'key-sequence']).describe('Type of action'),
+        action: z.enum(['tap', 'double-tap', 'swipe', 'button', 'input-text', 'key', 'key-sequence']).describe('Type of action'),
         params: z.record(z.string(), z.unknown()).describe('Action parameters (depends on action type)'),
         udid: z.string().optional().describe('Device identifier (default: "booted")'),
         describe_after: describeAfterSchema.describe('Optional: describe screen after action'),
       },
+      annotations: { readOnlyHint: false, destructiveHint: false },
     },
     async ({ action, params, udid = 'booted', describe_after }) => {
       log('MCP', 'log', `device_action action=${action} udid=${udid}`)
@@ -245,6 +249,21 @@ Use describe_after to see the screen state after the action.`,
             })
             await client.tap(p.x, p.y, p.duration)
             actionResult = `Tapped at (${p.x}, ${p.y})`
+            break
+          }
+          case 'double-tap': {
+            const p = tapParamsSchema.parse(params)
+            await emitVisualizationForAction({
+              action: 'tap',
+              udid: resolvedUdid,
+              actionCommand: 'device_action',
+              actionIndex: 0,
+              tap: p,
+            })
+            await client.tap(p.x, p.y)
+            await new Promise(resolve => setTimeout(resolve, 80))
+            await client.tap(p.x, p.y)
+            actionResult = `Double-tapped at (${p.x}, ${p.y})`
             break
           }
           case 'swipe': {
@@ -326,6 +345,7 @@ Use describe_after to see the screen state after all actions complete.`,
         udid: z.string().optional().describe('Device identifier (default: "booted")'),
         describe_after: describeAfterSchema.describe('Optional: describe screen after all actions'),
       },
+      annotations: { readOnlyHint: false, destructiveHint: false },
     },
     async ({ actions, udid = 'booted', describe_after }) => {
       log('MCP', 'log', `device_actions count=${actions.length} udid=${udid}`)
@@ -347,6 +367,21 @@ Use describe_after to see the screen state after all actions complete.`,
               })
               await client.tap(p.x, p.y, p.duration)
               results.push(`Tapped at (${p.x}, ${p.y})`)
+              break
+            }
+            case 'double-tap': {
+              const p = tapParamsSchema.parse(params)
+              await emitVisualizationForAction({
+                action: 'tap',
+                udid: resolvedUdid,
+                actionCommand: 'device_actions',
+                actionIndex: index,
+                tap: p,
+              })
+              await client.tap(p.x, p.y)
+              await new Promise(resolve => setTimeout(resolve, 80))
+              await client.tap(p.x, p.y)
+              results.push(`Double-tapped at (${p.x}, ${p.y})`)
               break
             }
             case 'swipe': {
@@ -418,6 +453,7 @@ Use describe_after to see the screen state after all actions complete.`,
     'get_screenshot',
     {
       description: 'Capture a screenshot of the current iPhone screen. Returns the file path to a PNG image.',
+      annotations: { readOnlyHint: true },
       inputSchema: {
         udid: z.string().optional().describe('Device identifier (default: "booted")'),
       },
@@ -507,6 +543,7 @@ Region options optimize scan time:
 - "full": ~1s (entire screen)
 
 For the complete element tree (all types), use describe_screen instead.`,
+      annotations: { readOnlyHint: true },
       inputSchema: {
         region: z.enum(['full', 'top-half', 'bottom-half', 'top-left', 'top-right', 'bottom-left', 'bottom-right'])
           .describe('Screen region to scan'),
@@ -548,6 +585,7 @@ For the complete element tree (all types), use describe_screen instead.`,
     {
       description: 'List all available iPhones and simulators.',
       inputSchema: {},
+      annotations: { readOnlyHint: true },
     },
     async () => {
       log('MCP', 'log', 'list_devices')
@@ -602,6 +640,7 @@ Call this first to discover available devices. Returns:
 
 Pass the returned udid to all subsequent tool calls.`,
       inputSchema: {},
+      annotations: { readOnlyHint: true },
     },
     async () => {
       log('MCP', 'log', 'get_execution_context')
@@ -696,6 +735,7 @@ After setup completes, use the returned udid for all subsequent tool calls. Also
       inputSchema: {
         udid: z.string().describe('Physical device UDID from list_devices or get_execution_context'),
       },
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     },
     async ({ udid }) => {
       log('MCP', 'log', `setup_device udid=${udid}`)
@@ -770,6 +810,7 @@ After setup completes, use the returned udid for all subsequent tool calls. Also
         bundleId: z.string().describe('The bundle identifier of the app to launch (e.g. "com.apple.mobilesafari")'),
         udid: z.string().optional().describe('Device identifier (default: "booted")'),
       },
+      annotations: { readOnlyHint: false, destructiveHint: false },
     },
     async ({ bundleId, udid = 'booted' }) => {
       log('MCP', 'log', `launch_app bundleId=${bundleId} udid=${udid}`)
@@ -778,9 +819,7 @@ After setup completes, use the returned udid for all subsequent tool calls. Also
           const client = await getDeviceClient(udid) as unknown as WDAClient
           await client.activateApp(bundleId)
         } else {
-          const { getIDBClient } = await import('./idb/idb-client.js')
-          const client = getIDBClient(udid)
-          await client.launch(bundleId)
+          await getIDBClient(udid).launch(bundleId)
         }
 
         return {
@@ -799,6 +838,7 @@ After setup completes, use the returned udid for all subsequent tool calls. Also
     'list_apps',
     {
       description: 'List installed apps on the iPhone.',
+      annotations: { readOnlyHint: true },
       inputSchema: {
         udid: z.string().optional().describe('Device identifier (default: "booted")'),
       },
@@ -812,9 +852,7 @@ After setup completes, use the returned udid for all subsequent tool calls. Also
           }
         }
 
-        const { getIDBClient } = await import('./idb/idb-client.js')
-        const client = getIDBClient(udid)
-        const apps = await client.listApps()
+        const apps = await getIDBClient(udid).listApps()
 
         const userApps = apps.filter(a => a.type === 'User')
         const systemApps = apps.filter(a => a.type === 'System')
@@ -836,6 +874,323 @@ After setup completes, use the returned udid for all subsequent tool calls. Also
           content: [{ type: 'text' as const, text: `Error listing apps: ${error instanceof Error ? error.message : String(error)}` }],
           isError: true,
         }
+      }
+    }
+  )
+
+  const err = (text: string) => ({
+    content: [{ type: 'text' as const, text }],
+    isError: true,
+  })
+  const ok = (text: string) => ({
+    content: [{ type: 'text' as const, text }],
+  })
+
+  server.registerTool(
+    'open_url',
+    {
+      description: 'Open a URL on the iPhone — https:// links, deep links, and custom app schemes (e.g. "maps://", "myapp://path").',
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+      inputSchema: {
+        url: z.string().describe('The URL or deep link to open'),
+        udid: z.string().optional().describe('Device identifier (default: "booted")'),
+      },
+    },
+    async ({ url, udid = 'booted' }) => {
+      log('MCP', 'log', `open_url url=${url} udid=${udid}`)
+      try {
+        if (isPhysicalDeviceUdid(udid)) {
+          await (await getDeviceClient(udid) as unknown as WDAClient).openUrl(url)
+        } else {
+          await getIDBClient(udid).openUrl(url)
+        }
+        return ok(`Opened ${url}`)
+      } catch (error) {
+        return err(`Error opening URL: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+  )
+
+  server.registerTool(
+    'terminate_app',
+    {
+      description: 'Terminate a running app on the iPhone by bundle ID.',
+      annotations: { readOnlyHint: false, destructiveHint: true },
+      inputSchema: {
+        bundleId: z.string().describe('The bundle identifier of the app to terminate'),
+        udid: z.string().optional().describe('Device identifier (default: "booted")'),
+      },
+    },
+    async ({ bundleId, udid = 'booted' }) => {
+      log('MCP', 'log', `terminate_app bundleId=${bundleId} udid=${udid}`)
+      try {
+        if (isPhysicalDeviceUdid(udid)) {
+          await (await getDeviceClient(udid) as unknown as WDAClient).terminateApp(bundleId)
+        } else {
+          await getIDBClient(udid).terminateApp(bundleId)
+        }
+        return ok(`Terminated ${bundleId}`)
+      } catch (error) {
+        return err(`Error terminating app: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+  )
+
+  server.registerTool(
+    'install_app',
+    {
+      description: 'Install an app on an iOS simulator from a local .app bundle path. Not supported on physical devices.',
+      annotations: { readOnlyHint: false, destructiveHint: false },
+      inputSchema: {
+        appPath: z.string().describe('Absolute path to the .app bundle to install'),
+        udid: z.string().optional().describe('Simulator identifier (default: "booted")'),
+      },
+    },
+    async ({ appPath, udid = 'booted' }) => {
+      log('MCP', 'log', `install_app appPath=${appPath} udid=${udid}`)
+      if (isPhysicalDeviceUdid(udid)) {
+        return err('install_app is not supported on physical devices; it installs .app bundles on simulators via simctl. Use Xcode or devicectl for physical installs.')
+      }
+      try {
+        await getIDBClient(udid).installApp(appPath)
+        return ok(`Installed ${appPath}`)
+      } catch (error) {
+        return err(`Error installing app: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+  )
+
+  server.registerTool(
+    'uninstall_app',
+    {
+      description: 'Uninstall an app from an iOS simulator by bundle ID, removing its data. Not supported on physical devices.',
+      annotations: { readOnlyHint: false, destructiveHint: true },
+      inputSchema: {
+        bundleId: z.string().describe('The bundle identifier of the app to uninstall'),
+        udid: z.string().optional().describe('Simulator identifier (default: "booted")'),
+      },
+    },
+    async ({ bundleId, udid = 'booted' }) => {
+      log('MCP', 'log', `uninstall_app bundleId=${bundleId} udid=${udid}`)
+      if (isPhysicalDeviceUdid(udid)) {
+        return err('uninstall_app is not supported on physical devices; it removes simulator apps via simctl.')
+      }
+      try {
+        await getIDBClient(udid).uninstallApp(bundleId)
+        return ok(`Uninstalled ${bundleId}`)
+      } catch (error) {
+        return err(`Error uninstalling app: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+  )
+
+  server.registerTool(
+    'get_clipboard',
+    {
+      description: 'Read the iPhone clipboard as plain text. On physical devices this requires WebDriverAgent to be foreground, per iOS pasteboard rules.',
+      annotations: { readOnlyHint: true },
+      inputSchema: {
+        udid: z.string().optional().describe('Device identifier (default: "booted")'),
+      },
+    },
+    async ({ udid = 'booted' }) => {
+      log('MCP', 'log', `get_clipboard udid=${udid}`)
+      try {
+        const text = isPhysicalDeviceUdid(udid)
+          ? await (await getDeviceClient(udid) as unknown as WDAClient).getPasteboard()
+          : await getIDBClient(udid).getClipboard()
+        return ok(text)
+      } catch (error) {
+        return err(`Error reading clipboard: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+  )
+
+  server.registerTool(
+    'set_clipboard',
+    {
+      description: 'Set the iPhone clipboard to the given text, replacing its current contents.',
+      annotations: { readOnlyHint: false, destructiveHint: true },
+      inputSchema: {
+        text: z.string().describe('Text to place on the clipboard'),
+        udid: z.string().optional().describe('Device identifier (default: "booted")'),
+      },
+    },
+    async ({ text, udid = 'booted' }) => {
+      log('MCP', 'log', `set_clipboard chars=${text.length} udid=${udid}`)
+      try {
+        if (isPhysicalDeviceUdid(udid)) {
+          await (await getDeviceClient(udid) as unknown as WDAClient).setPasteboard(text)
+        } else {
+          await getIDBClient(udid).setClipboard(text)
+        }
+        return ok(`Clipboard set (${text.length} characters)`)
+      } catch (error) {
+        return err(`Error setting clipboard: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+  )
+
+  server.registerTool(
+    'wait_for_element',
+    {
+      description: `Wait until an element whose label, title, or value matches the query is visible on screen. Polls the UI until it appears or the timeout elapses.
+
+Use after taps or navigation instead of guessing fixed delays — it returns as soon as the element shows up.`,
+      annotations: { readOnlyHint: true },
+      inputSchema: {
+        query: z.string().describe('Text to match against element labels/titles/values (case-insensitive)'),
+        timeoutMs: z.number().optional().describe('How long to keep polling in ms (default: 10000)'),
+        intervalMs: z.number().optional().describe('Delay between polls in ms (default: 500)'),
+        udid: z.string().optional().describe('Device identifier (default: "booted")'),
+      },
+    },
+    async ({ query, timeoutMs = 10_000, intervalMs = 500, udid = 'booted' }) => {
+      log('MCP', 'log', `wait_for_element query=${query} timeoutMs=${timeoutMs} udid=${udid}`)
+      try {
+        const resolvedUdid = await resolveActionUdid(udid)
+        const frame = await resolveReferenceFrame(resolvedUdid).catch(() => DEFAULT_FRAME)
+        const deadline = Date.now() + timeoutMs
+        const startedAt = Date.now()
+
+        for (;;) {
+          const raw = isPhysicalDeviceUdid(resolvedUdid)
+            ? await wdaScanGrid(await getDeviceClient(resolvedUdid) as unknown as WDAClient, 'full')
+            : await AXScanClient.getInstance(resolvedUdid).scan('full')
+          const matches = queryVisibleMatches(raw as UIElement[], frame.width, frame.height, query)
+          if (matches.length > 0) {
+            return ok(JSON.stringify({ found: true, elapsedMs: Date.now() - startedAt, elements: matches }))
+          }
+          if (Date.now() + intervalMs > deadline) break
+          await new Promise(resolve => setTimeout(resolve, intervalMs))
+        }
+
+        return err(`No element matching "${query}" appeared within ${timeoutMs}ms.`)
+      } catch (error) {
+        return err(`Error waiting for element: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+  )
+
+  server.registerTool(
+    'get_orientation',
+    {
+      description: 'Get the current screen orientation of a physical iPhone (via WebDriverAgent). Not supported on simulators.',
+      annotations: { readOnlyHint: true },
+      inputSchema: {
+        udid: z.string().describe('Physical device identifier'),
+      },
+    },
+    async ({ udid }) => {
+      log('MCP', 'log', `get_orientation udid=${udid}`)
+      if (!isPhysicalDeviceUdid(udid)) {
+        return err('get_orientation is not supported on simulators; orientation is only exposed through WebDriverAgent on physical devices.')
+      }
+      try {
+        const orientation = await (await getDeviceClient(udid) as unknown as WDAClient).getOrientation()
+        return ok(orientation)
+      } catch (error) {
+        return err(`Error getting orientation: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+  )
+
+  server.registerTool(
+    'set_orientation',
+    {
+      description: 'Rotate a physical iPhone screen to portrait or landscape (via WebDriverAgent). Not supported on simulators.',
+      annotations: { readOnlyHint: false, destructiveHint: false },
+      inputSchema: {
+        orientation: z.enum(['PORTRAIT', 'LANDSCAPE']).describe('Target orientation'),
+        udid: z.string().describe('Physical device identifier'),
+      },
+    },
+    async ({ orientation, udid }) => {
+      log('MCP', 'log', `set_orientation orientation=${orientation} udid=${udid}`)
+      if (!isPhysicalDeviceUdid(udid)) {
+        return err('set_orientation is not supported on simulators; orientation is only exposed through WebDriverAgent on physical devices.')
+      }
+      try {
+        await (await getDeviceClient(udid) as unknown as WDAClient).setOrientation(orientation)
+        return ok(`Orientation set to ${orientation}`)
+      } catch (error) {
+        return err(`Error setting orientation: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+  )
+
+  server.registerTool(
+    'start_recording',
+    {
+      description: 'Start recording an iOS simulator screen to an H.264 video file. Stop with stop_recording, which returns the file path. Not supported on physical devices.',
+      annotations: { readOnlyHint: false, destructiveHint: false },
+      inputSchema: {
+        udid: z.string().optional().describe('Simulator identifier (default: "booted")'),
+      },
+    },
+    async ({ udid = 'booted' }) => {
+      log('MCP', 'log', `start_recording udid=${udid}`)
+      if (isPhysicalDeviceUdid(udid)) {
+        return err('start_recording is not supported on physical devices; it records simulators via simctl.')
+      }
+      try {
+        const resolvedUdid = await resolveActionUdid(udid)
+        if (activeRecordings.has(resolvedUdid)) {
+          return err(`A recording is already running for ${resolvedUdid}. Call stop_recording first.`)
+        }
+
+        const outPath = path.join(os.tmpdir(), `agentcontroller-ios-recording-${Date.now()}.mp4`)
+        const proc = spawn(
+          'xcrun',
+          ['simctl', 'io', resolvedUdid, 'recordVideo', '--codec', 'h264', '--force', outPath],
+          { env: childEnv(), stdio: ['ignore', 'ignore', 'pipe'] },
+        )
+        let stderr = ''
+        proc.stderr?.on('data', (d: Buffer) => { stderr += d.toString() })
+        proc.on('exit', () => { activeRecordings.delete(resolvedUdid) })
+
+        // simctl fails fast on a bad udid; give it a beat before reporting success.
+        await new Promise(resolve => setTimeout(resolve, 500))
+        if (proc.exitCode !== null) {
+          return err(`Recording failed to start (exit ${proc.exitCode}): ${stderr.trim()}`)
+        }
+
+        activeRecordings.set(resolvedUdid, { proc, path: outPath })
+        return ok(JSON.stringify({ recording: true, udid: resolvedUdid, path: outPath }))
+      } catch (error) {
+        return err(`Error starting recording: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+  )
+
+  server.registerTool(
+    'stop_recording',
+    {
+      description: 'Stop the active simulator screen recording and return the path of the finished video file.',
+      annotations: { readOnlyHint: false, destructiveHint: false },
+      inputSchema: {
+        udid: z.string().optional().describe('Simulator identifier (default: "booted")'),
+      },
+    },
+    async ({ udid = 'booted' }) => {
+      log('MCP', 'log', `stop_recording udid=${udid}`)
+      try {
+        const resolvedUdid = await resolveActionUdid(udid)
+        const recording = activeRecordings.get(resolvedUdid)
+        if (!recording) {
+          return err(`No active recording for ${resolvedUdid}.`)
+        }
+
+        // SIGINT makes simctl finalize the file; wait for the process to exit.
+        await new Promise<void>((resolve) => {
+          recording.proc.once('exit', () => resolve())
+          recording.proc.kill('SIGINT')
+        })
+        activeRecordings.delete(resolvedUdid)
+
+        return ok(JSON.stringify({ recording: false, path: recording.path }))
+      } catch (error) {
+        return err(`Error stopping recording: ${error instanceof Error ? error.message : String(error)}`)
       }
     }
   )

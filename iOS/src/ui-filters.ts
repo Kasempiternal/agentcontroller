@@ -121,6 +121,17 @@ export function applyScanUiFilters(
   }
 }
 
+// Visible elements matching a query — the predicate wait_for_element polls.
+export function queryVisibleMatches(
+  rawElements: UIElement[],
+  screenWidth: number,
+  screenHeight: number,
+  query: string,
+): UIElement[] {
+  const visible = filterVisibleCoords(dedup(filterUnlabeledOther(rawElements)), screenWidth, screenHeight)
+  return grepElements(visible, query)
+}
+
 export function applyDescribeScreenFilters(
   rawElements: UIElement[],
   screenWidth: number,

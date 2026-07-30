@@ -262,6 +262,48 @@ export class IDBClient {
     const resolvedUdid = await this.getResolvedUdid()
     await execFileAsync('xcrun', ['simctl', 'launch', resolvedUdid, bundleId], { env: childEnv() })
   }
+
+  async terminateApp(bundleId: string): Promise<void> {
+    const resolvedUdid = await this.getResolvedUdid()
+    await execFileAsync('xcrun', ['simctl', 'terminate', resolvedUdid, bundleId], { env: childEnv() })
+  }
+
+  async openUrl(url: string): Promise<void> {
+    const resolvedUdid = await this.getResolvedUdid()
+    await execFileAsync('xcrun', ['simctl', 'openurl', resolvedUdid, url], { env: childEnv() })
+  }
+
+  async installApp(appPath: string): Promise<void> {
+    const resolvedUdid = await this.getResolvedUdid()
+    await execFileAsync('xcrun', ['simctl', 'install', resolvedUdid, appPath], { env: childEnv() })
+  }
+
+  async uninstallApp(bundleId: string): Promise<void> {
+    const resolvedUdid = await this.getResolvedUdid()
+    await execFileAsync('xcrun', ['simctl', 'uninstall', resolvedUdid, bundleId], { env: childEnv() })
+  }
+
+  async getClipboard(): Promise<string> {
+    const resolvedUdid = await this.getResolvedUdid()
+    const { stdout } = await execFileAsync('xcrun', ['simctl', 'pbpaste', resolvedUdid], { env: childEnv() })
+    return stdout
+  }
+
+  async setClipboard(content: string): Promise<void> {
+    const resolvedUdid = await this.getResolvedUdid()
+    // simctl pbcopy reads the payload from stdin.
+    await new Promise<void>((resolve, reject) => {
+      const proc = spawn('xcrun', ['simctl', 'pbcopy', resolvedUdid], { env: childEnv(), stdio: ['pipe', 'ignore', 'pipe'] })
+      let stderr = ''
+      proc.stderr?.on('data', (d: Buffer) => { stderr += d.toString() })
+      proc.on('error', reject)
+      proc.on('close', (code) => {
+        if (code === 0) resolve()
+        else reject(new Error(`simctl pbcopy exited with code ${code}: ${stderr.trim()}`))
+      })
+      proc.stdin?.end(content)
+    })
+  }
 }
 
 export function getIDBClient(udid: string = 'booted'): IDBClient {

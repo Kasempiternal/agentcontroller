@@ -2,6 +2,7 @@ export type ButtonType = 'HOME' | 'LOCK' | 'SIDE_BUTTON' | 'APPLE_PAY' | 'SIRI'
 
 export interface DeviceActionMap {
   tap: { x: number; y: number; duration?: number }
+  'double-tap': { x: number; y: number }
   swipe: { fromX: number; fromY: number; toX: number; toY: number; duration?: number; delta?: number }
   button: { button: ButtonType; duration?: number }
   'input-text': { text: string }
