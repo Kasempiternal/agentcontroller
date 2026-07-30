@@ -1,7 +1,7 @@
 {
   "name": "agentcontroller-ios",
-  "version": "2.2.0",
-  "description": "AgentController iOS backend — MCP server for controlling iOS simulators and physical iPhones. Derived from @blitzdev/iphone-mcp (MIT).",
+  "version": "2.3.0",
+  "description": "AgentController iOS backend \u2014 MCP server for controlling iOS simulators and physical iPhones. Derived from @blitzdev/iphone-mcp (MIT).",
   "type": "module",
   "private": true,
   "license": "MIT",

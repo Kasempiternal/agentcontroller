@@ -4,6 +4,53 @@ All notable changes to AgentController are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.3.0] - 2026-07-30
+
+A deep performance pass on the iOS backend: the agent-facing hot paths now
+answer in tens of milliseconds instead of seconds, and every input command is
+honestly acknowledged instead of fired blind.
+
+### Changed
+- The persistent `idb` shell is now a framed request/response channel (every
+  command is terminated by idb's `SUCCESS=` sentinel). Taps, swipes, buttons,
+  and text input resolve when the simulator actually executed them (~2ms
+  acked) instead of returning before the gesture ran.
+- `describe-all`/`describe-point` ride the warm shell instead of booting a
+  Python interpreter per call: `describe_screen` drops from ~185ms to ~45-70ms.
+  The one-shot invocation remains as an automatic fallback.
+- `tap_element` and `wait_for_element` try a describe-all fast path before the
+  grid scan on simulators: a hit costs ~40-90ms instead of 1.2-2.6s. The grid
+  scan still runs whenever the fast path finds nothing (every third poll and
+  the final one for `wait_for_element`), so recall is unchanged.
+- `wait_for_element` polls adaptively (250ms growing to 1s) instead of a fixed
+  500ms when no `intervalMs` is given.
+- The server prewarms the simulator transports (idb shell, companion
+  connection, ax-scan daemon, screen size) in the background right after the
+  MCP transport connects, and again after `boot_simulator` — the first tool
+  call no longer pays the ~2-3s of cold starts.
+- Element output from `describe_screen`, `scan_ui`, `tap_element`,
+  `wait_for_element`, and `describe_after` is a compact normalized shape
+  (label/value/title/id deduplicated, integer frames, no always-null or
+  duplicate fields): payloads shrink ~60-65%, identical information content.
+- Simulator screen size is measured from the AX tree's root element (exact
+  for any model and orientation) instead of a hardcoded per-model table that
+  mis-sized unknown models like iPhone Air; the table survives only as a
+  fallback, extended and no longer queried through a shell.
+
+### Fixed
+- The idb shell's stdout was piped but never consumed, so ~650 commands in
+  one session would fill the pipe buffer and wedge the shell silently.
+- Writing to a dead idb shell's stdin could raise an unhandled EPIPE stream
+  error and crash the whole server.
+- Concurrent shell starts (a tool call racing the prewarm) could spawn two
+  `idb shell` processes; startup is now deduplicated in-flight.
+- Parallel WDA calls needing a session (`get_device_info` fans out four)
+  raced `POST /session` and leaked sessions; creation is now deduplicated.
+- `terminate_app` on an app that is not running now succeeds (the desired
+  state already holds) instead of surfacing a raw simctl exit-3 error.
+- A timed-out shell command now restarts the shell instead of leaving the
+  response framing permanently misaligned.
+
 ## [2.2.0] - 2026-07-30
 
 The iOS backend grows from 21 to 36 tools and gets a second performance pass.

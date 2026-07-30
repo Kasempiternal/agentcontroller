@@ -5,7 +5,7 @@
 </p>
 
 [![CI](https://github.com/Kasempiternal/agentcontroller/actions/workflows/ci.yml/badge.svg)](https://github.com/Kasempiternal/agentcontroller/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-2.2.0-blue)
+![Version](https://img.shields.io/badge/version-2.3.0-blue)
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B%20%7C%20Windows%2010%2F11%20%7C%20iOS-lightgrey)
 ![Swift](https://img.shields.io/badge/swift-5.10-orange)
 ![.NET](https://img.shields.io/badge/.NET-9.0-512BD4)
