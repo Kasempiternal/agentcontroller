@@ -5,7 +5,40 @@ on:
     branches: [master]
   pull_request:
 
+# Least privilege: nothing here writes to the repository.
+permissions:
+  contents: read
+
+# A newer push to the same ref makes the in-flight run irrelevant.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  # Platform-independent, so it runs on the cheapest runner and gives the
+  # fastest signal: neither Swift nor .NET is needed to check the contract.
+  contract-and-scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      # The portability promise is the tool names. The two backends share no
+      # code, so this is the only thing keeping their registries — and every
+      # tool count and description quoted in the docs — honest.
+      - name: Verify cross-platform tool contract
+        run: ./Scripts/check-tool-contract.sh
+
+      - name: Shell syntax
+        run: |
+          for f in build.sh Scripts/*.sh; do bash -n "$f"; done
+
+      # Severity is capped at `warning` so a runner-image shellcheck bump can't
+      # turn CI red on a new stylistic rule. Both scripts are clean at the
+      # stricter `--severity=style` as of shellcheck 0.11.0.
+      - name: Shellcheck
+        run: shellcheck --severity=warning build.sh Scripts/*.sh
+
   build-and-test:
     # macOS 15 runner: WindowRecorder uses SCRecordingOutput, which needs the
     # macOS 15 SDK (Xcode 16) to compile. The app still runs on macOS 14
@@ -41,6 +74,9 @@ jobs:
       - name: Build Windows UI test fixture
         run: dotnet build Windows\AgentController.Windows.TestApp\AgentController.Windows.TestApp.csproj --configuration Release
 
+      # Protocol-level only. Windows/integration.ps1 drives real UI Automation
+      # against the fixture and needs an interactive desktop, so it stays a
+      # local pre-release step rather than a CI job.
       - name: MCP protocol smoke
         shell: pwsh
         run: .\Windows\smoke.ps1

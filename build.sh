@@ -169,6 +169,7 @@ if [ "$MODE" != "--dev" ] && [ -f "$DMG" ]; then
     if [ "$MODE" = "release" ]; then
         printf '\033[1;32mDistributable:\033[0m %s  (signed + notarized + stapled — ships anywhere)\n' "$DMG"
     else
+        # shellcheck disable=SC2016  # the backticks are literal punctuation in the hint text, not a subshell
         printf '\033[1;33mDistributable:\033[0m %s  (signed, NOT notarized — for local testing; use `./build.sh` for a notarized DMG)\n' "$DMG"
     fi
 fi

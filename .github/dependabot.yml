@@ -1,0 +1,13 @@
+version: 2
+updates:
+  # GitHub Actions is the only ecosystem worth watching here: the Swift package
+  # declares no external dependencies and the .NET projects have no
+  # PackageReference, so there is nothing for swift/nuget updaters to do.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: ci
+    labels:
+      - dependencies
