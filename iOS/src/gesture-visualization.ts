@@ -21,9 +21,17 @@ try {
   log('GestureVisualization', 'warn', 'unix-dgram unavailable; gesture overlay events disabled')
 }
 
+// The live gesture overlay is drawn by an external viewer process that is not
+// part of this repository, so the socket name is that viewer's contract rather
+// than ours — renaming either of these stops the overlay receiving events
+// without any error surfacing. Our own env var takes precedence for viewers
+// that follow the AgentController convention.
+const LEGACY_SOCKET_ENV = 'BLITZ_GESTURE_EVENTS_SOCKET'
+const LEGACY_SOCKET_PATH = ['.blitz', 'gesture-events.sock']
+
 const GESTURE_SOCKET_PATH = process.env.AGENTCONTROLLER_GESTURE_EVENTS_SOCKET
-  ?? process.env.BLITZ_GESTURE_EVENTS_SOCKET
-  ?? path.join(os.homedir(), '.blitz', 'gesture-events.sock')
+  ?? process.env[LEGACY_SOCKET_ENV]
+  ?? path.join(os.homedir(), ...LEGACY_SOCKET_PATH)
 const GESTURE_SOURCE = {
   client: 'agentcontroller-ios',
   sessionId: `pid-${process.pid}`,

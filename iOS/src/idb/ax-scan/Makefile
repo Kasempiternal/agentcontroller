@@ -4,8 +4,8 @@ OUTPUT = ax-scan
 INSTALL_DIR = $(HOME)/.agentcontroller/ios/bin
 
 # FBControlCore/FBSimulatorControl ship with idb-companion. Search every known
-# runtime root (ours first, then upstream iPhone-mcp layouts), and finally the
-# Homebrew install itself.
+# runtime root (ours first, then legacy install layouts kept for compatibility),
+# and finally the Homebrew install itself.
 FRAMEWORK_CANDIDATES = \
 	$(HOME)/.agentcontroller/ios/idb-companion/Frameworks \
 	$(HOME)/.blitz-iphone-mcp/idb-companion/Frameworks \

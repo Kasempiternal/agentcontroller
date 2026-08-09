@@ -5,16 +5,19 @@ import { homedir } from 'os'
 // Primary runtime directory for the AgentController iOS backend.
 export const RUNTIME_HOME = join(homedir(), '.agentcontroller', 'ios')
 
+// Runtime roots left behind by pre-AgentController installs. They use the same
+// relative layout, so a machine that already downloaded WebDriverAgent and
+// idb-companion keeps working instead of re-fetching several hundred MB. These
+// names are load-bearing on existing checkouts and must not be renamed; new
+// installs always go to RUNTIME_HOME. See NOTICE for provenance.
+const LEGACY_RUNTIME_HOMES = ['.blitz-iphone-mcp', '.blitz']
+
 // Roots searched for installed helpers (idb, idb_companion, ax-scan,
-// WebDriverAgent). The upstream project (blitzdotdev/iPhone-mcp) installed
-// into ~/.blitz-iphone-mcp and ~/.blitz with the same relative layout; keeping
-// them as fallbacks means an existing install keeps working without
-// re-downloading anything.
+// WebDriverAgent) — ours first, legacy layouts as fallback.
 export function runtimeRoots(): string[] {
   return [
     RUNTIME_HOME,
-    join(homedir(), '.blitz-iphone-mcp'),
-    join(homedir(), '.blitz'),
+    ...LEGACY_RUNTIME_HOMES.map((dir) => join(homedir(), dir)),
   ]
 }
 

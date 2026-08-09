@@ -5,8 +5,9 @@ import AccessibilityEngine
 
 struct InteractionTools {
     /// Default deadline for the implicit find-retry loop (P2). A control that appears a
-    /// frame late self-heals instead of reporting a phantom miss — this is Maestro's
-    /// defining behavior. Overridable per call via the `timeout` param.
+    /// frame late self-heals instead of reporting a phantom miss; tolerant matching is
+    /// the defining property of the interaction model, not an opt-in convenience.
+    /// Overridable per call via the `timeout` param.
     static let defaultFindTimeout: Double = 4.0
 
     /// Outcome of resolving the target element for an interaction.
