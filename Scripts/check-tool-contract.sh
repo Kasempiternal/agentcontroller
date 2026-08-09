@@ -101,7 +101,7 @@ fi
 # Any "<N> tools" / "<N>-tool" / "<N> MCP tools" claim must equal one of the
 # real counts (desktop or iOS), so a number in the README can never quietly rot.
 COUNT_DRIFT=0
-for doc in README.md Windows/README.md iOS/README.md CHANGELOG.md docs/TOOLS.md; do
+for doc in README.md Windows/README.md iOS/README.md CHANGELOG.md docs/TOOLS.md NOTICE; do
     [ -f "$doc" ] || continue
     claims=$({ grep -ohE '[0-9]+\*?\*?[[:space:]-]+(MCP[[:space:]]+)?tools?\b' "$doc" || true; } \
                 | grep -oE '^[0-9]+' | sort -u)

@@ -44,6 +44,7 @@ The two desktop backends register the same 49-tool contract. Windows currently h
 - [Security](#security)
 - [Development](#development)
 - [Troubleshooting](#troubleshooting)
+- [Contributing](CONTRIBUTING.md)
 - [Credits and prior art](#credits-and-prior-art)
 - [License](#license)
 
@@ -302,7 +303,7 @@ AgentController did not start from a blank page, and it is worth being precise a
 
 **The interaction model comes from [Maestro](https://github.com/mobile-dev-inc/maestro) (mobile.dev, Apache-2.0).** Maestro's insight is that UI automation should be *tolerant*: a step waits for the interface to settle rather than failing on the first miss, and automation is expressed as reusable flows instead of one-shot commands. Both ideas are adopted here — every interaction runs an implicit find-and-retry loop, and `save_flow` / `run_saved_flow` make a recorded sequence a replayable regression test. **No Maestro source code is used.** Maestro targets mobile platforms on the JVM; the backends here are independent implementations against native platform APIs. The debt is one of design, and it is a real one.
 
-**The iOS backend started as [blitzdotdev/iPhone-mcp](https://github.com/blitzdotdev/iPhone-mcp) (MIT).** That subtree in [`iOS/`](iOS/README.md) genuinely derives from upstream code, and the original MIT license and copyright notice are retained verbatim at [`iOS/LICENSE`](iOS/LICENSE). It has since been hardened and extended considerably: loopback-only viewer binding, argument-array process spawning instead of shell interpolation, deadlines on WebDriverAgent and `simctl` calls, parallel device discovery, downscaled JPEG previews, and a tool surface grown from 10 tools to 36.
+**The iOS backend started as [blitzdotdev/iPhone-mcp](https://github.com/blitzdotdev/iPhone-mcp) (MIT).** That subtree in [`iOS/`](iOS/README.md) genuinely derives from upstream code, and the original MIT license and copyright notice are retained verbatim at [`iOS/LICENSE`](iOS/LICENSE). It has since been hardened and extended considerably: loopback-only viewer binding, argument-array process spawning instead of shell interpolation, deadlines on WebDriverAgent and `simctl` calls, parallel device discovery, downscaled JPEG previews, and a tool surface grown from ten to 36.
 
 **What is original here** is the rest of the pack: the macOS backend and its background-first automation model — driving an app without stealing your focus, cursor, or frontmost window — the Windows backend built on UI Automation and Win32 `SendInput` with its explicit foreground-authorization rule for raw input, and the unified tool contract that lets one MCP client drive macOS, Windows, and iOS through a single shared vocabulary. Those three platforms in one package, background-safe by default, are the point of this project.
 

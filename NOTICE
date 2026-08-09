@@ -57,7 +57,7 @@ made in AgentController include:
     simctl invocation, and parallelised device discovery.
   * Payload efficiency — compact JSON tool output and downscaled JPEG
     screenshot previews (roughly 4x smaller responses).
-  * Surface expansion — the tool catalog grew from 10 tools to 36, with MCP
+  * Surface expansion — the tool catalog grew from ten to 36, with MCP
     annotations on every tool.
 
 --------------------------------------------------------------------------------
