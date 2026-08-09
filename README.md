@@ -9,7 +9,7 @@
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B%20%7C%20Windows%2010%2F11%20%7C%20iOS-lightgrey)
 ![Swift](https://img.shields.io/badge/swift-5.10-orange)
 ![.NET](https://img.shields.io/badge/.NET-9.0-512BD4)
-![License](https://img.shields.io/badge/license-personal%20use-red)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 
 **Native app QA automation for AI agents, exposed over MCP (Model Context Protocol).**
 
@@ -44,6 +44,7 @@ The two desktop backends register the same 49-tool contract. Windows currently h
 - [Security](#security)
 - [Development](#development)
 - [Troubleshooting](#troubleshooting)
+- [Credits and prior art](#credits-and-prior-art)
 - [License](#license)
 
 ## Highlights
@@ -295,6 +296,20 @@ desktop, so it stays a local pre-release step.
 | Clicks "succeed" but nothing happens | Check the result for an off-target `warning`; the coordinates may be outside the app's windows |
 | An app ignores PID-targeted input (some Electron apps, games) | Retry the same tool with `foreground: true` |
 
+## Credits and prior art
+
+AgentController did not start from a blank page, and it is worth being precise about what came from where.
+
+**The interaction model comes from [Maestro](https://github.com/mobile-dev-inc/maestro) (mobile.dev, Apache-2.0).** Maestro's insight is that UI automation should be *tolerant*: a step waits for the interface to settle rather than failing on the first miss, and automation is expressed as reusable flows instead of one-shot commands. Both ideas are adopted here — every interaction runs an implicit find-and-retry loop, and `save_flow` / `run_saved_flow` make a recorded sequence a replayable regression test. **No Maestro source code is used.** Maestro targets mobile platforms on the JVM; the backends here are independent implementations against native platform APIs. The debt is one of design, and it is a real one.
+
+**The iOS backend started as [blitzdotdev/iPhone-mcp](https://github.com/blitzdotdev/iPhone-mcp) (MIT).** That subtree in [`iOS/`](iOS/README.md) genuinely derives from upstream code, and the original MIT license and copyright notice are retained verbatim at [`iOS/LICENSE`](iOS/LICENSE). It has since been hardened and extended considerably: loopback-only viewer binding, argument-array process spawning instead of shell interpolation, deadlines on WebDriverAgent and `simctl` calls, parallel device discovery, downscaled JPEG previews, and a tool surface grown from 10 tools to 36.
+
+**What is original here** is the rest of the pack: the macOS backend and its background-first automation model — driving an app without stealing your focus, cursor, or frontmost window — the Windows backend built on UI Automation and Win32 `SendInput` with its explicit foreground-authorization rule for raw input, and the unified tool contract that lets one MCP client drive macOS, Windows, and iOS through a single shared vocabulary. Those three platforms in one package, background-safe by default, are the point of this project.
+
+Full attribution, including third-party runtime dependencies, is in [NOTICE](NOTICE).
+
 ## License
 
-Personal use only — see [LICENSE](LICENSE). No permission is granted for redistribution or commercial use.
+Licensed under the [Apache License 2.0](LICENSE).
+
+The `iOS/` subtree additionally carries its upstream [MIT license](iOS/LICENSE), which is retained as required; that code remains available under MIT. Attribution notices are in [NOTICE](NOTICE) — Apache-2.0 section 4(d) requires redistributors to carry them forward.

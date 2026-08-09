@@ -4,6 +4,31 @@ All notable changes to AgentController are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+- **Relicensed from "personal use only, all rights reserved" to Apache-2.0**,
+  in preparation for making the repository public. The `iOS/` subtree keeps its
+  upstream MIT license, which is retained as required and remains in force for
+  that code.
+
+### Added
+- `NOTICE` file recording prior art and attribution: Maestro (mobile.dev,
+  Apache-2.0) for the tolerant interaction model and the flow concept — design
+  influence only, no Maestro source is included — and blitzdotdev/iPhone-mcp
+  (MIT) as the origin of the iOS backend, with the modifications made since.
+  Apache-2.0 section 4(d) requires redistributors to carry this forward.
+- README "Credits and prior art" section stating what was inherited, what was
+  hardened, and what is original (both desktop backends and the unified
+  cross-platform tool contract).
+
+### Internal
+- Legacy `~/.blitz-iphone-mcp` / `~/.blitz` runtime roots and the external
+  gesture-viewer socket name are now isolated behind named `LEGACY_*` constants
+  rather than appearing as inline literals. Resolution order and behavior are
+  unchanged — these paths are load-bearing for existing installs and are
+  deliberately not renamed.
+
 ## [2.4.2] - 2026-07-30
 
 ### Fixed

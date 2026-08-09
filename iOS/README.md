@@ -5,7 +5,8 @@ AgentController backend alongside macOS and Windows. It speaks MCP over stdio
 and runs on a Mac (Xcode tooling is the transport to the phone).
 
 Derived from [blitzdotdev/iPhone-mcp](https://github.com/blitzdotdev/iPhone-mcp)
-(MIT — notice retained in [LICENSE](LICENSE)), then hardened and extended: the
+(MIT — notice retained in [LICENSE](LICENSE), full attribution in
+[NOTICE](../NOTICE)), then hardened and extended: the
 viewer binds loopback only, child processes take argument arrays instead of
 shell strings, tool output is compact JSON, discovery runs in parallel, WDA
 requests carry deadlines, every simctl call has a timeout, screenshots ship as
@@ -44,9 +45,9 @@ node dist/cli.js --setup        # installs helpers, registers with Claude Code
 ```
 
 Or register manually with any MCP client as a stdio server running
-`node <repo>/iOS/dist/cli.js`. Existing installs from upstream iPhone-mcp are
-reused automatically: helpers are looked up in `~/.agentcontroller/ios`, then
-`~/.blitz-iphone-mcp`, then `~/.blitz`.
+`node <repo>/iOS/dist/cli.js`. Helpers from earlier installs are reused
+automatically rather than re-downloaded: lookup order is `~/.agentcontroller/ios`,
+then the legacy roots `~/.blitz-iphone-mcp` and `~/.blitz`.
 
 ## Tools
 

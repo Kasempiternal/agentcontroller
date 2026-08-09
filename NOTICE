@@ -1,0 +1,86 @@
+AgentController
+Copyright (c) 2025-2026 Izotz Cristobal
+
+This product includes software developed by Izotz Cristobal.
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+================================================================================
+Prior art and attribution
+================================================================================
+
+AgentController did not start from a blank page. Two existing projects shaped
+it, in two different ways, and both are credited below.
+
+--------------------------------------------------------------------------------
+1. Maestro (mobile.dev) — conceptual, no code
+--------------------------------------------------------------------------------
+
+    https://github.com/mobile-dev-inc/maestro
+    Licensed under the Apache License, Version 2.0
+
+Maestro established the interaction model that AgentController adopts: a
+declarative, tolerant automation vocabulary in which a step waits for the UI to
+settle instead of failing on the first miss. Two ideas in particular are taken
+directly from Maestro's design:
+
+  * Implicit find-and-retry on every interaction, so a control that renders a
+    frame late self-heals rather than reporting a phantom failure.
+  * Reusable, replayable "flows" as the unit of automation, rather than
+    one-shot imperative commands.
+
+NO MAESTRO SOURCE CODE IS INCLUDED IN THIS PROJECT. Maestro targets mobile
+platforms on the JVM; AgentController's macOS (Swift), Windows (C#/.NET), and
+iOS (TypeScript) backends are independent implementations written against
+native platform APIs. The debt is one of design, not of code, and no Apache-2.0
+obligation to Maestro attaches to this distribution.
+
+--------------------------------------------------------------------------------
+2. blitzdotdev/iPhone-mcp — code, vendored and extended
+--------------------------------------------------------------------------------
+
+    https://github.com/blitzdotdev/iPhone-mcp
+    Copyright (c) 2025 Blitz
+    Licensed under the MIT License
+
+The iOS backend in `iOS/` began as a vendored copy of iPhone-mcp and retains
+code derived from it. The upstream MIT license and copyright notice are
+retained verbatim at `iOS/LICENSE`, and that subtree remains available under
+the MIT License.
+
+Per Apache-2.0 section 4(b), that code has been modified. Substantive changes
+made in AgentController include:
+
+  * Security hardening — the gesture viewer binds loopback only, and child
+    processes are spawned with argument arrays instead of interpolated shell
+    strings.
+  * Reliability — deadlines on WebDriverAgent requests, timeouts on every
+    simctl invocation, and parallelised device discovery.
+  * Payload efficiency — compact JSON tool output and downscaled JPEG
+    screenshot previews (roughly 4x smaller responses).
+  * Surface expansion — the tool catalog grew from 10 tools to 36, with MCP
+    annotations on every tool.
+
+--------------------------------------------------------------------------------
+3. Original to AgentController
+--------------------------------------------------------------------------------
+
+The following are original work, not derived from either project above:
+
+  * The macOS backend (Swift / AXUIElement / CGEvent / ScreenCaptureKit),
+    including background-first automation, in which tools drive an application
+    without stealing the user's focus, cursor, or frontmost window.
+  * The Windows backend (C#/.NET / UI Automation / Win32 SendInput), including
+    the foreground-authorization model for raw-input gestures.
+  * The unified cross-platform tool contract that lets a single MCP client
+    drive macOS, Windows, and iOS through one shared vocabulary.
+
+================================================================================
+Third-party runtime dependencies
+================================================================================
+
+AgentController invokes, but does not redistribute, the following tools. They
+remain under their own licenses:
+
+  * idb / idb-companion (Facebook/Meta) — MIT
+  * WebDriverAgent (Facebook/Meta, appium/WebDriverAgent) — BSD-3-Clause
+  * Xcode command-line tools, including simctl (Apple) — Apple SLA
