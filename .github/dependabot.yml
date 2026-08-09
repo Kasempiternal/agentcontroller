@@ -1,13 +1,28 @@
 version: 2
 updates:
-  # GitHub Actions is the only ecosystem worth watching here: the Swift package
-  # declares no external dependencies and the .NET projects have no
-  # PackageReference, so there is nothing for swift/nuget updaters to do.
+  # The Swift package declares no external dependencies and the .NET projects
+  # have no PackageReference, so there is nothing for swift/nuget updaters to
+  # do. Actions and npm are the two ecosystems that actually pull third-party
+  # code into this repo.
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: monthly
     commit-message:
       prefix: ci
+    labels:
+      - dependencies
+
+  # The iOS backend is the only place with real third-party dependencies. This
+  # was missed when the file was first written, and the gap was not theoretical:
+  # enabling security alerts immediately surfaced five advisories here (one
+  # high), all in transitive deps of @modelcontextprotocol/sdk. Weekly, because
+  # transitive advisories land faster than a monthly cadence catches them.
+  - package-ecosystem: npm
+    directory: "/iOS"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: build
     labels:
       - dependencies
