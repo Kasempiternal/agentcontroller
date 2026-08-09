@@ -299,17 +299,19 @@ desktop, so it stays a local pre-release step.
 
 ## Credits and prior art
 
-AgentController did not start from a blank page, and it is worth being precise about what came from where.
+AgentController did not start from a blank page, and it is worth being precise about what came from where — precise in both directions.
+
+Of roughly 14,700 lines of source here, about four fifths are original. The remaining fifth traces to one MIT-licensed project and is confined entirely to the iOS backend. No line of it comes from Maestro.
+
+**Original to this project** are two of the three backends and the thing that binds them: the macOS backend (Swift, AXUIElement, CGEvent, ScreenCaptureKit) with its background-first automation model — driving an app without stealing your focus, cursor, or frontmost window; the Windows backend (C#/.NET, UI Automation, Win32 `SendInput`) with its explicit foreground-authorization rule for raw input; and the unified tool contract that lets one MCP client drive macOS, Windows, and iOS through a single shared vocabulary, enforced in CI by [`Scripts/check-tool-contract.sh`](Scripts/check-tool-contract.sh) because the backends share no code and nothing else would keep them honest. Those three platforms in one package, background-safe by default, are the point of the project.
 
 **The interaction model comes from [Maestro](https://github.com/mobile-dev-inc/maestro) (mobile.dev, Apache-2.0).** Maestro's insight is that UI automation should be *tolerant*: a step waits for the interface to settle rather than failing on the first miss, and automation is expressed as reusable flows instead of one-shot commands. Both ideas are adopted here — every interaction runs an implicit find-and-retry loop, and `save_flow` / `run_saved_flow` make a recorded sequence a replayable regression test. **No Maestro source code is used.** Maestro targets mobile platforms on the JVM; the backends here are independent implementations against native platform APIs. The debt is one of design, and it is a real one.
 
-**The iOS backend started as [blitzdotdev/iPhone-mcp](https://github.com/blitzdotdev/iPhone-mcp) (MIT).** That subtree in [`iOS/`](iOS/README.md) genuinely derives from upstream code, and the original MIT license and copyright notice are retained verbatim at [`iOS/LICENSE`](iOS/LICENSE). What is there now is substantially rewritten.
+**The iOS backend started as [blitzdotdev/iPhone-mcp](https://github.com/blitzdotdev/iPhone-mcp) (MIT).** That subtree in [`iOS/`](iOS/README.md) genuinely derives from upstream code, and the original MIT license and copyright notice are retained verbatim at [`iOS/LICENSE`](iOS/LICENSE). It has roughly doubled in size since, and what carries the load is substantially rewritten.
 
 The largest change is the transport. Upstream drove the simulator by shelling out to the Python `fb-idb` CLI once per call. The hot paths here instead speak **gRPC directly to `idb_companion`** against a vendored protobuf, with HID event construction ported from `fb-idb`'s `hid.py`. Taps are acknowledged by the simulator in ~2ms rather than fired blind, and `describe_screen` answers in ~50-90ms. Python is not gone and the README does not claim it is — `fb-idb` survives as a fallback tier, reached through a warm `idb shell` framed as a request/response protocol over the `SUCCESS=` sentinel it prints after every command, with one-shot `idb` as a last resort. It is simply off the fast path.
 
 Alongside that: loopback-only viewer binding (the screen stream is unauthenticated), argument-array process spawning instead of shell interpolation for tainted UDIDs and bundle IDs, deadlines on WebDriverAgent and `simctl` calls, parallel device discovery, downscaled JPEG previews, and a tool surface grown from ten to 36.
-
-**What is original here** is the rest of the pack: the macOS backend and its background-first automation model — driving an app without stealing your focus, cursor, or frontmost window — the Windows backend built on UI Automation and Win32 `SendInput` with its explicit foreground-authorization rule for raw input, and the unified tool contract that lets one MCP client drive macOS, Windows, and iOS through a single shared vocabulary. Those three platforms in one package, background-safe by default, are the point of this project.
 
 Full attribution, including third-party runtime dependencies, is in [NOTICE](NOTICE).
 
