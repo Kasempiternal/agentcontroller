@@ -50,6 +50,12 @@ the MIT License.
 Per Apache-2.0 section 4(b), that code has been modified. Substantive changes
 made in AgentController include:
 
+  * Transport rewrite — upstream shelled out to the Python `fb-idb` CLI once
+    per call. The hot paths now speak gRPC directly to `idb_companion` against
+    a vendored protobuf, with HID event construction ported from fb-idb's
+    hid.py. Taps are acknowledged by the simulator in ~2ms instead of fired
+    blind. Python remains only as a fallback transport, reached through a warm
+    `idb shell` framed over its `SUCCESS=` sentinel.
   * Security hardening — the gesture viewer binds loopback only, and child
     processes are spawned with argument arrays instead of interpolated shell
     strings.
