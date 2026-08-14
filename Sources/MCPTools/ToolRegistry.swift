@@ -84,7 +84,16 @@ public final class ToolRegistry: MCPToolProvider, @unchecked Sendable {
                 return ToolResult.error(FocusGuard.denialMessage(for: "foreground:true on \(name)"))
             }
         }
-        return try await tool.handler(arguments)
+        // FocusWatcher: stamp the activity clock so a driven-app activation in
+        // the next few seconds is attributed to the agent, and surface any
+        // steal detected since the last call as an in-band warning — the only
+        // feedback path that reaches an agent bypassing us via another tool.
+        FocusWatcher.shared.noteDispatch()
+        let result = try await tool.handler(arguments)
+        if let incident = FocusWatcher.shared.consumeIncident() {
+            return ToolResult.appendingNotice(incident, to: result)
+        }
+        return result
     }
 
     // MARK: - Registration
@@ -118,6 +127,10 @@ extension JSONValue {
         guard let pid = AppManager.resolvePID(from: appStr) else {
             throw ToolError.appNotFound(appStr)
         }
+        // Single choke point where tool calls resolve their target app — the
+        // natural place to record which apps this server is driving, so the
+        // FocusWatcher only ever restores focus away from apps we touched.
+        FocusWatcher.shared.noteDriven(pid: pid)
         return pid
     }
 }

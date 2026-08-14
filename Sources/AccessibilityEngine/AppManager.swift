@@ -59,6 +59,10 @@ public struct AppManager {
             app = try await NSWorkspace.shared.open(fileURLs, withApplicationAt: url, configuration: config)
         }
 
+        // A launched app is a driven app even before its first tool call
+        // resolves it — the FocusWatcher must cover it from the first frame.
+        FocusWatcher.shared.noteDriven(pid: app.processIdentifier)
+
         // Wait briefly for app to become responsive
         try await Task.sleep(for: .milliseconds(500))
 
@@ -76,12 +80,14 @@ public struct AppManager {
         guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier).first else {
             return false
         }
+        FocusWatcher.shared.expectActivation(pid: app.processIdentifier)
         return app.activate()
     }
 
     @discardableResult
     public static func activate(pid: pid_t) -> Bool {
         guard let app = NSRunningApplication(processIdentifier: pid) else { return false }
+        FocusWatcher.shared.expectActivation(pid: pid)
         return app.activate()
     }
 

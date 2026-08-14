@@ -50,6 +50,20 @@ public struct ToolResult {
         ])
     }
 
+    /// Attach an out-of-band notice (e.g. a FocusWatcher incident) to an
+    /// already-built result. The notice rides as an extra text content item so
+    /// the original payload — JSON, image, error — is untouched.
+    public static func appendingNotice(_ notice: String, to result: JSONValue) -> JSONValue {
+        guard case .object(var fields) = result else { return result }
+        var content = fields["content"]?.arrayValue ?? []
+        content.append(.object([
+            "type": .string("text"),
+            "text": .string(notice),
+        ]))
+        fields["content"] = .array(content)
+        return .object(fields)
+    }
+
     /// Structured outcome for interaction tools (click/type/scroll/…).
     ///
     /// A *real* miss (no element matched, or the AX action was refused) returns an

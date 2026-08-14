@@ -21,6 +21,16 @@ All notable changes to AgentController are documented here. The format follows
   that code.
 
 ### Added
+- **FocusWatcher** — Focus Guard now guards the outcome, not just this
+  server's tools. While the guard is on, if an app this server has driven
+  becomes frontmost within 30 seconds of tool activity (something the
+  dispatcher itself refuses to do, so the activation came from outside — a
+  shell `osascript` bypass, `open` without `-g`, or the app itself), the
+  user's previous app is re-activated and a warning rides the next tool
+  result so the driving agent self-corrects in-band. Deliberate user clicks
+  are out of scope by construction: only driven apps count, and only during
+  active tool traffic. The attribution rule is a pure function with a
+  headless truth-table test.
 - `launch_app` takes an optional `paths` array: files/folders open in the app
   at launch (`open -g -a App <path>` semantics), background-safe, and it works
   when the app is already running. This removes the one workflow that used to
