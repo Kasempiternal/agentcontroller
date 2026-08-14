@@ -7,6 +7,14 @@ All notable changes to AgentController are documented here. The format follows
 ## [Unreleased]
 
 ### Changed
+- The server instructions and the Focus Guard denial message now state the
+  no-focus-steal rule as channel-independent: it protects the outcome, not
+  just this server's tools, and explicitly names the shell/AppleScript bypass
+  (`osascript` `activate`/`set frontmost`, System Events `keystroke`/`click
+  at`, `open` without `-g`) as equally forbidden — with "stop and ask the
+  user" as the sanctioned move when no background-safe path exists. A guard
+  worded as a tool behavior taught a driving model to switch tools; naming
+  the invariant closes the letter-vs-spirit gap.
 - **Relicensed from "personal use only, all rights reserved" to Apache-2.0**,
   in preparation for making the repository public. The `iOS/` subtree keeps its
   upstream MIT license, which is retained as required and remains in force for

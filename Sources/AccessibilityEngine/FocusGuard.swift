@@ -33,6 +33,9 @@ public enum FocusGuard {
         "Focus Guard is ON — refused '\(action)' because it would steal the user's focus and cursor. " +
         "You almost never need it: screenshot_window captures background and even hidden windows, and " +
         "click/type_text/navigate_menu/scroll are background-safe by default — retry without it. " +
+        "Do NOT route around this refusal with a shell tool — osascript 'activate'/'set frontmost'/" +
+        "System Events keystroke, or 'open' without -g, steal focus exactly the same way and defeat " +
+        "the same protection. " +
         "Only if the app genuinely ignores background (PID-targeted) input should you ask the user to " +
         "toggle Focus Guard off in the AgentController menu-bar icon."
     }

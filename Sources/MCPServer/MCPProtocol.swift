@@ -90,7 +90,14 @@ public struct MCPProtocolHandler: Sendable {
         explicitly tells you to: `screenshot_window` captures background and even \
         hidden windows, so an app never needs to be frontmost to be driven, \
         asserted on, or screenshotted. While Focus Guard is on (the default) such \
-        calls are refused with an error.
+        calls are refused with an error. The rule protects the OUTCOME, not just \
+        these tools: never take the user's focus by ANY other means either — no \
+        shell/AppleScript bypass (`osascript` `activate`/`set frontmost`, System \
+        Events `keystroke`/`click at`, `open` without `-g`). Those steal focus \
+        exactly the same way, and keystroke-based driving can type into the \
+        user's own window. To open a file or folder in an app, pass `paths` to \
+        `launch_app` instead of driving the open panel. If a step truly has no \
+        background-safe path, stop and ask the user — do not switch channels.
         """
         let result: JSONValue = .object([
             "protocolVersion": .string(protocolVersion),
