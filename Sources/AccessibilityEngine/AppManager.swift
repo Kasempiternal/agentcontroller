@@ -28,7 +28,18 @@ public struct AppManager {
     /// starts and its windows appear, but the user's frontmost app keeps keyboard focus
     /// and the cursor is untouched — required for background QA runs. Pass
     /// `activates: true` only behind an explicit foreground request.
-    public static func launch(bundleIdentifier: String, activates: Bool = false) async throws -> RunningApp {
+    ///
+    /// `paths` hands the app documents/folders to open at launch (the `open -g -a App
+    /// <path>` semantics). This exists so agents never need the alternative — driving
+    /// the app's NSOpenPanel with synthesized ⌘⇧G keystrokes, which only land in the
+    /// FRONTMOST app and therefore forces a focus steal. Observed in the wild: an agent
+    /// bypassed Focus Guard with `osascript` activation solely to feed a folder to an
+    /// open panel this parameter now makes unnecessary.
+    public static func launch(
+        bundleIdentifier: String,
+        activates: Bool = false,
+        paths: [String] = []
+    ) async throws -> RunningApp {
         guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier) else {
             throw AppError.appNotFound(bundleIdentifier)
         }
@@ -36,7 +47,17 @@ public struct AppManager {
         let config = NSWorkspace.OpenConfiguration()
         config.activates = activates
 
-        let app = try await NSWorkspace.shared.openApplication(at: url, configuration: config)
+        let app: NSRunningApplication
+        if paths.isEmpty {
+            app = try await NSWorkspace.shared.openApplication(at: url, configuration: config)
+        } else {
+            let missing = paths.filter { !FileManager.default.fileExists(atPath: ($0 as NSString).expandingTildeInPath) }
+            guard missing.isEmpty else {
+                throw AppError.pathNotFound(missing.joined(separator: ", "))
+            }
+            let fileURLs = paths.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
+            app = try await NSWorkspace.shared.open(fileURLs, withApplicationAt: url, configuration: config)
+        }
 
         // Wait briefly for app to become responsive
         try await Task.sleep(for: .milliseconds(500))
@@ -127,12 +148,14 @@ public struct AppManager {
 public enum AppError: Error, LocalizedError {
     case appNotFound(String)
     case appNotRunning(String)
+    case pathNotFound(String)
     case permissionDenied
 
     public var errorDescription: String? {
         switch self {
         case .appNotFound(let id): return "Application not found: \(id)"
         case .appNotRunning(let id): return "Application not running: \(id)"
+        case .pathNotFound(let paths): return "Path(s) do not exist: \(paths)"
         case .permissionDenied: return "Accessibility permission not granted"
         }
     }

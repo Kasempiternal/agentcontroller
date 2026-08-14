@@ -43,13 +43,18 @@ struct AppTools {
 
         registry.register(.init(
             name: "launch_app",
-            description: "Launch a macOS application by bundle identifier (e.g. 'com.apple.TextEdit'). BACKGROUND-SAFE BY DEFAULT: the app starts WITHOUT being activated — its window appears but the user's current app keeps keyboard focus (open -g semantics). Set foreground:true only when the app genuinely must start frontmost.",
+            description: "Launch a macOS application by bundle identifier (e.g. 'com.apple.TextEdit'). BACKGROUND-SAFE BY DEFAULT: the app starts WITHOUT being activated — its window appears but the user's current app keeps keyboard focus (open -g semantics). Pass `paths` to open files/folders in the app at launch — THE way to get a document or project open: never drive the app's open panel with keystrokes (that requires activation and steals the user's focus). Also works when the app is already running. Set foreground:true only when the app genuinely must start frontmost.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
                     "bundleId": .object([
                         "type": .string("string"),
                         "description": .string("Bundle identifier (e.g. 'com.apple.TextEdit')"),
+                    ]),
+                    "paths": .object([
+                        "type": .string("array"),
+                        "items": .object(["type": .string("string")]),
+                        "description": .string("Absolute file/folder paths to open in the app at launch ('~' allowed). Replaces any open-panel driving — background-safe."),
                     ]),
                     "foreground": .object([
                         "type": .string("boolean"),
@@ -63,14 +68,19 @@ struct AppTools {
                     throw ToolError.missingParameter("bundleId")
                 }
                 let foreground = args?["foreground"]?.boolValue ?? false
-                let app = try await AppManager.launch(bundleIdentifier: bundleId, activates: foreground)
+                let paths = args?["paths"]?.arrayValue?.compactMap { $0.stringValue } ?? []
+                let app = try await AppManager.launch(bundleIdentifier: bundleId, activates: foreground, paths: paths)
                 await ShareableContentCache.shared.invalidate()
-                return ToolResult.json(.object([
+                var fields: [String: JSONValue] = [
                     "name": .string(app.name),
                     "bundleId": .string(app.bundleIdentifier ?? bundleId),
                     "pid": .int(Int(app.pid)),
                     "activated": .bool(foreground),
-                ]))
+                ]
+                if !paths.isEmpty {
+                    fields["opened"] = .array(paths.map { .string($0) })
+                }
+                return ToolResult.json(.object(fields))
             }
         ))
 

@@ -13,6 +13,13 @@ All notable changes to AgentController are documented here. The format follows
   that code.
 
 ### Added
+- `launch_app` takes an optional `paths` array: files/folders open in the app
+  at launch (`open -g -a App <path>` semantics), background-safe, and it works
+  when the app is already running. This removes the one workflow that used to
+  force a focus steal — feeding a document to the app's open panel with
+  synthesized ⌘⇧G keystrokes, which only land in the frontmost app. Observed
+  in the wild: an agent bypassed Focus Guard with shell `osascript` activation
+  solely to do exactly that.
 - `NOTICE` file recording prior art and attribution: Maestro (mobile.dev,
   Apache-2.0) for the tolerant interaction model and the flow concept — design
   influence only, no Maestro source is included — and blitzdotdev/iPhone-mcp
