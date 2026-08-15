@@ -280,7 +280,7 @@ Read all visible text strings from elements of a given role (default AXStaticTex
 
 ### `click`
 
-Click a UI element (AX press action) or at screen coordinates. BACKGROUND-SAFE BY DEFAULT: the element path uses AXPress and the coordinate path posts to the target PID — neither moves the user's mouse cursor, brings the app forward, nor steals keyboard focus. For element matching, use role+title/identifier when known; use labelContains when you see the text on-screen but don't know which AX attribute carries it (common with SwiftUI buttons that stash labels in AXDescription). Pass an `elementId` from a prior snapshot/describe_screen to act on that exact element and skip the search. Element searches default to the focused window (scope:'window'); pass scope:'app' to search all windows + menu bar. Set foreground:true ONLY for apps that ignore targeted events (Electron/games) — that activates the app and injects a global click (moves the real cursor).
+Click a UI element (AX press action) or at screen coordinates. PREFER `elementId` from a prior snapshot/describe_screen — it acts on that exact element with no tree search, and it is both faster and more reliable than a selector. Fall back to selectors only for elements you have not snapshotted: role+title/identifier when known, labelContains when you see the text on-screen but don't know which AX attribute carries it (common with SwiftUI buttons that stash labels in AXDescription); a selector matching nothing in a rendered UI fails fast; one that may just not have rendered yet retries until `timeout`. Element searches default to the focused window (scope:'window'); pass scope:'app' to search all windows + menu bar. Issuing several clicks? Send them as one `run_steps` call rather than one call each. BACKGROUND-SAFE BY DEFAULT: the element path uses AXPress and the coordinate path posts to the target PID — neither moves the user's mouse cursor, brings the app forward, nor steals keyboard focus. Set foreground:true ONLY for apps that ignore targeted events (Electron/games) — that activates the app and injects a global click (moves the real cursor).
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -592,7 +592,7 @@ Replace the system clipboard with the given plain text — stage content for a p
 
 ### `run_steps`
 
-Run an ordered list of tool steps inline. Each step is {tool, args}. Returns {ran, failedAt?, results}. With stopOnError (default true) it aborts at the first step whose result isError; otherwise it runs them all. Use to compose multi-step QA flows (click → type → assert).
+THE default way to drive a UI: run an ordered list of tool steps in ONE call instead of one call per action. Each step is {tool, args} naming any tool in this server. Returns {ran, failedAt?, results}. With stopOnError (default true) it aborts at the first step whose result isError; otherwise it runs them all. Pair it with a single `snapshot` — take the element ids from the snapshot, then send the whole click → type → click → assert sequence as one run_steps. Steps may name DIFFERENT `app` values, so driving several apps is still one call. Every step re-enters the same dispatcher, so permission and Focus Guard rules apply exactly as they would to a direct call.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|

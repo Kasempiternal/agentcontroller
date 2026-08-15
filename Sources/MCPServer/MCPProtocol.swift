@@ -81,10 +81,28 @@ public struct MCPProtocolHandler: Sendable {
         }
         let instructions = """
         AgentController is a macOS QA-automation server that drives native apps via the \
-        Accessibility API. Start with `list_apps` to find a running app, then \
-        `snapshot` (compact element list with stable ids) or `find_elements` to \
-        inspect its UI, then use the interaction tools (click, type_text, etc.) to \
-        drive it. GOLDEN RULE: every tool is background-safe by default — the user \
+        Accessibility API. Start with `list_apps` to find a running app, then `snapshot` \
+        to inspect its UI.
+
+        BATCH YOUR STEPS. `snapshot` returns stable element ids, and every interaction \
+        tool takes an `elementId` that acts on that exact element with no search. So the \
+        efficient loop is: ONE `snapshot`, then ONE `run_steps` carrying the whole \
+        sequence of {tool, args} steps against those ids — not one tool call per action. \
+        `run_steps` composes every tool in this server, reports {ran, failedAt, results}, \
+        and stops at the first failure by default. Re-snapshot only when the UI actually \
+        changes shape (a new window, a new screen), not after every click. Driving \
+        several apps is the same call: steps naming different `app` values run in one \
+        batch. A run that issues one tool call per turn spends almost all of its wall \
+        clock waiting on the model, not on this server — a tool call here takes ~0.3s.
+
+        PREFER `elementId` OVER SELECTORS. An id from a snapshot resolves in O(1); a \
+        selector re-walks the accessibility tree, and one that matches nothing retries \
+        until its timeout before reporting the miss. Use selectors when you have not \
+        snapshotted, or when the element is expected to appear late; use ids for \
+        everything you have already seen. If an id has gone stale the tool says so \
+        explicitly — re-snapshot then, and only then.
+
+        GOLDEN RULE: every tool is background-safe by default — the user \
         keeps their focus, cursor, and frontmost window for the entire run. Never \
         call `activate_app` and never pass `foreground:true` unless a tool result \
         explicitly tells you to: `screenshot_window` captures background and even \

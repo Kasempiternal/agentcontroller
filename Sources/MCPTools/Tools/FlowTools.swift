@@ -29,7 +29,7 @@ struct FlowTools {
     private static func registerRunSteps(in registry: ToolRegistry) {
         registry.register(.init(
             name: "run_steps",
-            description: "Run an ordered list of tool steps inline. Each step is {tool, args}. Returns {ran, failedAt?, results}. With stopOnError (default true) it aborts at the first step whose result isError; otherwise it runs them all. Use to compose multi-step QA flows (click → type → assert).",
+            description: "THE default way to drive a UI: run an ordered list of tool steps in ONE call instead of one call per action. Each step is {tool, args} naming any tool in this server. Returns {ran, failedAt?, results}. With stopOnError (default true) it aborts at the first step whose result isError; otherwise it runs them all. Pair it with a single `snapshot` — take the element ids from the snapshot, then send the whole click → type → click → assert sequence as one run_steps. Steps may name DIFFERENT `app` values, so driving several apps is still one call. Every step re-enters the same dispatcher, so permission and Focus Guard rules apply exactly as they would to a direct call.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
