@@ -7,6 +7,39 @@ All notable changes to AgentController are documented here. The format follows
 ## [Unreleased]
 
 ### Changed
+- **The MCP bridge dispatches requests concurrently instead of one at a time.**
+  The `while read line; curl; echo` loop held exactly one request in flight,
+  which discarded the HTTP server's per-connection concurrency and made driving
+  N apps cost N × the wall clock. Six requests across two apps: 19.7s before,
+  4.4s after, byte-identical responses. Out-of-order replies are safe — every
+  JSON-RPC response carries its request's id, so ordered responses were never
+  required; the old ordering was an artifact of blocking curl. Concurrency is
+  capped (`AGENTCONTROLLER_MAX_INFLIGHT`, default 8) as a safety rail, and
+  stdout writes are serialized through a lock because PIPE_BUF is 512 bytes on
+  macOS and a screenshot response is hundreds of KB. Still bash 3.2, still no
+  new dependencies.
+- **AX work is serialized per app rather than globally.** One process-wide
+  `AXExecutor` actor meant every tool call queued behind every other one, even
+  for disjoint apps. Two holds made that expensive rather than theoretical:
+  `snapshot` holds its lane for an entire tree walk (72s observed on a large
+  app) and `InputSimulator.typeText` holds it with a per-character `usleep` —
+  either one froze every other app. Each app now gets its own serial lane;
+  ordering within an app is unchanged. Operations that drive system-wide HID
+  (the `foreground: true` paths that move the real cursor and change the
+  frontmost app) still share one global lane, because they contend for one
+  cursor. Background PID-targeted work is deliberately *not* excluded from
+  foreground work: it touches neither the cursor nor the frontmost app, so
+  there is no shared resource between them.
+- **Server instructions and the `run_steps` / `click` descriptions now steer
+  toward batching and element ids.** The instructions prescribed a
+  one-tool-call-per-action loop and never mentioned `run_steps`; a real
+  three-day session followed them exactly — 1,892 calls, every one alone
+  in its own model turn, `run_steps` used zero times. At ~0.3s of server time
+  per call, that run spent nearly all its wall clock waiting on the model. The
+  instructions now prescribe snapshot-once-then-`run_steps`, note that steps
+  naming different apps batch together, and state why `elementId` beats a
+  selector (O(1) resolve vs a tree walk that retries until timeout on a miss;
+  measured p90 0.47s at 94% success versus 5.29s at 84%).
 - The server instructions and the Focus Guard denial message now state the
   no-focus-steal rule as channel-independent: it protects the outcome, not
   just this server's tools, and explicitly names the shell/AppleScript bypass
@@ -21,6 +54,22 @@ All notable changes to AgentController are documented here. The format follows
   that code.
 
 ### Added
+- **`AXElementSearch.findProbing`** — reports what a walk saw (`nodesVisited`,
+  `nearMisses`, `oneAway`, `criteriaCount`) alongside its matches, at no extra
+  cost: the counters come from the per-node attribute snapshot the match
+  already reads. This exists to tell "the control has not rendered yet" apart
+  from "this selector describes nothing in this app". Both produce zero
+  results, but the first is worth waiting out and the second is a 4-second
+  wait for an answer that cannot change — 111 of 824 clicks in one measured
+  session, 14.4 minutes. `InteractionTools.searchIsHopeless` consumes it: when
+  the first walk saw a substantial rendered UI (≥50 nodes) and no element was
+  one criterion away from matching, the retry deadline collapses to one grace
+  retry (0.45s) instead of the full timeout. A control that renders a frame
+  late still self-heals inside the grace window; a selector that describes
+  nothing stops costing 4 seconds. Elements one-away keep the full timeout —
+  a wrong "hopeless" costs the agent a recovery turn, a wrong "keep waiting"
+  costs 4 seconds, and the rule is biased accordingly. Unit-tested headless
+  (`SearchProbeTests`).
 - **FocusWatcher** — Focus Guard now guards the outcome, not just this
   server's tools. While the guard is on, if an app this server has driven
   becomes frontmost within 30 seconds of tool activity (something the
