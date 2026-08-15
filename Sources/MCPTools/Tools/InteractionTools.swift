@@ -64,7 +64,7 @@ struct InteractionTools {
                 // role read distinguishes live from stale — without it, the
                 // press later "fails" with a message that never mentions
                 // staleness.
-                let alive = await AXExecutor.shared.run { element.role != nil }
+                let alive = await AXExecutor.app(pid).run { element.role != nil }
                 if alive { return .handle(element) }
             }
             // Handle is stale (unknown id or dead ref) — fall back to selector
@@ -77,29 +77,68 @@ struct InteractionTools {
         if usedStaleHandle && !criteria.hasAnyMatcher {
             return .staleHandleNoFallback(id: args?["elementId"]?.stringValue ?? "?")
         }
-        let deadline = Date().addingTimeInterval(max(0, timeout))
+        var deadline = Date().addingTimeInterval(max(0, timeout))
+        var firstPass = true
         repeat {
-            let hit = await AXExecutor.shared.run { () -> (AXElement, String, String)? in
+            let outcome = await AXExecutor.app(pid).run { () -> (hit: (AXElement, String, String)?, probe: AXSearchProbe) in
                 let root = searchRoot(pid: pid, args: args)
-                guard let r = AXElementSearch.find(root: root, criteria: criteria).first else { return nil }
-                return (r.element, r.element.role ?? "element", r.path)
+                let (results, probe) = AXElementSearch.findProbing(root: root, criteria: criteria)
+                guard let r = results.first else { return (nil, probe) }
+                return ((r.element, r.element.role ?? "element", r.path), probe)
             }
-            if let (element, role, path) = hit {
+            if let (element, role, path) = outcome.hit {
                 return usedStaleHandle
                     ? .foundAfterStaleHandle(element, role: role, path: path)
                     : .found(element, role: role, path: path)
             }
+            // A selector that describes nothing in a fully-rendered UI will describe
+            // nothing 4 seconds later either. Measured on a real session: 111 of 824
+            // clicks missed, each paying the full timeout — 14.4 minutes of waiting for
+            // an answer that could not change. Hopeless does not mean bail NOW: the
+            // deadline collapses to one grace retry, so a control rendering a frame
+            // late (~0.3s) still self-heals while a typo'd selector stops costing 4s.
+            if firstPass && searchIsHopeless(outcome.probe) {
+                deadline = min(deadline, Date().addingTimeInterval(hopelessGraceSeconds))
+            }
+            firstPass = false
             if Date() >= deadline { break }
-            await AXExecutor.shared.pause(0.15)
+            await AXExecutor.pause(0.15)
         } while Date() < deadline
 
         return .none
     }
 
+    /// How long a hopeless-looking search keeps retrying before reporting the miss.
+    /// Long enough for a control that renders a frame or two late (the retry loop's one
+    /// real payoff case), far short of the full default timeout.
+    static let hopelessGraceSeconds: Double = 0.45
+
+    /// Minimum elements the first walk must have seen before "nothing matched" is
+    /// treated as evidence about the UI rather than evidence the UI hasn't rendered.
+    static let hopelessMinNodesVisited = 50
+
+    /// Decide, from the first walk alone, whether retrying until the deadline can
+    /// change the answer.
+    ///
+    /// The rule: give up (after the grace retry) only when the walk saw a substantial,
+    /// rendered UI (`nodesVisited`) AND no element was one criterion away from matching
+    /// (`oneAway`). Two structural facts shape it:
+    ///   - With a single criterion, `nearMisses`/`oneAway` are always 0 (any element
+    ///     satisfying it is a full match) — so single-criterion misses in a rendered UI
+    ///     always take the grace path. That is the measured common case: 111 misses at
+    ///     4s each, dominated by labelContains selectors for text not on screen.
+    ///   - With role+X selectors, every same-role element is a near miss, so `oneAway`
+    ///     stays hot whenever the roles exist and the label is mid-update — those keep
+    ///     the full timeout, which is the conservative side of the asymmetry (a wrong
+    ///     "hopeless" costs a recovery turn; a wrong "keep waiting" costs 4 seconds).
+    static func searchIsHopeless(_ probe: AXSearchProbe) -> Bool {
+        probe.nodesVisited >= hopelessMinNodesVisited && probe.oneAway == 0
+    }
+
     static func register(in registry: ToolRegistry) {
         registry.register(.init(
             name: "click",
-            description: "Click a UI element (AX press action) or at screen coordinates. BACKGROUND-SAFE BY DEFAULT: the element path uses AXPress and the coordinate path posts to the target PID — neither moves the user's mouse cursor, brings the app forward, nor steals keyboard focus. For element matching, use role+title/identifier when known; use labelContains when you see the text on-screen but don't know which AX attribute carries it (common with SwiftUI buttons that stash labels in AXDescription). Pass an `elementId` from a prior snapshot/describe_screen to act on that exact element and skip the search. Element searches default to the focused window (scope:'window'); pass scope:'app' to search all windows + menu bar. Set foreground:true ONLY for apps that ignore targeted events (Electron/games) — that activates the app and injects a global click (moves the real cursor).",
+            description: "Click a UI element (AX press action) or at screen coordinates. PREFER `elementId` from a prior snapshot/describe_screen — it acts on that exact element with no tree search, and it is both faster and more reliable than a selector. Fall back to selectors only for elements you have not snapshotted: role+title/identifier when known, labelContains when you see the text on-screen but don't know which AX attribute carries it (common with SwiftUI buttons that stash labels in AXDescription); a selector matching nothing in a rendered UI fails fast; one that may just not have rendered yet retries until `timeout`. Element searches default to the focused window (scope:'window'); pass scope:'app' to search all windows + menu bar. Issuing several clicks? Send them as one `run_steps` call rather than one call each. BACKGROUND-SAFE BY DEFAULT: the element path uses AXPress and the coordinate path posts to the target PID — neither moves the user's mouse cursor, brings the app forward, nor steals keyboard focus. Set foreground:true ONLY for apps that ignore targeted events (Electron/games) — that activates the app and injects a global click (moves the real cursor).",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object(SelectorSchema.merged(into: [
@@ -123,10 +162,10 @@ struct InteractionTools {
                     var activated = false
                     if foreground {
                         activated = await MainActor.run { AppManager.activate(pid: pid) }
-                        await AXExecutor.shared.pause(0.1)
+                        await AXExecutor.pause(0.1)
                     }
                     let targetPid: pid_t? = foreground ? nil : pid
-                    await AXExecutor.shared.run {
+                    await AXExecutor.lane(pid: pid, foreground: foreground).run {
                         InputSimulator.click(at: CGPoint(x: x, y: y), pid: targetPid)
                     }
                     var extra: [String: JSONValue] = [
@@ -156,7 +195,7 @@ struct InteractionTools {
                     (element, role, staleHandle) = (e, r, true)
                 }
 
-                let pressed = await AXExecutor.shared.run { element.press() }
+                let pressed = await AXExecutor.app(pid).run { element.press() }
                 guard pressed else {
                     return ToolResult.error("Found \(role) but the press action was refused — the control may be disabled, or the element may not accept AXPress. Try clicking its coordinates (x/y from snapshot's frame) instead.")
                 }
@@ -194,10 +233,10 @@ struct InteractionTools {
                     var activated = false
                     if foreground {
                         activated = await MainActor.run { AppManager.activate(pid: pid) }
-                        await AXExecutor.shared.pause(0.1)
+                        await AXExecutor.pause(0.1)
                     }
                     let targetPid: pid_t? = foreground ? nil : pid
-                    await AXExecutor.shared.run {
+                    await AXExecutor.lane(pid: pid, foreground: foreground).run {
                         InputSimulator.doubleClick(at: CGPoint(x: x, y: y), pid: targetPid)
                     }
                     var extra: [String: JSONValue] = ["activated": .bool(activated)]
@@ -231,7 +270,7 @@ struct InteractionTools {
                     case fallback(CGPoint)
                     case refusedNoGeometry
                 }
-                let outcome: DoublePressOutcome = await AXExecutor.shared.run {
+                let outcome: DoublePressOutcome = await AXExecutor.app(pid).run {
                     let first = element.press()
                     let second = element.press()
                     if first && second { return .pressed }
@@ -252,10 +291,10 @@ struct InteractionTools {
                     var activated = false
                     if foreground {
                         activated = await MainActor.run { AppManager.activate(pid: pid) }
-                        await AXExecutor.shared.pause(0.1)
+                        await AXExecutor.pause(0.1)
                     }
                     let targetPid: pid_t? = foreground ? nil : pid
-                    await AXExecutor.shared.run { InputSimulator.doubleClick(at: pt, pid: targetPid) }
+                    await AXExecutor.lane(pid: pid, foreground: foreground).run { InputSimulator.doubleClick(at: pt, pid: targetPid) }
                     return ToolResult.action(success: true, method: foreground ? "coordinate-fallback" : "coordinate-fallback-pid", extra: [
                         "found": .bool(true), "role": .string(role), "activated": .bool(activated),
                     ])
@@ -289,10 +328,10 @@ struct InteractionTools {
                     var activated = false
                     if foreground {
                         activated = await MainActor.run { AppManager.activate(pid: pid) }
-                        await AXExecutor.shared.pause(0.1)
+                        await AXExecutor.pause(0.1)
                     }
                     let targetPid: pid_t? = foreground ? nil : pid
-                    await AXExecutor.shared.run {
+                    await AXExecutor.lane(pid: pid, foreground: foreground).run {
                         InputSimulator.rightClick(at: CGPoint(x: x, y: y), pid: targetPid)
                     }
                     var extra: [String: JSONValue] = ["activated": .bool(activated)]
@@ -317,7 +356,7 @@ struct InteractionTools {
                     (element, role) = (e, r)
                 }
 
-                let shown = await AXExecutor.shared.run { element.showMenu() }
+                let shown = await AXExecutor.app(pid).run { element.showMenu() }
                 guard shown else {
                     return ToolResult.error("Found \(role) but the showMenu action was refused")
                 }
@@ -384,7 +423,7 @@ struct InteractionTools {
                     case .staleHandleNoFallback(let id):
                         return staleHandleError(id)
                     case .handle(let e), .found(let e, _, _), .foundAfterStaleHandle(let e, _, _):
-                        let resolved = await AXExecutor.shared.run { () -> TypeOutcome in
+                        let resolved = await AXExecutor.app(pid).run { () -> TypeOutcome in
                             let role = e.role ?? ""
                             if role == "AXTextField" || role == "AXTextArea",
                                e.setAttribute(kAXValueAttribute, value: text as CFString) {
@@ -424,11 +463,11 @@ struct InteractionTools {
                 var activated = false
                 if foreground {
                     activated = await MainActor.run { AppManager.activate(pid: pid) }
-                    await AXExecutor.shared.pause(0.1)
+                    await AXExecutor.pause(0.1)
                 }
                 let targetPid: pid_t? = foreground ? nil : pid
                 let capturedFocus = focusElement
-                await AXExecutor.shared.run {
+                await AXExecutor.lane(pid: pid, foreground: foreground).run {
                     if let element = capturedFocus {
                         _ = element.setAttribute(kAXFocusedAttribute, value: kCFBooleanTrue)
                     }
@@ -481,13 +520,13 @@ struct InteractionTools {
                 var activated = false
                 if foreground {
                     activated = await MainActor.run { AppManager.activate(pid: pid) }
-                    await AXExecutor.shared.pause(0.1)
+                    await AXExecutor.pause(0.1)
                     guard activated else {
                         return ToolResult.error("Could not activate app (pid \(pid)) to receive the foreground shortcut")
                     }
                 }
                 let targetPid: pid_t? = foreground ? nil : pid
-                await AXExecutor.shared.run {
+                await AXExecutor.lane(pid: pid, foreground: foreground).run {
                     InputSimulator.sendShortcut(keyCode: keyCode, modifiers: flags, pid: targetPid)
                 }
                 return ToolResult.action(success: true, method: "keyboard", extra: [

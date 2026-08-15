@@ -44,10 +44,19 @@ public struct AXElementSearchCriteria: Sendable {
     /// distinguish "stale handle with a selector fallback" from "stale handle
     /// with nothing to fall back to".
     public var hasAnyMatcher: Bool {
-        role != nil || title != nil || titleContains != nil
-            || identifier != nil || value != nil
-            || description != nil || descriptionContains != nil
-            || labelContains != nil
+        criteriaCount > 0
+    }
+
+    /// How many element matchers are set. The denominator for a partial-match score:
+    /// an element satisfying `criteriaCount` criteria is a hit, one satisfying some but
+    /// not all is a near miss.
+    public var criteriaCount: Int {
+        var n = 0
+        for set in [role, title, titleContains, identifier, value,
+                    description, descriptionContains, labelContains] where set != nil {
+            n += 1
+        }
+        return n
     }
 }
 
@@ -55,6 +64,28 @@ public struct AXElementSearchResult: Sendable {
     public let element: AXElement
     public let path: String
     public let depth: Int
+}
+
+/// What a completed walk saw, beyond the elements it matched.
+///
+/// Exists so a caller can tell "this control has not rendered yet" apart from "this
+/// selector describes nothing in this app". Both look identical from a zero-result
+/// search, but they deserve opposite responses: the first is worth waiting out, the
+/// second is a 4-second wait for an answer that cannot change.
+public struct AXSearchProbe: Sendable {
+    /// Elements actually walked. A near-zero count means the UI had not rendered.
+    public let nodesVisited: Int
+    /// Elements that satisfied at least one criterion but not all of them — evidence
+    /// that something *like* the target is present (right role, wrong title; right
+    /// label, wrong role).
+    public let nearMisses: Int
+    /// Elements that satisfied every criterion but one. A strong signal the target
+    /// exists and is mid-update (a button whose title is still changing).
+    public let oneAway: Int
+    /// How many criteria the caller supplied.
+    public let criteriaCount: Int
+
+    public static let empty = AXSearchProbe(nodesVisited: 0, nearMisses: 0, oneAway: 0, criteriaCount: 0)
 }
 
 public struct AXElementSearch {
@@ -83,20 +114,36 @@ public struct AXElementSearch {
     /// search default meant an element visible in a snapshot could be
     /// unreachable by the selector-based tools (click/assert/wait).
     public static func find(root: AXElement, criteria: AXElementSearchCriteria, maxDepth: Int = 12) -> [AXElementSearchResult] {
+        findProbing(root: root, criteria: criteria, maxDepth: maxDepth).results
+    }
+
+    /// `find`, plus what the walk saw on the way. Same cost — the probe counters are
+    /// accumulated from the per-node attribute snapshot the match already reads.
+    public static func findProbing(
+        root: AXElement,
+        criteria: AXElementSearchCriteria,
+        maxDepth: Int = 12
+    ) -> (results: [AXElementSearchResult], probe: AXSearchProbe) {
         var results: [AXElementSearchResult] = []
-        bfs(root: root, criteria: criteria, maxDepth: maxDepth, results: &results)
+        var probe = AXSearchProbe.empty
+        bfs(root: root, criteria: criteria, maxDepth: maxDepth, results: &results, probe: &probe)
 
         // Nth-match selection: when `index` is set, return exactly the element at that
         // 0-based position among all collected matches (empty if out of range).
         if let n = criteria.index {
-            guard n >= 0, n < results.count else { return [] }
-            return [results[n]]
+            guard n >= 0, n < results.count else { return ([], probe) }
+            return ([results[n]], probe)
         }
-        return results
+        return (results, probe)
     }
 
     private static func bfs(root: AXElement, criteria: AXElementSearchCriteria, maxDepth: Int,
-                            results: inout [AXElementSearchResult]) {
+                            results: inout [AXElementSearchResult], probe: inout AXSearchProbe) {
+        // Probe counters, accumulated from the same per-node attribute snapshot the
+        // match reads — the walk costs no more than it did before.
+        var nearMisses = 0
+        var oneAway = 0
+
         // Each queue entry carries its PARENT's path prefix and its own sibling index.
         // The full path label (`role:name`) is built from the node's OWN batched
         // snapshot when it is dequeued — so each node is read exactly once.
@@ -138,8 +185,12 @@ public struct AXElementSearch {
                 path = "\(parentPath)/\(role):\(name)"
             }
 
-            if matches(attrs, criteria: criteria) {
+            let satisfied = satisfiedCriteria(attrs, criteria: criteria)
+            if satisfied == criteria.criteriaCount && criteria.hasAnyMatcher {
                 results.append(AXElementSearchResult(element: element, path: path, depth: depth))
+            } else if satisfied > 0 {
+                nearMisses += 1
+                if satisfied == criteria.criteriaCount - 1 { oneAway += 1 }
             }
 
             if depth < maxDepth {
@@ -149,15 +200,26 @@ public struct AXElementSearch {
                 }
             }
         }
+
+        probe = AXSearchProbe(
+            nodesVisited: nodesVisited,
+            nearMisses: nearMisses,
+            oneAway: oneAway,
+            criteriaCount: criteria.criteriaCount
+        )
     }
 
-    /// Match a node against the criteria using a single pre-read attribute snapshot.
-    /// Semantics are identical to the previous per-attribute implementation:
+    /// How many of the supplied criteria this node satisfies, from a single pre-read
+    /// attribute snapshot. Matching semantics are unchanged:
     /// - exact matches: role / title / identifier / value (AXValue as String) / description
     /// - *Contains / labelContains: case-insensitive substring
     /// - labelContains haystack = title / description(label) / help / value
-    /// - requires at least one criterion (`anyCriterion`)
-    private static func matches(_ attrs: [String: CFTypeRef], criteria: AXElementSearchCriteria) -> Bool {
+    ///
+    /// A full match is `satisfied == criteria.criteriaCount` (with at least one criterion
+    /// set). Counting instead of short-circuiting on the first failure is what lets a
+    /// caller tell "nothing here resembles the target" from "the target is one attribute
+    /// away from matching" — the difference between a hopeless retry and a useful one.
+    private static func satisfiedCriteria(_ attrs: [String: CFTypeRef], criteria: AXElementSearchCriteria) -> Int {
         let roleVal = attrs[kAXRoleAttribute as String] as? String
         let titleVal = attrs[kAXTitleAttribute as String] as? String
         let identifierVal = attrs[kAXIdentifierAttribute as String] as? String
@@ -167,21 +229,20 @@ public struct AXElementSearch {
         // for matching (non-string values were nil before).
         let valueVal = attrs[kAXValueAttribute as String] as? String
 
-        if let role = criteria.role, roleVal != role { return false }
-        if let title = criteria.title, titleVal != title { return false }
-        if let contains = criteria.titleContains {
-            guard let t = titleVal, t.localizedCaseInsensitiveContains(contains) else { return false }
-        }
-        if let identifier = criteria.identifier, identifierVal != identifier { return false }
-        if let value = criteria.value, valueVal != value { return false }
-        if let description = criteria.description, descriptionVal != description { return false }
-        if let contains = criteria.descriptionContains {
-            guard let d = descriptionVal, d.localizedCaseInsensitiveContains(contains) else { return false }
-        }
+        var satisfied = 0
+        if let role = criteria.role, roleVal == role { satisfied += 1 }
+        if let title = criteria.title, titleVal == title { satisfied += 1 }
+        if let contains = criteria.titleContains,
+           let t = titleVal, t.localizedCaseInsensitiveContains(contains) { satisfied += 1 }
+        if let identifier = criteria.identifier, identifierVal == identifier { satisfied += 1 }
+        if let value = criteria.value, valueVal == value { satisfied += 1 }
+        if let description = criteria.description, descriptionVal == description { satisfied += 1 }
+        if let contains = criteria.descriptionContains,
+           let d = descriptionVal, d.localizedCaseInsensitiveContains(contains) { satisfied += 1 }
         if let contains = criteria.labelContains {
             let haystacks = [titleVal, descriptionVal, helpVal, valueVal].compactMap { $0 }
-            guard haystacks.contains(where: { $0.localizedCaseInsensitiveContains(contains) }) else { return false }
+            if haystacks.contains(where: { $0.localizedCaseInsensitiveContains(contains) }) { satisfied += 1 }
         }
-        return criteria.hasAnyMatcher
+        return satisfied
     }
 }
