@@ -71,7 +71,7 @@ struct CaptureTools {
                     let indexTitle: String?
                     let indexOrigin: CGPoint?
                 }
-                let ax: AXWindowInfo = await AXExecutor.shared.run {
+                let ax: AXWindowInfo = await AXExecutor.app(pid).run {
                     let app = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
                     let windows = app.windows
                     let allMin = !windows.isEmpty && windows.allSatisfy {
@@ -190,7 +190,7 @@ struct CaptureTools {
                 // inspectors) the element can live in a window other than windows.first,
                 // so we must crop the SAME window we offset against — not window A's
                 // coordinates applied to window B's capture.
-                let resolved = await AXExecutor.shared.run { () -> (relativeRect: CGRect, windowOrigin: CGPoint, windowTitle: String?)? in
+                let resolved = await AXExecutor.app(pid).run { () -> (relativeRect: CGRect, windowOrigin: CGPoint, windowTitle: String?)? in
                     let appElement = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
                     let criteria = AXElementSearchCriteria(from: args, maxResults: 1)
                     guard let result = AXElementSearch.find(root: appElement, criteria: criteria).first,

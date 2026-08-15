@@ -37,9 +37,9 @@ struct MenuTools {
                 var activated = false
                 if foreground {
                     activated = await MainActor.run { AppManager.activate(pid: pid) }
-                    await AXExecutor.shared.pause(0.2)
+                    await AXExecutor.pause(0.2)
                 }
-                let success = await AXExecutor.shared.run {
+                let success = await AXExecutor.app(pid).run {
                     MenuNavigator.navigateMenu(pid: pid, menuPath: path)
                 }
                 guard success else {
@@ -66,7 +66,7 @@ struct MenuTools {
             handler: { args in
                 let pid = try args!.resolvePID()
                 let maxDepth = args?["maxDepth"]?.intValue ?? 3
-                let structure = await AXExecutor.shared.run {
+                let structure = await AXExecutor.app(pid).run {
                     MenuNavigator.getMenuStructure(pid: pid, maxDepth: maxDepth)
                 }
                 return ToolResult.json(structure)

@@ -50,7 +50,7 @@ struct SnapshotTools {
                 let maxDepth = args?["maxDepth"]?.intValue ?? 12
 
                 // Collect the live elements (BFS) off the MainActor.
-                let collected: [AXElement] = await AXExecutor.shared.run {
+                let collected: [AXElement] = await AXExecutor.app(pid).run {
                     let app = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
                     let root = app.focusedWindow ?? app.windows.first ?? app
                     return collect(root: root, interactiveOnly: interactiveOnly, maxDepth: maxDepth)
@@ -59,7 +59,7 @@ struct SnapshotTools {
                 // Register handles (assigns e1, e2, … in order), then read compact fields.
                 let ids = await ElementHandleStore.shared.replace(with: collected, pid: pid)
 
-                let items: [JSONValue] = await AXExecutor.shared.run {
+                let items: [JSONValue] = await AXExecutor.app(pid).run {
                     zip(ids, collected).map { id, el in
                         compactDescriptor(id: id, element: el)
                     }

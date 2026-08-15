@@ -30,7 +30,7 @@ struct ReadTextTools {
                 let pid = try args!.resolvePID()
                 let criteria = AXElementSearchCriteria(from: args, maxResults: 1)
 
-                let text: String? = await AXExecutor.shared.run {
+                let text: String? = await AXExecutor.app(pid).run {
                     let root = SearchScope.root(pid: pid, args: args, defaultScope: "app")
                     guard let r = AXElementSearch.find(root: root, criteria: criteria).first else { return nil }
                     let el = r.element
@@ -67,7 +67,7 @@ struct ReadTextTools {
                 let maxResults = args?["maxResults"]?.intValue ?? 200
                 let criteria = AXElementSearchCriteria(role: role, maxResults: maxResults)
 
-                let texts: [String] = await AXExecutor.shared.run {
+                let texts: [String] = await AXExecutor.app(pid).run {
                     let root = SearchScope.root(pid: pid, args: args, defaultScope: "app")
                     let results = AXElementSearch.find(root: root, criteria: criteria)
                     return results.compactMap { r -> String? in

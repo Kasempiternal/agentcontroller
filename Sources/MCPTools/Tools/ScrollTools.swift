@@ -33,10 +33,10 @@ struct ScrollTools {
                 var activated = false
                 if foreground {
                     activated = await MainActor.run { AppManager.activate(pid: pid) }
-                    await AXExecutor.shared.pause(0.1)
+                    await AXExecutor.pause(0.1)
                 }
                 let targetPid: pid_t? = foreground ? nil : pid
-                await AXExecutor.shared.run {
+                await AXExecutor.lane(pid: pid, foreground: foreground).run {
                     InputSimulator.scroll(at: CGPoint(x: x, y: y), deltaX: Int32(deltaX), deltaY: Int32(deltaY), pid: targetPid)
                 }
                 var extra: [String: JSONValue] = ["activated": .bool(activated)]
@@ -77,10 +77,10 @@ struct ScrollTools {
                 var activated = false
                 if foreground {
                     activated = await MainActor.run { AppManager.activate(pid: pid) }
-                    await AXExecutor.shared.pause(0.1)
+                    await AXExecutor.pause(0.1)
                 }
                 let targetPid: pid_t? = foreground ? nil : pid
-                await AXExecutor.shared.run {
+                await AXExecutor.lane(pid: pid, foreground: foreground).run {
                     InputSimulator.drag(from: CGPoint(x: sx, y: sy), to: CGPoint(x: ex, y: ey), duration: duration, pid: targetPid)
                 }
                 var extra: [String: JSONValue] = ["activated": .bool(activated)]
@@ -119,10 +119,10 @@ struct ScrollTools {
                 var activated = false
                 if foreground {
                     activated = await MainActor.run { AppManager.activate(pid: pid) }
-                    await AXExecutor.shared.pause(0.1)
+                    await AXExecutor.pause(0.1)
                 }
                 let targetPid: pid_t? = foreground ? nil : pid
-                await AXExecutor.shared.run {
+                await AXExecutor.lane(pid: pid, foreground: foreground).run {
                     InputSimulator.drag(from: CGPoint(x: fx, y: fy), to: CGPoint(x: tx, y: ty), duration: 0.5, pid: targetPid)
                 }
                 var extra: [String: JSONValue] = ["activated": .bool(activated)]
@@ -163,7 +163,7 @@ struct ScrollTools {
                 var activated = false
                 if foreground {
                     activated = await MainActor.run { AppManager.activate(pid: pid) }
-                    await AXExecutor.shared.pause(0.1)
+                    await AXExecutor.pause(0.1)
                 }
                 let targetPid: pid_t? = foreground ? nil : pid
 
@@ -176,7 +176,7 @@ struct ScrollTools {
                     // One AXExecutor pass: find element, try native scroll-to-visible, and
                     // measure visibility against the focused window. Returns the outcome.
                     enum Step: Sendable { case visible, offscreen(CGPoint), notFound }
-                    let step: Step = await AXExecutor.shared.run { () -> Step in
+                    let step: Step = await AXExecutor.app(pid).run { () -> Step in
                         let appElement = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
                         let scope = args?["scope"]?.stringValue ?? "window"
                         let window = appElement.focusedWindow
@@ -210,14 +210,14 @@ struct ScrollTools {
                     case .notFound:
                         if scrolls >= maxScrolls { break }
                         // Element not in tree yet — scroll the focused window center and retry.
-                        let center = await AXExecutor.shared.run { () -> CGPoint in
+                        let center = await AXExecutor.app(pid).run { () -> CGPoint in
                             let appElement = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
                             if let wf = appElement.focusedWindow?.frame { return CGPoint(x: wf.midX, y: wf.midY) }
                             return CGPoint(x: 400, y: 400)
                         }
-                        await AXExecutor.shared.run { InputSimulator.scroll(at: center, deltaY: deltaY, pid: targetPid) }
+                        await AXExecutor.lane(pid: pid, foreground: foreground).run { InputSimulator.scroll(at: center, deltaY: deltaY, pid: targetPid) }
                         scrolls += 1
-                        await AXExecutor.shared.pause(0.15)
+                        await AXExecutor.pause(0.15)
                     case .offscreen(let center):
                         if scrolls >= maxScrolls {
                             return ToolResult.action(success: true, method: "accessibility", extra: [
@@ -225,14 +225,14 @@ struct ScrollTools {
                                 "scrolls": .int(scrolls), "activated": .bool(activated),
                             ])
                         }
-                        await AXExecutor.shared.run { InputSimulator.scroll(at: center, deltaY: deltaY, pid: targetPid) }
+                        await AXExecutor.lane(pid: pid, foreground: foreground).run { InputSimulator.scroll(at: center, deltaY: deltaY, pid: targetPid) }
                         scrolls += 1
-                        await AXExecutor.shared.pause(0.15)
+                        await AXExecutor.pause(0.15)
                     }
                 }
 
                 // Deadline or maxScrolls exhausted: one last find to report offscreen vs miss.
-                let finalState: Bool = await AXExecutor.shared.run {
+                let finalState: Bool = await AXExecutor.app(pid).run {
                     let appElement = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
                     let scope = args?["scope"]?.stringValue ?? "window"
                     let root: AXElement = (scope == "app") ? appElement : (appElement.focusedWindow ?? appElement)

@@ -266,7 +266,7 @@ struct AppTools {
                 }
 
                 // Give the app a beat to terminate and release file handles.
-                await AXExecutor.shared.pause(0.5)
+                await AXExecutor.pause(0.5)
 
                 let home = FileManager.default.homeDirectoryForCurrentUser
                 let dataDir = home

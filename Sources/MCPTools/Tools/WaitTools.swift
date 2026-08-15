@@ -31,7 +31,7 @@ struct WaitTools {
                     if NSRunningApplication(processIdentifier: pid) == nil {
                         return ToolResult.error("App is no longer running (pid \(pid))")
                     }
-                    let found = await AXExecutor.shared.run { () -> AXElementSearchResult? in
+                    let found = await AXExecutor.app(pid).run { () -> AXElementSearchResult? in
                         let root = SearchScope.root(pid: pid, args: args, defaultScope: "app")
                         return AXElementSearch.find(root: root, criteria: criteria).first
                     }

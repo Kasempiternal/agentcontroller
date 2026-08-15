@@ -30,7 +30,7 @@ struct InspectionTools {
                 let pid = try args!.resolvePID()
                 let maxDepth = args?["maxDepth"]?.intValue ?? 5
                 let detail = AXTreeDetail(raw: args?["detail"]?.stringValue)
-                let tree = await AXExecutor.shared.run {
+                let tree = await AXExecutor.app(pid).run {
                     let appElement = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
                     return AXElementTree.buildTree(root: appElement, maxDepth: maxDepth, detail: detail)
                 }
@@ -92,7 +92,7 @@ struct InspectionTools {
                 let pid = try args!.resolvePID()
                 let criteria = AXElementSearchCriteria(from: args, maxResults: args?["maxResults"]?.intValue ?? 20)
 
-                let results = await AXExecutor.shared.run {
+                let results = await AXExecutor.app(pid).run {
                     let root = SearchScope.root(pid: pid, args: args, defaultScope: "app")
                     return AXElementSearch.find(root: root, criteria: criteria)
                 }
@@ -154,7 +154,7 @@ struct InspectionTools {
                 let pid = try args!.resolvePID()
                 let criteria = AXElementSearchCriteria(from: args, maxResults: 1)
 
-                let result = await AXExecutor.shared.run { () -> JSONValue in
+                let result = await AXExecutor.app(pid).run { () -> JSONValue in
                     let appElement = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
                     let results = AXElementSearch.find(root: appElement, criteria: criteria)
                     guard let first = results.first else { return JSONValue.null }
@@ -208,7 +208,7 @@ struct InspectionTools {
             ]),
             handler: { args in
                 let pid = try args!.resolvePID()
-                let result = await AXExecutor.shared.run { () -> JSONValue in
+                let result = await AXExecutor.app(pid).run { () -> JSONValue in
                     let app = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
                     guard let ref: AXUIElement = app.attribute(kAXFocusedUIElementAttribute) else {
                         return .null

@@ -87,7 +87,7 @@ enum SearchScope {
 /// outside point is a WARNING, not an error.
 func offTargetWarning(pid: pid_t, x: Double, y: Double) async -> String? {
     let point = CGPoint(x: x, y: y)
-    let inside = await AXExecutor.shared.run { () -> Bool in
+    let inside = await AXExecutor.app(pid).run { () -> Bool in
         let app = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
         return app.windows.contains { $0.frame?.contains(point) == true }
     }

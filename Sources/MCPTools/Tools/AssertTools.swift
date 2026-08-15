@@ -39,7 +39,7 @@ struct AssertTools {
 
                 let start = Date()
                 repeat {
-                    let found = await AXExecutor.shared.run { () -> AXElementSearchResult? in
+                    let found = await AXExecutor.app(pid).run { () -> AXElementSearchResult? in
                         let root = SearchScope.root(pid: pid, args: args, defaultScope: "app")
                         return AXElementSearch.find(root: root, criteria: criteria).first
                     }
@@ -82,7 +82,7 @@ struct AssertTools {
 
                 let start = Date()
                 repeat {
-                    let found = await AXExecutor.shared.run { () -> AXElementSearchResult? in
+                    let found = await AXExecutor.app(pid).run { () -> AXElementSearchResult? in
                         let root = SearchScope.root(pid: pid, args: args, defaultScope: "app")
                         return AXElementSearch.find(root: root, criteria: criteria).first
                     }
@@ -137,7 +137,7 @@ struct AssertTools {
                                                isEnabled: false, isFocused: false, checked: nil)
 
                 repeat {
-                    last = await AXExecutor.shared.run { () -> AssertValueSnapshot in
+                    last = await AXExecutor.app(pid).run { () -> AssertValueSnapshot in
                         let root = SearchScope.root(pid: pid, args: args, defaultScope: "app")
                         guard let r = AXElementSearch.find(root: root, criteria: criteria).first else {
                             return AssertValueSnapshot(found: false, valueString: nil, title: nil, label: nil,
