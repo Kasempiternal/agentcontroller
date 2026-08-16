@@ -6,6 +6,8 @@ All notable changes to AgentController are documented here. The format follows
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-08-16
+
 ### Changed
 - **The MCP bridge dispatches requests concurrently instead of one at a time.**
   The `while read line; curl; echo` loop held exactly one request in flight,
