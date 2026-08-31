@@ -6,6 +6,18 @@ All notable changes to AgentController are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **Linux MCP stdio backend.** `Linux/` is a Python 3.11+ stdio server
+  (`agentcontroller-linux`) that registers the same 49-tool desktop contract as
+  macOS and Windows. Accessibility goes through AT-SPI (optional system
+  PyGObject, lazy-imported so headless CI still imports the package). X11
+  screenshots use ImageMagick `import`; Wayland uses `grim`. AT-SPI actions and
+  editable text run first; global pointer/keyboard fallbacks require explicit
+  `foreground:true` and restore prior focus. `reset_app_state`, `start_recording`,
+  and `stop_recording` return explicit MCP `isError` results rather than silent
+  no-ops. 46 native tools, three honest unsupported responses. Child processes
+  are always argv lists; the server never opens a listening socket.
+
 ## [2.5.0] - 2026-08-16
 
 ### Changed
