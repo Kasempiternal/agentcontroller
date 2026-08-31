@@ -23,15 +23,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      # The portability promise is the tool names. The two backends share no
-      # code, so this is the only thing keeping their registries — and every
-      # tool count and description quoted in the docs — honest.
+      # The portability promise is the tool names. The three desktop backends
+      # share no code, so this is the only thing keeping their registries —
+      # and every tool count and description quoted in the docs — honest.
       - name: Verify cross-platform tool contract
         run: ./Scripts/check-tool-contract.sh
 
       - name: Shell syntax
         run: |
-          for f in build.sh Scripts/*.sh; do bash -n "$f"; done
+          for f in build.sh Scripts/*.sh Linux/smoke.sh; do bash -n "$f"; done
 
       # Severity is capped at `warning` so a runner-image shellcheck bump can't
       # turn CI red on a new stylistic rule. Both scripts are clean at the
@@ -107,3 +107,36 @@ jobs:
       - name: MCP protocol smoke
         shell: pwsh
         run: .\Windows\smoke.ps1
+
+  # Headless Linux backend: stdlib protocol tests. AT-SPI is installed so the
+  # lazy import path is exercised, but no desktop session is required.
+  linux-backend:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install AT-SPI introspection
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-gi gir1.2-atspi-2.0
+
+      - name: Compile
+        run: python3 -m compileall Linux/src
+
+      - name: Unit tests
+        run: PYTHONPATH=Linux/src python3 -m unittest discover -s Linux/tests -v
+
+      - name: MCP protocol smoke
+        run: bash Linux/smoke.sh
+
+      - name: Typecheck (optional)
+        continue-on-error: true
+        run: |
+          python3 -m pip install mypy
+          python3 -m mypy --ignore-missing-imports Linux/src
