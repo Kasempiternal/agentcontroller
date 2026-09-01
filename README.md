@@ -6,16 +6,17 @@
 
 [![CI](https://github.com/Kasempiternal/agentcontroller/actions/workflows/ci.yml/badge.svg)](https://github.com/Kasempiternal/agentcontroller/actions/workflows/ci.yml)
 ![Version](https://img.shields.io/badge/version-2.5.0-blue)
-![Platform](https://img.shields.io/badge/platform-macOS%2014%2B%20%7C%20Windows%2010%2F11%20%7C%20iOS-lightgrey)
+![Platform](https://img.shields.io/badge/platform-macOS%2014%2B%20%7C%20Windows%2010%2F11%20%7C%20Linux%20%7C%20iOS-lightgrey)
 ![Swift](https://img.shields.io/badge/swift-5.10-orange)
 ![.NET](https://img.shields.io/badge/.NET-9.0-512BD4)
+![Python](https://img.shields.io/badge/python-3.11%2B-3776AB)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 
 **Native app QA automation for AI agents, exposed over MCP (Model Context Protocol).**
 
-AgentController lets Claude Code—or any MCP client—drive and *test* native applications on **macOS, Windows, and iOS** (simulators and physical iPhones). It exposes a portable automation vocabulary for clicking, typing, screenshots, menus, accessibility inspection, assertions, and replayable flows, backed by native platform APIs rather than a browser-only abstraction.
+AgentController lets Claude Code—or any MCP client—drive and *test* native applications on **macOS, Windows, Linux, and iOS** (simulators and physical iPhones). It exposes a portable automation vocabulary for clicking, typing, screenshots, menus, accessibility inspection, assertions, and replayable flows, backed by native platform APIs rather than a browser-only abstraction.
 
-Its defining feature is background-first automation. On macOS, every tool is background-safe by default. On Windows, UI Automation patterns run without moving the pointer, while the five raw-input gestures require explicit `foreground:true` authorization and restore the prior focus and cursor afterward.
+Its defining feature is background-first automation. On macOS, every tool is background-safe by default. On Windows and Linux, accessibility actions run without moving the pointer, while the five raw-input gestures require explicit `foreground:true` authorization and restore the prior focus and cursor afterward.
 
 ## Platform support
 
@@ -23,9 +24,10 @@ Its defining feature is background-first automation. On macOS, every tool is bac
 |---|---|---|---|
 | macOS 14+ | Swift, AXUIElement, CGEvent, ScreenCaptureKit | Local HTTP through a resilient stdio bridge | Signed `.app` and `.dmg` |
 | Windows 10/11 | C#/.NET, UI Automation, Win32 `SendInput` | MCP stdio directly | Self-contained `.exe` |
+| Linux | Python 3.11+, AT-SPI, ImageMagick `import` / grim | MCP stdio directly | `python3 -m agentcontroller_linux` |
 | iOS (simulator + iPhone) | TypeScript/Node, `idb`, native AX scanner, WebDriverAgent | MCP stdio directly (runs on the Mac) | `node dist/cli.js` |
 
-The two desktop backends register the same 49-tool contract. Windows currently has 46 native implementations and returns explicit unsupported errors for `reset_app_state`, `start_recording`, and `stop_recording`; see the [Windows guide](Windows/README.md) for platform-specific behavior. The iOS backend registers its own 36-tool surface shaped for phones (gestures, hardware buttons, device lifecycle) rather than force-fitting the desktop vocabulary — see the [iOS guide](iOS/README.md).
+The three desktop backends register the same 49-tool contract. Windows and Linux currently have 46 native implementations and return explicit unsupported errors for `reset_app_state`, `start_recording`, and `stop_recording`; see the [Windows guide](Windows/README.md) and [Linux guide](Linux/README.md) for platform-specific behavior. The iOS backend registers its own 36-tool surface shaped for phones (gestures, hardware buttons, device lifecycle) rather than force-fitting the desktop vocabulary — see the [iOS guide](iOS/README.md).
 
 ---
 
@@ -80,6 +82,7 @@ AgentController runs as a menu-bar app (`LSUIElement`, no Dock icon) hosting a b
 | `Sources/MCPTools` | The 49 tool definitions and handlers |
 | `Sources/AccessibilityEngine` | AX tree walking/search, input synthesis, window/app management |
 | `Sources/ScreenCapture` | ScreenCaptureKit screenshots, video recording, content caching |
+| `Linux/` | AT-SPI MCP stdio server (`python3 -m agentcontroller_linux`) |
 
 ## Requirements
 
@@ -87,9 +90,11 @@ AgentController runs as a menu-bar app (`LSUIElement`, no Dock icon) hosting a b
 
 **Windows:** Windows 10 or 11 and the .NET 9 SDK for source builds. The default publish command produces a self-contained x64 executable, so target machines do not need a separate .NET installation.
 
+**Linux:** Python 3.11 or newer. Runtime is the standard library only. Optional system packages: `python3-gi` and `gir1.2-atspi-2.0` for AT-SPI, ImageMagick (`import`/`convert`) on X11, `grim` on Wayland.
+
 ## Installation
 
-Clone once for either platform:
+Clone once for any platform:
 
 ```bash
 git clone https://github.com/Kasempiternal/agentcontroller.git
@@ -119,6 +124,28 @@ cd agentcontroller
 ```
 
 Register `Windows\publish\win-x64\agentcontroller-windows.exe` directly as an MCP stdio server. Full configuration and the elevated interactive integration test are documented in [Windows/README.md](Windows/README.md).
+
+### Linux
+
+```bash
+pip install -e Linux/
+./Linux/smoke.sh
+```
+
+Register with an MCP client using `command` plus `args` (Cursor CLI / `.mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "agentcontroller-linux": {
+      "command": "python3",
+      "args": ["-m", "agentcontroller_linux"]
+    }
+  }
+}
+```
+
+After the editable install, the `agentcontroller-linux` console script is equivalent. Without pip, set `PYTHONPATH=Linux/src`. AT-SPI, capture helpers, and compositor limits are documented in [Linux/README.md](Linux/README.md).
 
 The default signing identity is set at the top of `build.sh`; override per-invocation with:
 
@@ -170,6 +197,7 @@ Version 2.0 changes the product name, executable names, bundle identifier, MCP s
 
 - On macOS, remove the old MCP registration, install `AgentController.app`, grant Accessibility and Screen Recording again for the new `izotz.agentcontroller` bundle identifier, then register `agentcontroller` using `~/.agentcontroller/agentcontroller-mcp-bridge.sh`.
 - On Windows, update the MCP command to `agentcontroller-windows.exe`; saved flow files now live under `%LOCALAPPDATA%\AgentController\flows`.
+- On Linux, register `python3 -m agentcontroller_linux` (or the `agentcontroller-linux` console script). Saved flows live under `$XDG_DATA_HOME/agentcontroller/flows`.
 - After confirming v2 works, the previous app and its legacy runtime directory can be removed manually. They are not read or overwritten by AgentController.
 
 ## Quick start
@@ -252,11 +280,11 @@ The HTTP server is pinned to **IPv4 loopback** (never `0.0.0.0`), so it is unrea
 
 Destructive operations are opt-in: `reset_app_state` only deletes an app's sandbox container behind an explicit `wipeData: true` flag, and the clipboard tools warn that they touch system-wide state.
 
-The Windows backend speaks MCP over stdio and opens **no listening socket**, so the loopback and token considerations above do not apply to it. The iOS backend is stdio too; its only listening socket is a loopback-pinned live-screen viewer, and WebDriverAgent's own unauthenticated port on the phone is called out honestly in the [iOS guide](iOS/README.md). Automating an app means reading its contents, and screenshots capture whatever is on screen — see [SECURITY.md](SECURITY.md) for the full threat model, what is explicitly out of scope, and how to report a vulnerability privately.
+The Windows and Linux backends speak MCP over stdio and open **no listening socket**, so the loopback and token considerations above do not apply to them. The iOS backend is stdio too; its only listening socket is a loopback-pinned live-screen viewer, and WebDriverAgent's own unauthenticated port on the phone is called out honestly in the [iOS guide](iOS/README.md). Automating an app means reading its contents, and screenshots capture whatever is on screen — see [SECURITY.md](SECURITY.md) for the full threat model, what is explicitly out of scope, and how to report a vulnerability privately.
 
 ## Development
 
-- Swift Package Manager, Swift 5.10+, **no third-party dependencies** on either platform (no `.package(url:)`, no `PackageReference`)
+- Swift Package Manager, Swift 5.10+, **no third-party dependencies** on macOS or Windows (no `.package(url:)`, no `PackageReference`). Linux is Python 3.11+ stdlib at runtime; AT-SPI comes from optional system PyGObject.
 - Entry point: `Sources/App/AppDelegate.swift`; Info.plist is injected at link time via `-sectcreate` (see `Package.swift`)
 - Rebuild loop: edit → `./build.sh --skip-notarize` → fresh binary in `/Applications` → the bridge reconnects automatically, tools keep working in any open Claude Code session
 - Copy `.mcp.json.example` to `.mcp.json` for a project-scoped server; `.mcp.json` is gitignored because the client requires a machine-specific absolute path
@@ -266,23 +294,26 @@ swift build          # debug build
 swift test           # unit tests (transport, JSON, selectors, input mapping)
 swift build -c release -Xswiftc -warnings-as-errors   # what CI runs
 
-./Scripts/check-tool-contract.sh   # tool contract: both backends + docs in sync
+./Scripts/check-tool-contract.sh   # tool contract: all three desktop backends + docs in sync
+PYTHONPATH=Linux/src python3 -m unittest discover -s Linux/tests -v
 ```
 
-`check-tool-contract.sh` is the guard on this repo's central promise. The two
-backends share no code, so only convention keeps their registries identical; the
-script enforces that both expose the same tool set, that `docs/TOOLS.md`
-documents exactly that set with descriptions matching the source strings, and
-that every tool count quoted in prose is the real one. It needs only bash and
-grep — no Swift, no .NET, no running server.
+`check-tool-contract.sh` is the guard on this repo's central promise. The three
+desktop backends share no code, so only convention keeps their registries
+identical; the script enforces that all three expose the same tool set, that
+`docs/TOOLS.md` documents exactly that set with descriptions matching the
+source strings, and that every tool count quoted in prose is the real one. It
+needs only bash and grep — no Swift, no .NET, no running server.
 
-CI (`.github/workflows/ci.yml`) runs four jobs per push: the contract check plus
+CI (`.github/workflows/ci.yml`) runs five jobs per push: the contract check plus
 `shellcheck` on Ubuntu for the fastest signal, the iOS backend's TypeScript
 typecheck and build (also Ubuntu — Node compiles anywhere even though the
 runtime needs a Mac), the Swift build and tests on a macOS 15 runner with
-warnings as errors, and the .NET build plus MCP protocol smoke on Windows.
-`Windows/integration.ps1` drives real UI Automation and needs an interactive
-desktop, so it stays a local pre-release step.
+warnings as errors, the .NET build plus MCP protocol smoke on Windows, and the
+Python compile/unittest/smoke job on Ubuntu. `Windows/integration.ps1` drives
+real UI Automation and needs an interactive desktop, so it stays a local
+pre-release step. Linux GUI integration (AT-SPI against a real app, optional
+`xvfb`) is the same kind of local step.
 
 ## Troubleshooting
 
@@ -296,6 +327,8 @@ desktop, so it stays a local pre-release step.
 | Screenshot of a minimized window fails | By design — `restore_window` first |
 | Clicks "succeed" but nothing happens | Check the result for an off-target `warning`; the coordinates may be outside the app's windows |
 | An app ignores PID-targeted input (some Electron apps, games) | Retry the same tool with `foreground: true` |
+| Linux `check_permissions` shows `displayServer: none` | The process has no `DISPLAY` or `WAYLAND_DISPLAY`. Run it in a graphical session or under `xvfb-run` |
+| Linux screenshots fail | X11 needs ImageMagick `import`; Wayland needs `grim`. `check_permissions` reports `screenshotBackend` |
 
 ## Credits and prior art
 
@@ -303,7 +336,7 @@ AgentController did not start from a blank page, and it is worth being precise a
 
 Of roughly 14,700 lines of source here, about four fifths are original. The remaining fifth traces to one MIT-licensed project and is confined entirely to the iOS backend. No line of it comes from Maestro.
 
-**Original to this project** are two of the three backends and the thing that binds them: the macOS backend (Swift, AXUIElement, CGEvent, ScreenCaptureKit) with its background-first automation model — driving an app without stealing your focus, cursor, or frontmost window; the Windows backend (C#/.NET, UI Automation, Win32 `SendInput`) with its explicit foreground-authorization rule for raw input; and the unified tool contract that lets one MCP client drive macOS, Windows, and iOS through a single shared vocabulary, enforced in CI by [`Scripts/check-tool-contract.sh`](Scripts/check-tool-contract.sh) because the backends share no code and nothing else would keep them honest. Those three platforms in one package, background-safe by default, are the point of the project.
+**Original to this project** are three of the four backends and the thing that binds them: the macOS backend (Swift, AXUIElement, CGEvent, ScreenCaptureKit) with its background-first automation model — driving an app without stealing your focus, cursor, or frontmost window; the Windows backend (C#/.NET, UI Automation, Win32 `SendInput`) with its explicit foreground-authorization rule for raw input; the Linux backend (Python, AT-SPI, ImageMagick `import` / grim) with the same 49-tool stdio contract; and the unified tool contract that lets one MCP client drive macOS, Windows, Linux, and iOS through a single shared vocabulary, enforced in CI by [`Scripts/check-tool-contract.sh`](Scripts/check-tool-contract.sh) because the backends share no code and nothing else would keep them honest. Those platforms in one package, background-safe by default, are the point of the project.
 
 **The interaction model comes from [Maestro](https://github.com/mobile-dev-inc/maestro) (mobile.dev, Apache-2.0).** Maestro's insight is that UI automation should be *tolerant*: a step waits for the interface to settle rather than failing on the first miss, and automation is expressed as reusable flows instead of one-shot commands. Both ideas are adopted here — every interaction runs an implicit find-and-retry loop, and `save_flow` / `run_saved_flow` make a recorded sequence a replayable regression test. **No Maestro source code is used.** Maestro targets mobile platforms on the JVM; the backends here are independent implementations against native platform APIs. The debt is one of design, and it is a real one.
 

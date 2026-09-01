@@ -15,3 +15,11 @@ publish/
 # Local MCP client registration. The client needs an absolute path, which is
 # machine-specific, so this is per-checkout. Copy .mcp.json.example instead.
 .mcp.json
+
+# Python / Linux backend
+__pycache__/
+*.py[cod]
+.venv/
+.mypy_cache/
+*.egg-info/
+.eggs/

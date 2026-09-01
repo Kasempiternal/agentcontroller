@@ -29,10 +29,11 @@ directly from Maestro's design:
     one-shot imperative commands.
 
 NO MAESTRO SOURCE CODE IS INCLUDED IN THIS PROJECT. Maestro targets mobile
-platforms on the JVM; AgentController's macOS (Swift), Windows (C#/.NET), and
-iOS (TypeScript) backends are independent implementations written against
-native platform APIs. The debt is one of design, not of code, and no Apache-2.0
-obligation to Maestro attaches to this distribution.
+platforms on the JVM; AgentController's macOS (Swift), Windows (C#/.NET),
+Linux (Python/AT-SPI), and iOS (TypeScript) backends are independent
+implementations written against native platform APIs. The debt is one of
+design, not of code, and no Apache-2.0 obligation to Maestro attaches to
+this distribution.
 
 --------------------------------------------------------------------------------
 2. blitzdotdev/iPhone-mcp — code, vendored and extended
@@ -77,8 +78,11 @@ The following are original work, not derived from either project above:
     without stealing the user's focus, cursor, or frontmost window.
   * The Windows backend (C#/.NET / UI Automation / Win32 SendInput), including
     the foreground-authorization model for raw-input gestures.
+  * The Linux backend (Python / AT-SPI / ImageMagick import / grim), including
+    the same 49-tool MCP stdio contract and explicit unsupported errors for
+    recording and generic app-state reset.
   * The unified cross-platform tool contract that lets a single MCP client
-    drive macOS, Windows, and iOS through one shared vocabulary.
+    drive macOS, Windows, Linux, and iOS through one shared vocabulary.
 
 ================================================================================
 Third-party runtime dependencies
@@ -90,3 +94,11 @@ remain under their own licenses:
   * idb / idb-companion (Facebook/Meta) — MIT
   * WebDriverAgent (Facebook/Meta, appium/WebDriverAgent) — BSD-3-Clause
   * Xcode command-line tools, including simctl (Apple) — Apple SLA
+  * ImageMagick (`import`, `convert`) — ImageMagick License
+  * grim (Wayland screenshot) — MIT
+  * xdotool, xclip, xsel, xprop, xwininfo, wmctrl, xdg-open, gtk-launch —
+    invoked as system helpers, not redistributed
+  * wl-clipboard (`wl-copy`, `wl-paste`), ydotool, wtype — invoked as system
+    helpers, not redistributed
+  * AT-SPI / at-spi2-core and PyGObject (Debian python3-gi) — LGPL, system
+    packages, not redistributed

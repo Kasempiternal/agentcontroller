@@ -1,13 +1,14 @@
 #!/bin/bash
 # Verifies the cross-platform MCP tool contract.
 #
-# AgentController's portability promise is the tool names: the macOS and Windows
-# backends share no code, so nothing but convention keeps their registries in
-# step. This script turns that convention into an enforced invariant, and checks
-# the counts asserted in prose against the registries themselves — so a stale
-# "49 tools" claim in the README fails CI instead of misleading a reader.
+# AgentController's portability promise is the tool names: the macOS, Windows,
+# and Linux backends share no code, so nothing but convention keeps their
+# registries in step. This script turns that convention into an enforced
+# invariant, and checks the counts asserted in prose against the registries
+# themselves — so a stale "49 tools" claim in the README fails CI instead of
+# misleading a reader.
 #
-# Runs anywhere with bash + grep: no Swift, no .NET, no running server needed.
+# Runs anywhere with bash + grep: no Swift, no .NET, no Python server needed.
 #
 # Deliberately NOT `set -e`: a checker should report every problem in one pass
 # rather than abort on the first. Greps that may legitimately match nothing are
@@ -37,6 +38,10 @@ note() { printf '       %s\n' "$*" >&2; }
 { grep -rhoE 'Register\([[:space:]]*"[a-z_]+"' Windows/ || true; } \
     | grep -oE '"[a-z_]+"' | tr -d '"' | sort -u > "$WORK/windows"
 
+# Linux: each tool is a `registry.register("…", …)` call.
+{ grep -rhoE 'register\([[:space:]]*"[a-z_]+"' Linux/ || true; } \
+    | grep -oE '"[a-z_]+"' | tr -d '"' | sort -u > "$WORK/linux"
+
 # Docs: docs/TOOLS.md gives each tool its own heading.
 { grep -oE '^###?[[:space:]]+`?[a-z_]+' docs/TOOLS.md || true; } \
     | grep -oE '[a-z_]+$' | sort -u > "$WORK/docs"
@@ -53,6 +58,7 @@ note() { printf '       %s\n' "$*" >&2; }
 
 MACOS_N=$(wc -l < "$WORK/macos" | tr -d ' ')
 WINDOWS_N=$(wc -l < "$WORK/windows" | tr -d ' ')
+LINUX_N=$(wc -l < "$WORK/linux" | tr -d ' ')
 DOCS_N=$(wc -l < "$WORK/docs" | tr -d ' ')
 IOS_N=$(wc -l < "$WORK/ios" | tr -d ' ')
 IOS_DOCS_N=$(wc -l < "$WORK/ios_docs" | tr -d ' ')
@@ -61,6 +67,7 @@ IOS_DOCS_N=$(wc -l < "$WORK/ios_docs" | tr -d ' ')
 # need updating. Never let that pass as "the sets match".
 [ "$MACOS_N" -gt 0 ]    || fail "extracted 0 tools from Sources/MCPTools — did the declaration shape change?"
 [ "$WINDOWS_N" -gt 0 ]  || fail "extracted 0 tools from Windows/ — did the declaration shape change?"
+[ "$LINUX_N" -gt 0 ]    || fail "extracted 0 tools from Linux/ — did the declaration shape change?"
 [ "$DOCS_N" -gt 0 ]     || fail "extracted 0 tools from docs/TOOLS.md — did the heading shape change?"
 [ "$IOS_N" -gt 0 ]      || fail "extracted 0 tools from iOS/src/mcp-server.ts — did the declaration shape change?"
 [ "$IOS_DOCS_N" -gt 0 ] || fail "extracted 0 tools from the iOS/README.md table — did the table shape change?"
@@ -71,12 +78,15 @@ if [ "$FAILED" != 0 ]; then
 fi
 
 # --- Registries must agree exactly ------------------------------------------
-if diff -q "$WORK/macos" "$WORK/windows" >/dev/null 2>&1; then
-    ok "both backends register the same $MACOS_N tools"
+if diff -q "$WORK/macos" "$WORK/windows" >/dev/null 2>&1 \
+   && diff -q "$WORK/macos" "$WORK/linux" >/dev/null 2>&1; then
+    ok "all three backends register the same $MACOS_N tools"
 else
     fail "backend tool registries diverge"
-    comm -23 "$WORK/macos" "$WORK/windows" | while read -r t; do note "only on macOS:   $t"; done
+    comm -23 "$WORK/macos" "$WORK/windows" | while read -r t; do note "only on macOS (vs Windows): $t"; done
     comm -13 "$WORK/macos" "$WORK/windows" | while read -r t; do note "only on Windows: $t"; done
+    comm -23 "$WORK/macos" "$WORK/linux" | while read -r t; do note "only on macOS (vs Linux): $t"; done
+    comm -13 "$WORK/macos" "$WORK/linux" | while read -r t; do note "only on Linux: $t"; done
 fi
 
 # --- Docs must cover exactly the registered set -----------------------------
@@ -101,7 +111,7 @@ fi
 # Any "<N> tools" / "<N>-tool" / "<N> MCP tools" claim must equal one of the
 # real counts (desktop or iOS), so a number in the README can never quietly rot.
 COUNT_DRIFT=0
-for doc in README.md Windows/README.md iOS/README.md CHANGELOG.md docs/TOOLS.md NOTICE; do
+for doc in README.md Windows/README.md Linux/README.md iOS/README.md CHANGELOG.md docs/TOOLS.md NOTICE; do
     [ -f "$doc" ] || continue
     claims=$({ grep -ohE '[0-9]+\*?\*?[[:space:]-]+(MCP[[:space:]]+)?tools?\b' "$doc" || true; } \
                 | grep -oE '^[0-9]+' | sort -u)
@@ -114,32 +124,50 @@ for doc in README.md Windows/README.md iOS/README.md CHANGELOG.md docs/TOOLS.md 
 done
 [ "$COUNT_DRIFT" = 0 ] && ok "every tool-count claim in the docs matches a registry ($MACOS_N desktop, $IOS_N iOS)"
 
-# --- Windows native-vs-unsupported split ------------------------------------
-# Windows deliberately returns explicit errors rather than faking these three.
-# An unsupported tool is a Register(...) whose handler is an unconditional
-# ToolResult.Error. Keep both the count and the named set honest in the docs.
-UNSUPPORTED_N=$({ grep -rhoF '_ => ToolResult.Error(' Windows/ || true; } | wc -l | tr -d ' ')
-if [ "$UNSUPPORTED_N" -gt 0 ]; then
-    NATIVE_N=$((WINDOWS_N - UNSUPPORTED_N))
-    if grep -qE "\b$NATIVE_N\b[^.]*nativ" README.md Windows/README.md CHANGELOG.md 2>/dev/null; then
-        ok "Windows native count ($NATIVE_N native, $UNSUPPORTED_N unsupported) matches the docs"
+# --- Native-vs-unsupported split (Windows and Linux) ------------------------
+# Both backends deliberately return explicit errors rather than faking these
+# tools. An unsupported tool is a Register/register whose handler is an
+# unconditional ToolResult error. Keep both the count and the named set honest.
+check_unsupported() {
+    local label="$1"
+    local root="$2"
+    local needle="$3"
+    local extract_files="$4"
+    local total="$5"
+
+    local unsupported_n
+    unsupported_n=$({ grep -rhoF "$needle" "$root" || true; } | wc -l | tr -d ' ')
+    [ "$unsupported_n" -gt 0 ] || return 0
+
+    local native_n=$((total - unsupported_n))
+    if grep -qE "\b$native_n\b[^.]*nativ" README.md Windows/README.md Linux/README.md CHANGELOG.md 2>/dev/null; then
+        ok "$label native count ($native_n native, $unsupported_n unsupported) matches the docs"
     else
-        fail "Windows has $NATIVE_N native tools and $UNSUPPORTED_N unsupported — no doc states $NATIVE_N"
+        fail "$label has $native_n native tools and $unsupported_n unsupported — no doc states $native_n"
     fi
 
-    # Every unsupported tool must be named in the README so users aren't surprised.
-    awk '/registry\.Register\("/ { n=$0; sub(/.*Register\("/,"",n); sub(/".*/,"",n); name=n }
-         /_ => ToolResult\.Error\(/ { if (name != "") { print name; name="" } }' \
-        Windows/AgentController.Windows/Tools/*.cs 2>/dev/null | sort -u > "$WORK/unsupported"
+    local names_file="$WORK/unsupported_$label"
+    # shellcheck disable=SC2086
+    awk '/registry\.[Rr]egister\("/ {
+            n=$0; sub(/.*[Rr]egister\("/,"",n); sub(/".*/,"",n); name=n
+         }
+         /_ => ToolResult\.Error\(/ || /lambda _: ToolResult\.error\(/ {
+            if (name != "") { print name; name="" }
+         }' $extract_files 2>/dev/null | sort -u > "$names_file"
     while read -r t; do
         [ -z "$t" ] && continue
         if grep -qF "$t" README.md 2>/dev/null; then
-            ok "README names unsupported tool '$t'"
+            ok "README names unsupported $label tool '$t'"
         else
-            fail "'$t' is unsupported on Windows but the README never says so"
+            fail "'$t' is unsupported on $label but the README never says so"
         fi
-    done < "$WORK/unsupported"
-fi
+    done < "$names_file"
+}
+
+check_unsupported Windows Windows/ '_ => ToolResult.Error(' \
+    "Windows/AgentController.Windows/Tools/*.cs" "$WINDOWS_N"
+check_unsupported Linux Linux/ 'lambda _: ToolResult.error(' \
+    "Linux/src/agentcontroller_linux/tools/*.py" "$LINUX_N"
 
 # --- Tool descriptions in docs must match the source strings ----------------
 # docs/TOOLS.md claims to reproduce `tools/list` verbatim. Agents act on those
@@ -175,4 +203,4 @@ if [ "$FAILED" != 0 ]; then
     printf '\n\033[1;31mTool contract check failed.\033[0m\n' >&2
     exit 1
 fi
-printf '\n\033[1;32mTool contract intact: %s desktop tools on both backends, %s iOS tools, docs in sync.\033[0m\n' "$MACOS_N" "$IOS_N"
+printf '\n\033[1;32mTool contract intact: %s desktop tools on all three backends, %s iOS tools, docs in sync.\033[0m\n' "$MACOS_N" "$IOS_N"
