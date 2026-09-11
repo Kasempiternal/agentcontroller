@@ -51,7 +51,7 @@ class ProtocolTests(unittest.TestCase):
     def test_tools_list(self) -> None:
         response = self._call({"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {}})
         tools = response["result"]["tools"]
-        self.assertEqual(len(tools), 49)
+        self.assertEqual(len(tools), 51)
         names = [tool["name"] for tool in tools]
         self.assertEqual(names, sorted(names))
 

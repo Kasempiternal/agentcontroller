@@ -79,7 +79,7 @@ The following are original work, not derived from either project above:
   * The Windows backend (C#/.NET / UI Automation / Win32 SendInput), including
     the foreground-authorization model for raw-input gestures.
   * The Linux backend (Python / AT-SPI / ImageMagick import / grim), including
-    the same 49-tool MCP stdio contract and explicit unsupported errors for
+    the same 51-tool MCP stdio contract and explicit unsupported errors for
     recording and generic app-state reset.
   * The unified cross-platform tool contract that lets a single MCP client
     drive macOS, Windows, Linux, and iOS through one shared vocabulary.

@@ -24,19 +24,27 @@ public actor ElementHandleStore {
 
     private init() {}
 
+    /// Mint ids from the same monotonic sequence AX snapshots use, so a CDP/bpy/idb
+    /// `e12` can never collide with an AX `e12` from a later snapshot.
+    public func allocateIDs(count: Int) -> [String] {
+        var ids: [String] = []
+        ids.reserveCapacity(count)
+        for _ in 0..<count {
+            seq += 1
+            ids.append("e\(seq)")
+        }
+        return ids
+    }
+
     /// Replace ONE app's handles with a fresh snapshot (other apps' handles survive, so
     /// interleaved two-app testing doesn't churn ids). Returns the assigned ids, in
     /// input order.
     @discardableResult
     public func replace(with elements: [AXElement], pid: pid_t) -> [String] {
         handles = handles.filter { $0.value.pid != pid }
-        var ids: [String] = []
-        ids.reserveCapacity(elements.count)
-        for element in elements {
-            seq += 1
-            let id = "e\(seq)"
+        let ids = allocateIDs(count: elements.count)
+        for (id, element) in zip(ids, elements) {
             handles[id] = Entry(pid: pid, element: element)
-            ids.append(id)
         }
         return ids
     }
