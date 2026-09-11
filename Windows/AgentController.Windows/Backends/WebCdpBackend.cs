@@ -96,8 +96,8 @@ internal static class WebCdpBackend
         {
             var binary = FindChromeBinary() ?? throw new InvalidOperationException(
                 "No Chromium browser found. Install Chrome/Edge, or launch with --remote-debugging-port=9222.");
-            port = Launch(binary, headless);
-            pages = ListPages(port);
+            var launchedPort = Launch(binary, headless);
+            pages = ListPages(launchedPort);
         }
         if (pages.Count == 0) throw new InvalidOperationException("Chrome launched but no DevTools page target was listed");
         var target = pages[0];

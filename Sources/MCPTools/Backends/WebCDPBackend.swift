@@ -133,7 +133,7 @@ actor WebCDPBackend {
     }
 
     func readText(ref: RoutedRef) async throws -> String {
-        guard case .cdp(let key, let backendNodeId, _, label) = ref else { return "" }
+        guard case .cdp(let key, let backendNodeId, _, let label) = ref else { return "" }
         let conn = try connection(forKey: key)
         let resolved = try await conn.send(
             method: "DOM.resolveNode",

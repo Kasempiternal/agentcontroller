@@ -18,8 +18,13 @@ enum BlenderProtocol {
     }
 
     static func decodeLab(_ data: Data) throws -> JSONValue {
-        let slice = data.split(separator: 0, maxSplits: 1, omittingEmptySubsequences: true).first.map(Data.init) ?? data
-        return try JSONDecoder().decode(JSONValue.self, from: slice)
+        let jsonData: Data
+        if let null = data.firstIndex(of: 0) {
+            jsonData = data[..<null]
+        } else {
+            jsonData = data
+        }
+        return try JSONDecoder().decode(JSONValue.self, from: jsonData)
     }
 
     static let pingCode = "result={'agentcontroller': True, 'objects': len(__import__('bpy').data.objects)}"

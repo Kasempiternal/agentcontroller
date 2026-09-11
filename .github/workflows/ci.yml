@@ -27,7 +27,7 @@ jobs:
       # share no code, so this is the only thing keeping their registries —
       # and every tool count and description quoted in the docs — honest.
       - name: Verify cross-platform tool contract
-        run: ./Scripts/check-tool-contract.sh
+        run: bash Scripts/check-tool-contract.sh
 
       - name: Shell syntax
         run: |
