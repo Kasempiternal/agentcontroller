@@ -28,9 +28,6 @@ public enum BackendRouter {
         do {
             return try await perform(name: name, arguments: arguments, identity: identity, capability: capability)
         } catch {
-            // Specialized backend failed: fall through to AX only when the
-            // identity is a running native app. URL/iOS misses stay errors —
-            // AX-driving Chrome to fill a form is the rejected path.
             if identity.kind == .url || identity.kind == .iosSimulator {
                 return ToolResult.error(error.localizedDescription)
             }
@@ -66,8 +63,6 @@ public enum BackendRouter {
             return ToolResult.error("Router asked to handle an AX target")
         }
     }
-
-    // MARK: - CDP
 
     private static func performCDP(
         name: String,
@@ -150,8 +145,6 @@ public enum BackendRouter {
         }
     }
 
-    // MARK: - Blender
-
     private static func performBlender(name: String, arguments: JSONValue, ref: RoutedRef) async throws -> JSONValue {
         guard case .blender(let objectName, _) = ref else {
             throw ToolError.actionFailed("Not a Blender element")
@@ -224,8 +217,6 @@ public enum BackendRouter {
         }
         return nil
     }
-
-    // MARK: - iOS
 
     private static func performIOS(name: String, arguments: JSONValue, ref: RoutedRef) async throws -> JSONValue {
         switch name {

@@ -1,9 +1,6 @@
 import Foundation
 import MCPServer
 
-/// iOS Simulator backend. Uses `xcrun simctl` for lifecycle and `idb` (or the
-/// AgentController iOS runtime copy) for UI. Physical devices stay on the
-/// dedicated iOS MCP — this path is the simulator fast path on a Mac.
 enum IOSSimBackend {
     static func listBooted() -> [JSONValue] {
         guard let data = try? run(launchPath: "/usr/bin/xcrun", arguments: ["simctl", "list", "devices", "booted", "-j"]) else {
@@ -91,7 +88,6 @@ enum IOSSimBackend {
         if let json = try? JSONDecoder().decode(JSONValue.self, from: data) {
             return flattenJSON(udid: udid, value: json)
         }
-        // idb sometimes prints Python-ish nested dicts; keep a regex fallback for AX frames.
         var refs: [RoutedRef] = []
         let pattern = #"\{[^}]*AXUniqueId['\"]?\s*[:=]\s*['\"]([^'\"]+)['\"][^}]*\}"#
         if let regex = try? NSRegularExpression(pattern: pattern) {

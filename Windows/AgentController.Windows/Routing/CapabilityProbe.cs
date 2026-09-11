@@ -254,7 +254,7 @@ internal static class CodeExecConsent
                 foreach (var item in existing)
                     if (item?.GetValue<string>() is { } value) granted.Add(value);
         }
-        catch { /* first write */ }
+        catch { }
         granted.Add(backend);
         File.WriteAllText(path, new JsonObject { ["granted"] = new JsonArray(granted.OrderBy(v => v).Select(v => (JsonNode?)v).ToArray()) }.ToJsonString());
     }

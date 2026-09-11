@@ -1,5 +1,3 @@
-"""Chrome DevTools Protocol backend with compact a11y refs."""
-
 from __future__ import annotations
 
 import json

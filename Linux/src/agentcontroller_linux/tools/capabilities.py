@@ -1,5 +1,3 @@
-"""inspect_capabilities + run_app_code."""
-
 from __future__ import annotations
 
 from typing import Any

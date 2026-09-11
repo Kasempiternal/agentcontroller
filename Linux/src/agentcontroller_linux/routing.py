@@ -1,5 +1,3 @@
-"""Identity classification and capability probe. Mirrors Sources/MCPTools/Routing."""
-
 from __future__ import annotations
 
 import json
@@ -59,7 +57,7 @@ BLENDER_BUNDLES = {"org.blenderfoundation.blender", "blender", "blender.exe"}
 @dataclass
 class TargetIdentity:
     raw: str
-    kind: str  # url | iosSimulator | processID | application
+    kind: str
     url: str | None = None
     pid: int | None = None
     bundle_hint: str | None = None

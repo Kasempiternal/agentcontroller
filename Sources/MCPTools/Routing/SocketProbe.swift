@@ -3,9 +3,6 @@ import Foundation
 import Darwin
 #endif
 
-/// Bounded TCP connect + optional payload round-trip. Used for Blender Lab
-/// handshakes and "is anything listening on this port" probes. Timeouts are
-/// short on purpose: detection is one MCP call and must not stall AX.
 enum SocketProbe {
     struct Response: Sendable {
         let data: Data

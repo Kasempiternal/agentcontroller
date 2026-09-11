@@ -1,5 +1,3 @@
-"""Blender Lab TCP + community WebSocket handshake and execute."""
-
 from __future__ import annotations
 
 import json

@@ -1,5 +1,3 @@
-"""CDP / bpy / idb auto-router in front of AT-SPI handlers."""
-
 from __future__ import annotations
 
 from typing import Any
@@ -44,7 +42,7 @@ def try_route(name: str, arguments: dict[str, Any]) -> dict[str, Any] | None:
     if handle is not None:
         try:
             return _perform_handle(name, arguments, handle)
-        except Exception as exc:  # noqa: BLE001 — surface as MCP error
+        except Exception as exc:
             return ToolResult.error(str(exc))
 
     if name not in ROUTABLE_TOOLS:
@@ -61,7 +59,7 @@ def try_route(name: str, arguments: dict[str, Any]) -> dict[str, Any] | None:
         return None
     try:
         return _perform(name, arguments, identity, capability)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         if identity.kind in {"url", "iosSimulator"}:
             return ToolResult.error(str(exc))
         return None

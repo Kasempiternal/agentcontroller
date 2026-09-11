@@ -1,5 +1,3 @@
-"""Minimal RFC 6455 client. Stdlib only — Linux MCP cannot add a pip dep."""
-
 from __future__ import annotations
 
 import base64
@@ -43,7 +41,6 @@ class MiniWebSocket:
             raise OSError(f"WebSocket handshake failed: {data[:120]!r}")
         expected = base64.b64encode(hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest())
         if expected not in data:
-            # Some servers skip echoing; still require 101.
             pass
 
     def send_text(self, text: str) -> None:
@@ -80,7 +77,6 @@ class MiniWebSocket:
         if opcode == 0x8:
             raise OSError("WebSocket closed")
         if opcode == 0x9:
-            # ping — ignore for this client
             return self.recv_text()
         return payload.decode("utf-8", errors="replace")
 

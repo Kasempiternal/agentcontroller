@@ -98,8 +98,6 @@ public enum CapabilityProbe {
             record.extras["available"] = .bool(true)
             return record
         }
-        // Chromium app identity, no debug port: AX of chrome is correct for
-        // tab strip / settings; page content needs CDP attach.
         record.backend = .ax
         record.reason = "Chrome is running without a DevTools port — using AX for browser chrome. Relaunch with --remote-debugging-port=9222 (or snapshot a URL) for page content."
         record.extras["hint"] = .string("cdp-attach")

@@ -101,8 +101,6 @@ public struct TargetIdentity: Equatable, Sendable {
     }
 }
 
-/// Catalog of identities we already know how to specialize. Handshake still
-/// has to succeed before the router leaves AX.
 public enum AppCatalog: Equatable, Sendable {
     public static let chromiumBundles: Set<String> = [
         "com.google.Chrome",

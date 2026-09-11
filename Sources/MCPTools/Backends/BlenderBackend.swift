@@ -30,7 +30,6 @@ enum BlenderProtocol {
     }
 }
 
-/// Live Blender socket. Lab closes after each request; community WS stays up.
 actor BlenderBackend {
     static let shared = BlenderBackend()
 

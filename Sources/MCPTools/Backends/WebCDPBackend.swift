@@ -4,8 +4,6 @@ import MCPServer
 import Darwin
 #endif
 
-/// Chromium DevTools Protocol session. Compact a11y refs (`eN`) rather than
-/// screenshots; headless unless we attached to an existing user Chrome.
 actor WebCDPBackend {
     static let shared = WebCDPBackend()
 
@@ -204,7 +202,6 @@ actor WebCDPBackend {
     }
 }
 
-/// Pure flattening of CDP Accessibility.getFullAXTree — unit-tested without Chrome.
 enum CDPAccessibility {
     static let interactiveRoles: Set<String> = [
         "button", "link", "textbox", "searchbox", "checkbox", "radio", "combobox",
@@ -411,7 +408,6 @@ actor CDPConnection {
             @unknown default: continue
             }
             guard let json = try? JSONDecoder().decode(JSONValue.self, from: data) else { continue }
-            // Events have a method and no id — skip them.
             guard json["id"]?.intValue == id else { continue }
             if let error = json["error"] {
                 let msg = error["message"]?.stringValue ?? "CDP error"
