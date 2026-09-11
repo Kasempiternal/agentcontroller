@@ -22,7 +22,7 @@ public final class ToolRegistry: MCPToolProvider, @unchecked Sendable {
         "check_permissions", "describe_screen", "find_elements",
         "get_clipboard", "get_element_attributes", "get_element_tree",
         "get_focused_element", "get_frontmost_app", "get_menu_structure",
-        "get_window_bounds", "list_apps", "list_flows", "list_windows",
+        "get_window_bounds", "inspect_capabilities", "list_apps", "list_flows", "list_windows",
         "read_all_text", "read_text", "screenshot_element",
         "screenshot_screen", "screenshot_window", "snapshot",
         "wait_for_element",
@@ -89,6 +89,12 @@ public final class ToolRegistry: MCPToolProvider, @unchecked Sendable {
         // steal detected since the last call as an in-band warning — the only
         // feedback path that reaches an agent bypassing us via another tool.
         FocusWatcher.shared.noteDispatch()
+        if let routed = await BackendRouter.dispatch(name: name, arguments: arguments) {
+            if let incident = FocusWatcher.shared.consumeIncident() {
+                return ToolResult.appendingNotice(incident, to: routed)
+            }
+            return routed
+        }
         let result = try await tool.handler(arguments)
         if let incident = FocusWatcher.shared.consumeIncident() {
             return ToolResult.appendingNotice(incident, to: result)
@@ -112,6 +118,7 @@ public final class ToolRegistry: MCPToolProvider, @unchecked Sendable {
         AssertTools.register(in: self)
         SnapshotTools.register(in: self)
         ReadTextTools.register(in: self)
+        CapabilityTools.register(in: self)
         // FlowTools handlers capture `self` to call back into callTool for composed flows.
         FlowTools.register(in: self)
     }

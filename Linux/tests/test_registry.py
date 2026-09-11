@@ -1,4 +1,4 @@
-"""Registry contract: 49 names and Swift-matching annotations."""
+"""Registry contract: desktop names and Swift-matching annotations."""
 
 from __future__ import annotations
 
@@ -56,6 +56,8 @@ EXPECTED = {
     "list_flows",
     "run_saved_flow",
     "check_permissions",
+    "inspect_capabilities",
+    "run_app_code",
 }
 
 
@@ -63,9 +65,9 @@ class RegistryTests(unittest.TestCase):
     def setUp(self) -> None:
         self.registry = ToolRegistry()
 
-    def test_forty_nine_names(self) -> None:
+    def test_fifty_one_names(self) -> None:
         names = self.registry.names()
-        self.assertEqual(len(names), 49)
+        self.assertEqual(len(names), 51)
         self.assertEqual(names, EXPECTED)
 
     def test_annotations_match_swift_sets(self) -> None:

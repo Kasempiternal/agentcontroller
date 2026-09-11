@@ -29,7 +29,7 @@ struct FlowTools {
     private static func registerRunSteps(in registry: ToolRegistry) {
         registry.register(.init(
             name: "run_steps",
-            description: "THE default way to drive a UI: run an ordered list of tool steps in ONE call instead of one call per action. Each step is {tool, args} naming any tool in this server. Returns {ran, failedAt?, results}. With stopOnError (default true) it aborts at the first step whose result isError; otherwise it runs them all. Pair it with a single `snapshot` — take the element ids from the snapshot, then send the whole click → type → click → assert sequence as one run_steps. Steps may name DIFFERENT `app` values, so driving several apps is still one call. Every step re-enters the same dispatcher, so permission and Focus Guard rules apply exactly as they would to a direct call.",
+            description: "THE default way to drive a UI: run an ordered list of tool steps in ONE call instead of one call per action. Each step is {tool, args} naming any tool in this server. Returns {ran, failedAt?, results}. Nested screenshot/image payloads are omitted from step results by default so a batch stays token-cheap (includeNestedMedia:true to keep them). With stopOnError (default true) it aborts at the first step whose result isError; otherwise it runs them all. Pair it with a single `snapshot` — take the element ids from the snapshot, then send the whole click → type → click → assert sequence as one run_steps. Steps may name DIFFERENT `app` values, so driving several apps is still one call. Every step re-enters the same dispatcher, so permission and Focus Guard rules apply exactly as they would to a direct call.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
@@ -46,6 +46,7 @@ struct FlowTools {
                         ]),
                     ]),
                     "stopOnError": .object(["type": .string("boolean"), "description": .string("Abort at the first failing step (default true)")]),
+                    "includeNestedMedia": .object(["type": .string("boolean"), "description": .string("Keep nested screenshot/image payloads in step results (default false)")]),
                 ]),
                 "required": .array([.string("steps")]),
             ]),
@@ -54,7 +55,8 @@ struct FlowTools {
                     throw ToolError.missingParameter("steps")
                 }
                 let stopOnError = args?["stopOnError"]?.boolValue ?? true
-                return try await runSteps(steps, stopOnError: stopOnError, registry: registry)
+                let includeNestedMedia = args?["includeNestedMedia"]?.boolValue ?? false
+                return try await runSteps(steps, stopOnError: stopOnError, includeNestedMedia: includeNestedMedia, registry: registry)
             }
         ))
     }
@@ -159,7 +161,8 @@ struct FlowTools {
                 guard let steps = decoded["steps"]?.arrayValue else {
                     return ToolResult.error("Saved flow '\(name)' has no steps array")
                 }
-                return try await runSteps(steps, stopOnError: stopOnError, registry: registry)
+                let includeNestedMedia = args?["includeNestedMedia"]?.boolValue ?? false
+                return try await runSteps(steps, stopOnError: stopOnError, includeNestedMedia: includeNestedMedia, registry: registry)
             }
         ))
     }
@@ -169,6 +172,7 @@ struct FlowTools {
     /// Shared engine for run_steps and run_saved_flow. Calls back into the registry per
     /// step, records each result, and honors stopOnError by aborting on the first `isError`.
     private static func runSteps(_ steps: [JSONValue], stopOnError: Bool,
+                                 includeNestedMedia: Bool = false,
                                  registry: ToolRegistry) async throws -> JSONValue {
         var results: [JSONValue] = []
         var failedAt: Int? = nil
@@ -196,12 +200,13 @@ struct FlowTools {
                 result = ToolResult.error(error.localizedDescription)
             }
             let isError = (result["isError"]?.boolValue) ?? false
+            let stored = compactStepResult(result, includeNestedMedia: includeNestedMedia)
 
             results.append(.object([
                 "step": .int(i),
                 "tool": .string(toolName),
                 "isError": .bool(isError),
-                "result": result,
+                "result": stored,
             ]))
 
             if isError {
@@ -216,6 +221,45 @@ struct FlowTools {
         ]
         if let failedAt { summary["failedAt"] = .int(failedAt) }
         return ToolResult.json(.object(summary))
+    }
+
+    /// Drop nested image payloads unless the caller asked to keep them. A
+    /// screenshot inside run_steps otherwise ships the JPEG on every step
+    /// of the batch, which is exactly the token/turn tax we are trying to
+    /// avoid by batching in the first place.
+    static func compactStepResult(_ result: JSONValue, includeNestedMedia: Bool) -> JSONValue {
+        guard !includeNestedMedia else { return result }
+        guard case .object(var fields) = result else { return result }
+        guard var content = fields["content"]?.arrayValue else { return result }
+        var omitted = false
+        content = content.map { item in
+            guard item["type"]?.stringValue == "image" else { return item }
+            omitted = true
+            let mime = item["mimeType"]?.stringValue ?? "image"
+            let approxBytes = ((item["data"]?.stringValue?.count ?? 0) * 3) / 4
+            let payload = JSONValue.object([
+                "omitted": .bool(true),
+                "kind": .string("image"),
+                "mimeType": .string(mime),
+                "approxBytes": .int(approxBytes),
+            ])
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            let text: String
+            if let data = try? encoder.encode(payload), let s = String(data: data, encoding: .utf8) {
+                text = s
+            } else {
+                text = "{\"omitted\":true}"
+            }
+            return .object([
+                "type": .string("text"),
+                "text": .string(text),
+            ])
+        }
+        guard omitted else { return result }
+        fields["content"] = .array(content)
+        fields["nestedMediaOmitted"] = .bool(true)
+        return .object(fields)
     }
 
     /// Resolve a flow name to its on-disk file, rejecting path-traversal in the name.

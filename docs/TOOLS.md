@@ -1,6 +1,6 @@
 # Tool Reference
 
-AgentController exposes **49 MCP tools**. Every description below is the exact string the server returns from `tools/list`, so it matches what an agent sees. `Scripts/check-tool-contract.sh` enforces that in CI: the tool set, the counts quoted in prose, and these descriptions must all stay in step with the three desktop backends.
+AgentController exposes **51 MCP tools**. Every description below is the exact string the server returns from `tools/list`, so it matches what an agent sees. `Scripts/check-tool-contract.sh` enforces that in CI: the tool set, the counts quoted in prose, and these descriptions must all stay in step with the three desktop backends.
 
 ## Index
 
@@ -16,6 +16,7 @@ AgentController exposes **49 MCP tools**. Every description below is the exact s
 - [Clipboard](#clipboard): [`get_clipboard`](#get_clipboard), [`set_clipboard`](#set_clipboard)
 - [Flows](#flows): [`run_steps`](#run_steps), [`save_flow`](#save_flow), [`list_flows`](#list_flows), [`run_saved_flow`](#run_saved_flow)
 - [System](#system): [`check_permissions`](#check_permissions)
+- [Routing](#routing): [`inspect_capabilities`](#inspect_capabilities), [`run_app_code`](#run_app_code)
 
 ## App control
 
@@ -94,21 +95,21 @@ Quit an app to reset its in-memory state. When wipeData:true AND the app is sand
 
 ### `snapshot`
 
-Snapshot the focused window into a COMPACT list of elements with stable ids (also available as 'describe_screen'). Returns [{id, role, label, enabled, frame}] — far cheaper than get_element_tree. mode 'interactive' (default) keeps only controls; 'all' keeps every element. The ids feed interaction tools via elementId.
+Snapshot a target into a COMPACT list of elements with stable ids (also available as 'describe_screen'). The server picks the backend from the identity: CDP a11y for a URL or attached Chrome page, bpy scene objects when a Blender socket handshakes, idb/WDA for an iOS simulator UDID, otherwise native AX. Returns [{id, role, label, enabled, frame}] plus backend. mode 'interactive' (default) keeps only controls; 'all' keeps every element. The ids feed interaction tools via elementId.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `app` | string | yes | Bundle ID, app name, or PID |
+| `app` | string | yes | Bundle ID, app name, PID, URL, or iOS simulator UDID |
 | `maxDepth` | integer | no | Maximum tree depth to walk (default 12) |
 | `mode` | string | no | 'interactive' (default, controls only) or 'all' (every element) |
 
 ### `describe_screen`
 
-Alias of 'snapshot': compact, stable-id description of the focused window's elements [{id, role, label, enabled, frame}]. mode 'interactive' (default) or 'all'.
+Alias of 'snapshot': compact, stable-id description. Same auto-routing as snapshot (CDP / bpy / idb / AX) returning [{id, role, label, enabled, frame}]. mode 'interactive' (default) or 'all'.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `app` | string | yes | Bundle ID, app name, or PID |
+| `app` | string | yes | Bundle ID, app name, PID, URL, or iOS simulator UDID |
 | `maxDepth` | integer | no | Maximum tree depth to walk (default 12) |
 | `mode` | string | no | 'interactive' (default, controls only) or 'all' (every element) |
 
@@ -280,7 +281,7 @@ Read all visible text strings from elements of a given role (default AXStaticTex
 
 ### `click`
 
-Click a UI element (AX press action) or at screen coordinates. PREFER `elementId` from a prior snapshot/describe_screen — it acts on that exact element with no tree search, and it is both faster and more reliable than a selector. Fall back to selectors only for elements you have not snapshotted: role+title/identifier when known, labelContains when you see the text on-screen but don't know which AX attribute carries it (common with SwiftUI buttons that stash labels in AXDescription); a selector matching nothing in a rendered UI fails fast; one that may just not have rendered yet retries until `timeout`. Element searches default to the focused window (scope:'window'); pass scope:'app' to search all windows + menu bar. Issuing several clicks? Send them as one `run_steps` call rather than one call each. BACKGROUND-SAFE BY DEFAULT: the element path uses AXPress and the coordinate path posts to the target PID — neither moves the user's mouse cursor, brings the app forward, nor steals keyboard focus. Set foreground:true ONLY for apps that ignore targeted events (Electron/games) — that activates the app and injects a global click (moves the real cursor).
+Click a UI element (AX press action) or at screen coordinates. PREFER `elementId` from a prior snapshot/describe_screen — it acts on that exact element with no tree search, and it is both faster and more reliable than a selector. Fall back to selectors only for elements you have not snapshotted: role+title/identifier when known, labelContains when you see the text on-screen but don't know which AX attribute carries it (common with SwiftUI buttons that stash labels in AXDescription); a selector matching nothing in a rendered UI fails fast; one that may just not have rendered yet retries until `timeout`. Element searches default to the focused window (scope:'window'); pass scope:'app' to search all windows + menu bar. Issuing several clicks? Send them as one `run_steps` call rather than one call each. BACKGROUND-SAFE BY DEFAULT: the element path uses AXPress and the coordinate path posts to the target PID — neither moves the user's mouse cursor, brings the app forward, nor steals keyboard focus. Set foreground:true ONLY for apps that ignore targeted events (Electron/games) — that activates the app and injects a global click (moves the real cursor). Auto-routes: CDP click for web refs, bpy select for Blender scene ids, idb tap for iOS; you do not pick the backend.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -592,12 +593,13 @@ Replace the system clipboard with the given plain text — stage content for a p
 
 ### `run_steps`
 
-THE default way to drive a UI: run an ordered list of tool steps in ONE call instead of one call per action. Each step is {tool, args} naming any tool in this server. Returns {ran, failedAt?, results}. With stopOnError (default true) it aborts at the first step whose result isError; otherwise it runs them all. Pair it with a single `snapshot` — take the element ids from the snapshot, then send the whole click → type → click → assert sequence as one run_steps. Steps may name DIFFERENT `app` values, so driving several apps is still one call. Every step re-enters the same dispatcher, so permission and Focus Guard rules apply exactly as they would to a direct call.
+THE default way to drive a UI: run an ordered list of tool steps in ONE call instead of one call per action. Each step is {tool, args} naming any tool in this server. Returns {ran, failedAt?, results}. Nested screenshot/image payloads are omitted from step results by default so a batch stays token-cheap (includeNestedMedia:true to keep them). With stopOnError (default true) it aborts at the first step whose result isError; otherwise it runs them all. Pair it with a single `snapshot` — take the element ids from the snapshot, then send the whole click → type → click → assert sequence as one run_steps. Steps may name DIFFERENT `app` values, so driving several apps is still one call. Every step re-enters the same dispatcher, so permission and Focus Guard rules apply exactly as they would to a direct call.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `steps` | array | yes | Ordered steps. Each: {"tool": "<tool name>", "args": { ... }} |
 | `stopOnError` | boolean | no | Abort at the first failing step (default true) |
+| `includeNestedMedia` | boolean | no | Keep nested screenshot/image payloads in step results (default false) |
 
 ### `save_flow`
 
@@ -630,4 +632,30 @@ Load a saved flow by name and run it through the same engine as run_steps. Retur
 Check if AgentController has the required macOS permissions (Accessibility and Screen Recording)
 
 _No parameters._
+
+## Routing
+
+### `inspect_capabilities`
+
+Probe a target (bundle ID, PID, URL, or iOS simulator UDID) and return the best backend this MCP will use. Handshakes native sockets (Blender Lab/community, Chrome CDP, idb). Does not ask except to report multi-instance, missing add-on, or code-exec consent. Do not pick Playwright vs AX vs bpy vs idb — call this, or just snapshot/click, and the server routes.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `target` | string | no | Bundle ID, app name, PID, URL, or iOS simulator UDID |
+| `app` | string | no | Alias of target |
+| `url` | string | no | Page URL (forces the CDP backend) |
+| `udid` | string | no | iOS simulator UDID or 'booted' |
+
+### `run_app_code`
+
+Run a script on the auto-selected backend: Python in Blender (bpy) when the socket handshakes, JavaScript in a CDP page, otherwise an error pointing at AX run_steps. One script is the batch — do not issue one MCP call per primitive. First use per backend requires consent:true (RCE inside the app). Returns {backend, result}.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `app` | string | no | Bundle ID, app name, PID, URL, or simulator UDID |
+| `target` | string | no | Alias of app |
+| `url` | string | no | Page URL for CDP JavaScript |
+| `code` | string | yes | Python (Blender) or JavaScript (CDP) to execute |
+| `language` | string | no | Optional hint: python or javascript. Default is the backend's native language. |
+| `consent` | boolean | no | Required the first time per backend; persists after that. |
 

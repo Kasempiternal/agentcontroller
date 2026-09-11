@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from ..args import as_bool, required
-from ..result import ToolError, ToolResult
+from ..result import ToolError, ToolResult, compact_json
 from ..schema import ToolSchema
 
 
@@ -25,9 +25,12 @@ def register(registry: Any) -> None:
     run_properties = {
         "steps": {"type": "array", "description": "Array of {tool, arguments} MCP tool calls."},
         "stopOnError": ToolSchema.boolean("Stop after the first MCP tool error.", True),
+        "includeNestedMedia": ToolSchema.boolean(
+            "Keep nested screenshot/image payloads in step results (default false).", False
+        ),
     }
     registry.register("run_steps",
-        "Run a sequence of AgentController tool calls in order.",
+        "THE default way to drive a UI: run an ordered list of tool steps in ONE call instead of one call per action.",
         ToolSchema.object(run_properties, "steps"),
         lambda args: _run_steps(registry, args),
     )
@@ -121,12 +124,54 @@ def _run_steps(registry: Any, args: dict[str, Any]) -> dict[str, Any]:
         is_error = bool(result.get("isError"))
         if not is_error:
             passed += 1
-        results.append({"index": index, "tool": name, "isError": is_error, "result": result})
+        results.append(
+            {
+                "index": index,
+                "tool": name,
+                "isError": is_error,
+                "result": _compact_step_result(result, as_bool(args, "includeNestedMedia", False)),
+            }
+        )
         if is_error and stop_on_error:
             break
     return ToolResult.json(
         {"passed": passed, "executed": len(results), "total": len(steps), "results": results}
     )
+
+
+def _compact_step_result(result: dict[str, Any], include_nested_media: bool) -> dict[str, Any]:
+    if include_nested_media or not isinstance(result, dict):
+        return result
+    content = result.get("content")
+    if not isinstance(content, list):
+        return result
+    omitted = False
+    rewritten: list[Any] = []
+    for item in content:
+        if isinstance(item, dict) and item.get("type") == "image":
+            omitted = True
+            data = item.get("data") or ""
+            rewritten.append(
+                {
+                    "type": "text",
+                    "text": compact_json(
+                        {
+                            "omitted": True,
+                            "kind": "image",
+                            "mimeType": item.get("mimeType") or "image",
+                            "approxBytes": (len(data) * 3) // 4,
+                        }
+                    ),
+                }
+            )
+        else:
+            rewritten.append(item)
+    if not omitted:
+        return result
+    copy = dict(result)
+    copy["content"] = rewritten
+    copy["nestedMediaOmitted"] = True
+    return copy
 
 
 def _sanitize(name: str) -> str:

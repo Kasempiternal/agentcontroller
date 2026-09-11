@@ -27,7 +27,7 @@ Its defining feature is background-first automation. On macOS, every tool is bac
 | Linux | Python 3.11+, AT-SPI, ImageMagick `import` / grim | MCP stdio directly | `python3 -m agentcontroller_linux` |
 | iOS (simulator + iPhone) | TypeScript/Node, `idb`, native AX scanner, WebDriverAgent | MCP stdio directly (runs on the Mac) | `node dist/cli.js` |
 
-The three desktop backends register the same 49-tool contract. Windows and Linux currently have 46 native implementations and return explicit unsupported errors for `reset_app_state`, `start_recording`, and `stop_recording`; see the [Windows guide](Windows/README.md) and [Linux guide](Linux/README.md) for platform-specific behavior. The iOS backend registers its own 36-tool surface shaped for phones (gestures, hardware buttons, device lifecycle) rather than force-fitting the desktop vocabulary — see the [iOS guide](iOS/README.md).
+The three desktop backends register the same 51-tool contract. Windows and Linux currently have 48 native implementations and return explicit unsupported errors for `reset_app_state`, `start_recording`, and `stop_recording`; see the [Windows guide](Windows/README.md) and [Linux guide](Linux/README.md) for platform-specific behavior. The iOS backend registers its own 36-tool surface shaped for phones (gestures, hardware buttons, device lifecycle) rather than force-fitting the desktop vocabulary — see the [iOS guide](iOS/README.md). Snapshot/click/type auto-route to CDP, bpy, idb, or native accessibility from the target identity; you do not pick Playwright vs AX.
 
 ---
 
@@ -52,7 +52,8 @@ The three desktop backends register the same 49-tool contract. Windows and Linux
 
 ## Highlights
 
-- **49 desktop MCP tools** covering app control, AX inspection, input, assertions, screenshots, video recording, menus, clipboard, windows, and replayable flows — see the full [Tool Reference](docs/TOOLS.md) — plus a **36-tool iOS backend** for simulators and physical iPhones ([iOS guide](iOS/README.md)).
+- **51 desktop MCP tools** covering app control, AX inspection, input, assertions, screenshots, video recording, menus, clipboard, windows, replayable flows, and a dynamic backend router (`inspect_capabilities`, `run_app_code`) — see the full [Tool Reference](docs/TOOLS.md) — plus a **36-tool iOS backend** for simulators and physical iPhones ([iOS guide](iOS/README.md)).
+- **One surface, auto-routed backends** — pass a bundle ID, PID, URL, or simulator UDID. The server handshakes and picks CDP (web), bpy (Blender), idb/WDA (iOS sim), or native AX. Agents do not choose Playwright vs AX.
 - **Background by default** — apps launch without activating, input is delivered per-process (`CGEvent.postToPid`) or via pure AX actions, menus are resolved by *reading* the AX tree, and screenshots read the window's own backing store (works even fully covered or hidden).
 - **Real assertions** — `assert_visible` / `assert_not_visible` / `assert_value` poll until satisfied and return MCP `isError` on failure, so an agent's control loop gets an unambiguous PASS/FAIL instead of parsing prose.
 - **Stable element handles** — `snapshot` returns a compact `[{id, role, label, enabled, frame}]` list; interaction tools accept `elementId` for O(1) reuse without re-searching.
@@ -79,7 +80,7 @@ AgentController runs as a menu-bar app (`LSUIElement`, no Dock icon) hosting a b
 |---|---|
 | `Sources/App` | Menu-bar app, permissions UX, server lifecycle |
 | `Sources/MCPServer` | HTTP listener, JSON-RPC 2.0, auth |
-| `Sources/MCPTools` | The 49 tool definitions and handlers |
+| `Sources/MCPTools` | The 51 tool definitions, handlers, and backend router |
 | `Sources/AccessibilityEngine` | AX tree walking/search, input synthesis, window/app management |
 | `Sources/ScreenCapture` | ScreenCaptureKit screenshots, video recording, content caching |
 | `Linux/` | AT-SPI MCP stdio server (`python3 -m agentcontroller_linux`) |
@@ -257,7 +258,7 @@ The single intentionally focus-changing tool is `activate_app`; everything else 
 
 ## Tool catalog
 
-49 tools — full parameter documentation in **[docs/TOOLS.md](docs/TOOLS.md)** (generated from the live server's `tools/list`).
+51 tools — full parameter documentation in **[docs/TOOLS.md](docs/TOOLS.md)** (generated from the live server's `tools/list`).
 
 | Category | Tools |
 |---|---|
@@ -273,6 +274,7 @@ The single intentionally focus-changing tool is `activate_app`; everything else 
 | Clipboard | `get_clipboard` · `set_clipboard` |
 | Flows | `run_steps` · `save_flow` · `list_flows` · `run_saved_flow` |
 | System | `check_permissions` |
+| Routing | `inspect_capabilities` · `run_app_code` |
 
 ## Security
 
@@ -336,7 +338,7 @@ AgentController did not start from a blank page, and it is worth being precise a
 
 Of roughly 14,700 lines of source here, about four fifths are original. The remaining fifth traces to one MIT-licensed project and is confined entirely to the iOS backend. No line of it comes from Maestro.
 
-**Original to this project** are three of the four backends and the thing that binds them: the macOS backend (Swift, AXUIElement, CGEvent, ScreenCaptureKit) with its background-first automation model — driving an app without stealing your focus, cursor, or frontmost window; the Windows backend (C#/.NET, UI Automation, Win32 `SendInput`) with its explicit foreground-authorization rule for raw input; the Linux backend (Python, AT-SPI, ImageMagick `import` / grim) with the same 49-tool stdio contract; and the unified tool contract that lets one MCP client drive macOS, Windows, Linux, and iOS through a single shared vocabulary, enforced in CI by [`Scripts/check-tool-contract.sh`](Scripts/check-tool-contract.sh) because the backends share no code and nothing else would keep them honest. Those platforms in one package, background-safe by default, are the point of the project.
+**Original to this project** are three of the four backends and the thing that binds them: the macOS backend (Swift, AXUIElement, CGEvent, ScreenCaptureKit) with its background-first automation model — driving an app without stealing your focus, cursor, or frontmost window; the Windows backend (C#/.NET, UI Automation, Win32 `SendInput`) with its explicit foreground-authorization rule for raw input; the Linux backend (Python, AT-SPI, ImageMagick `import` / grim) with the same 51-tool stdio contract; and the unified tool contract that lets one MCP client drive macOS, Windows, Linux, and iOS through a single shared vocabulary, enforced in CI by [`Scripts/check-tool-contract.sh`](Scripts/check-tool-contract.sh) because the backends share no code and nothing else would keep them honest. Those platforms in one package, background-safe by default, are the point of the project.
 
 **The interaction model comes from [Maestro](https://github.com/mobile-dev-inc/maestro) (mobile.dev, Apache-2.0).** Maestro's insight is that UI automation should be *tolerant*: a step waits for the interface to settle rather than failing on the first miss, and automation is expressed as reusable flows instead of one-shot commands. Both ideas are adopted here — every interaction runs an implicit find-and-retry loop, and `save_flow` / `run_saved_flow` make a recorded sequence a replayable regression test. **No Maestro source code is used.** Maestro targets mobile platforms on the JVM; the backends here are independent implementations against native platform APIs. The debt is one of design, and it is a real one.
 

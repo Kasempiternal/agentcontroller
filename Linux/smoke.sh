@@ -28,7 +28,7 @@ info = messages[0].get("result", {}).get("serverInfo", {})
 if info.get("name") != "agentcontroller-linux":
     raise SystemExit("Initialize response has the wrong server name.")
 tools = messages[1].get("result", {}).get("tools", [])
-if len(tools) != 49:
+if len(tools) != 51:
     raise SystemExit(f"Tool registry is unexpectedly incomplete: {len(tools)}")
 if messages[2].get("result", {}).get("isError"):
     raise SystemExit("check_permissions returned an MCP error.")

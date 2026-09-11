@@ -24,6 +24,7 @@ READ_ONLY_TOOLS = frozenset(
         "get_frontmost_app",
         "get_menu_structure",
         "get_window_bounds",
+        "inspect_capabilities",
         "list_apps",
         "list_flows",
         "list_windows",
@@ -45,6 +46,7 @@ class ToolRegistry:
         self._tools: dict[str, dict[str, Any]] = {}
         from .atspi_service import AtspiService
         from .tools.app import register as register_app
+        from .tools.capabilities import register as register_capabilities
         from .tools.capture import register as register_capture
         from .tools.elements import register as register_elements
         from .tools.flows import register as register_flows
@@ -61,6 +63,7 @@ class ToolRegistry:
         register_capture(self, automation)
         register_system(self)
         register_menus(self, automation)
+        register_capabilities(self)
         register_flows(self)
 
     def register(
@@ -109,4 +112,9 @@ class ToolRegistry:
         if tool is None:
             return ToolResult.error(f"Unknown tool: {name}")
         payload = arguments if isinstance(arguments, dict) else {}
+        from .backends.router import try_route
+
+        routed = try_route(name, payload)
+        if routed is not None:
+            return routed
         return tool["handler"](payload)

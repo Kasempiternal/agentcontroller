@@ -15,11 +15,15 @@ SUPPORTED_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18")
 DEFAULT_VERSION = "2025-06-18"
 
 INSTRUCTIONS = (
-    "AgentController Linux drives desktop applications through AT-SPI. "
-    "Start with list_apps, then snapshot or find_elements. AT-SPI actions and "
-    "editable text are background-safe; raw coordinate and keyboard fallbacks "
-    "require foreground:true and restore prior focus afterward. X11 screenshots "
-    "use ImageMagick import; Wayland screenshots use grim."
+    "AgentController Linux drives desktop apps, web pages, and DCC tools through ONE MCP. "
+    "Do not pick Playwright vs AT-SPI vs bpy — pass a target (WM_CLASS / pid / URL) and the "
+    "server routes: CDP compact a11y refs for URLs, bpy when a Blender socket handshakes, "
+    "AT-SPI otherwise. inspect_capabilities is the read-only probe. "
+    "Start with list_apps or inspect_capabilities, then ONE snapshot and ONE run_steps of "
+    "{tool, args} against element ids. Nested screenshots inside run_steps are omitted by "
+    "default. AT-SPI actions and editable text are background-safe; raw coordinate and "
+    "keyboard fallbacks require foreground:true and restore prior focus afterward. X11 "
+    "screenshots use ImageMagick import; Wayland screenshots use grim."
 )
 
 

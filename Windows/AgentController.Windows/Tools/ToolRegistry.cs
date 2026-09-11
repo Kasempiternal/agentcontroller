@@ -20,6 +20,7 @@ internal sealed class ToolRegistry
         CaptureTools.Register(this, automation);
         SystemTools.Register(this);
         MenuTools.Register(this);
+        CapabilityTools.Register(this);
         FlowTools.Register(this);
     }
 
@@ -49,5 +50,9 @@ internal sealed class ToolRegistry
     }
 
     internal JsonObject Call(string name, JsonObject arguments)
-        => tools.TryGetValue(name, out var tool) ? tool.Call(arguments) : ToolResult.Error($"Unknown tool: {name}");
+    {
+        if (BackendRouter.TryDispatch(name, arguments) is { } routed)
+            return routed;
+        return tools.TryGetValue(name, out var tool) ? tool.Call(arguments) : ToolResult.Error($"Unknown tool: {name}");
+    }
 }
