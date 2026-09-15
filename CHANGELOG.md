@@ -6,6 +6,140 @@ All notable changes to AgentController are documented here. The format follows
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-08-16
+
+### Added
+- **A standalone `agentcontroller` CLI.** The tools were reachable only through an
+  MCP client, which put a whole class of user out of reach: a shell script, a
+  CI step, a Makefile, or a person poking at an app. The CLI covers the same 50
+  tools with no client in the loop — `agentcontroller snapshot
+  app=com.apple.TextEdit`, `agentcontroller tools menu`, `agentcontroller
+  describe navigate_menu`. `build.sh` installs it to
+  `~/.agentcontroller/bin/agentcontroller` (not `/usr/local/bin`, which is
+  root-owned and would put a sudo prompt in the middle of every build).
+
+  It is a **client of the running app**, not a second implementation. There is
+  one Accessibility grant, one Screen Recording grant and one Focus Guard, and
+  they belong to the menu-bar app; a CLI that drove AXUIElement itself would
+  need its own TCC grants and would sit outside Focus Guard. Verified: a
+  Focus-Guard-refused `activate_app` is refused identically through the CLI.
+
+  Arguments are typed from each tool's own `inputSchema` rather than guessed
+  from the text, because guessing gets the one case that matters wrong — every
+  tool declares `app` as a string, a PID typed at a shell looks exactly like a
+  number, and a numeric `app` resolves to nothing at all. `key:=<json>` passes
+  literal JSON for arrays and objects. Exit codes are the contract that makes it
+  scriptable: 0 for a tool that did what it was asked, 1 for one that ran and
+  reported failure, 2 for a usage or transport problem.
+- **`perform_action`, an escape hatch to the platform's own accessibility
+  layer** (50 tools, both desktop backends). Controls the dedicated tools cannot
+  drive — steppers, sliders, combo box entries, anything needing AXConfirm or
+  AXPick — had no route at all. Called without `action` it *lists* what the
+  element supports, each name with a plain-language gloss, plus role, subrole
+  and current value; called with one of those names it performs it.
+
+  This is the one tool whose vocabulary is deliberately not portable: macOS
+  speaks accessibility action names (`AXPress`, `AXIncrement`), Windows speaks
+  UI Automation pattern actions (`Invoke`, `Toggle`, `Increment`). Translating
+  between them would restore exactly the ceiling the tool exists to remove.
+  Discovery mode is what keeps that usable. Two failures are reported rather
+  than performed: an action the element does not advertise returns the list of
+  ones it does, and an action on a disabled control errors instead of silently
+  no-opping.
+
+### Changed
+- **`Scripts/check-tool-contract.sh` also guards SwiftPM product names and reads
+  only the current section of the CHANGELOG.** Two things the tool-name contract
+  did not cover, both found by hitting them. macOS is case-insensitive and
+  SwiftPM writes every product into one directory, so a CLI product named
+  `agentcontroller` *is* the file `AgentController` — the app product overwrote
+  it, and the symptom was the CLI hanging forever because the binary being
+  invoked was the menu-bar app starting a SwiftUI run loop. `swift build`
+  succeeds either way and CI's Linux runners are case-sensitive, so nothing
+  could have caught it; the check compares names, which works everywhere.
+  Separately, the count check treated the 2.0.0 entry's "49 tools" as a live
+  claim — it is a record of what 2.0.0 shipped, and editing it to match today's
+  registry would falsify the history the file exists to keep. The check now
+  stops at the second version heading.
+
+Every change here is the same bug wearing a different hat: a tool reported
+success while nothing had happened. That is the worst possible answer for an
+agent's control loop, because there is no signal to retry differently — the run
+continues on a false premise until something much later fails for an unrelated
+reason. All five were found by driving real apps, and each fix was verified
+against the same repro that exposed it.
+
+### Fixed
+- **`navigate_menu` no longer reports success for a disabled menu item.**
+  `AXUIElementPerformAction(AXPress)` returns `.success` on a greyed-out item,
+  so pressing one looked identical to pressing a live one. Preview with no
+  document open: `Tools > Rotate Left` and `File > Print…` both returned
+  `{"success": true}`, the window stayed byte-identical, and no print dialog
+  ever appeared. The leaf's `AXEnabled` is now checked before the press and a
+  disabled item returns `isError` naming the item and the likely precondition.
+  Because AppKit only runs `validateMenuItem:` when a menu is about to display,
+  a disabled reading on the silent (menu-never-opens) path is treated as a
+  suspicion rather than a verdict: the tool pays for the press-descend walk to
+  get AppKit's fresh answer instead of refusing on stale state. This also
+  subsumes the documented responder-chain caveat — Cut/Copy/Paste/Select All
+  read as disabled in a non-key app, so those no-ops are now caught too.
+- **`type_text` reads the write back instead of assuming it landed.** The
+  keyboard fallback returned `{"success": true, "typed": "…"}` the moment the
+  keystrokes were posted, whether or not any control received them. Observed on
+  a web text field: success reported, the field's AX value absent afterwards.
+  The result is now a three-state answer, because the two-state one had no
+  honest place to put "I could not tell": `verified: true` means the text is
+  observably in the field, an `isError` means it demonstrably is not (with the
+  value the field actually holds), and `verified: false` plus a note means the
+  element exposes no readable value so the caller must confirm another way.
+  Whether the AX focus request was accepted is reported as `focused`, and a
+  refused focus combined with an unreadable element is an error rather than a
+  shrug — that pair is precisely "typed somewhere, no idea where".
+- **`type_text` fires a search field's action after setting its value.**
+  Setting `kAXValue` writes the string straight into the cell without running
+  the text-did-change chain the control's target listens on. A plain text field
+  does not care; a search field does everything through it. Font Book showed
+  "mono" in the field while the list still read 362 typefaces, and a follow-up
+  `send_shortcut return` did not help either because AX-set never made the field
+  first responder. Search fields are now focused and confirmed after the set.
+  Deliberately scoped to `AXSearchField`: `AXConfirm` on an arbitrary text field
+  sends its action too, which for a form field can mean submitting the form.
+- **`list_windows` no longer reports zero windows for an app that has them.**
+  macOS excludes windows on an **inactive Space** from an app element's
+  `kAXWindows` *and* from its `kAXChildren`. With one app fullscreen, every
+  other app's windows vanish from accessibility at once: Safari, TextEdit,
+  Preview, Xcode and QuickTime all reported zero while the window server listed
+  their real ones. This is a system behaviour, not an AgentController one — the
+  same answer comes back from any process holding the accessibility permission.
+  Enumeration now falls through three tiers (`kAXWindows`, then
+  `kAXFocusedWindow`, then `CGWindowListCopyWindowInfo`), labels each entry with
+  its `source`, and explains the situation in a `note`. Only tier-one entries
+  carry an `index`, and that is enforced by the type rather than by convention:
+  the index lives inside the `accessibility` case, so a recovered window cannot
+  be given one that would address a different window.
+- **`snapshot` / `describe_screen` no longer pass a menu bar off as screen
+  content.** When an app exposes no window the walk falls back to the
+  application element, whose only child is the menu bar. Preview returned 362
+  elements this way — every one an `AXMenuItem`, no window content, and nothing
+  in the response saying so. The walked `root` is now part of the result, and
+  the degraded `application` root carries a warning.
+- **`screenshot_window` explains a capture failure instead of forwarding
+  ScreenCaptureKit's wording.** Some apps release their window's backing
+  surface while it is off-screen; Safari does it reliably. SCKit calls that
+  "Failed to start stream due to audio/video capture failure", which reads like
+  a permissions problem and is not one — `check_permissions` still reports
+  screen recording and `screenshot_screen` still works, which sends anyone
+  debugging it in the wrong direction. The error now names the cause and the
+  workarounds. **No fallback was added, on purpose:**
+  `SCContentFilter(display:including:)` does return an image for such a window,
+  and that image is blank — wiring it in would have replaced an honest error
+  with a screenshot that passes every automated check and shows nothing.
+  `CGWindowListCreateImage` is unavailable from the macOS 15 SDK onward.
+- **A `list_windows` call naming an app that is not running no longer lists
+  every window on the system.** An unresolvable name fell through to `pid: nil`,
+  which is the "list everything" path — so a typo'd bundle ID answered a
+  different question than the one asked, plausibly enough to be believed.
+
 ## [2.5.0] - 2026-08-16
 
 ### Changed

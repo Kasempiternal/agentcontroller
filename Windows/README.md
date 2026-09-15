@@ -22,7 +22,7 @@ The server also advertises explicit error stubs for video recording and generic
 app-state reset so agents get a truthful capability result instead of silently
 doing the wrong thing.
 
-The current registry contains all 49 AgentController-compatible tools: 46 native
+The current registry contains all 50 AgentController-compatible tools: 47 native
 implementations and three explicit unsupported responses.
 
 ## Build

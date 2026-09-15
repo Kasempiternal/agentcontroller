@@ -9,6 +9,14 @@ import AccessibilityEngine
 /// frame}]`. The agent uses this instead of the verbose `get_element_tree`, and the returned
 /// `id`s (e1, e2, …) feed the interaction tools' `elementId` param for O(1), BFS-free reuse.
 struct SnapshotTools {
+    /// Which element the BFS started from. `application` is the degraded case: the app
+    /// exposed no window, so the walk can only reach the menu bar.
+    enum WalkRoot: String, Sendable {
+        case focusedWindow
+        case firstWindow
+        case application
+    }
+
     /// Roles that are inherently interactive even if they happen to expose no AX actions.
     private static let interactiveRoles: Set<String> = [
         "AXButton", "AXTextField", "AXTextArea", "AXCheckBox", "AXRadioButton",
@@ -50,11 +58,26 @@ struct SnapshotTools {
                 let maxDepth = args?["maxDepth"]?.intValue ?? 12
 
                 // Collect the live elements (BFS) off the MainActor.
-                let collected: [AXElement] = await AXExecutor.app(pid).run {
+                //
+                // Which root we landed on is part of the answer, not an implementation
+                // detail. When an app has no AX-reachable window the walk starts at the
+                // application element, whose only child is the menu bar — so the tool
+                // returned hundreds of AXMenuItem entries and called it a screen
+                // snapshot. Observed on Preview: 362 elements, every one a menu item,
+                // zero window content, no indication anything was missing.
+                let walk: (root: WalkRoot, elements: [AXElement]) = await AXExecutor.app(pid).run {
                     let app = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
-                    let root = app.focusedWindow ?? app.windows.first ?? app
-                    return collect(root: root, interactiveOnly: interactiveOnly, maxDepth: maxDepth)
+                    let (root, kind): (AXElement, WalkRoot)
+                    if let focused = app.focusedWindow {
+                        (root, kind) = (focused, .focusedWindow)
+                    } else if let first = app.windows.first {
+                        (root, kind) = (first, .firstWindow)
+                    } else {
+                        (root, kind) = (app, .application)
+                    }
+                    return (kind, collect(root: root, interactiveOnly: interactiveOnly, maxDepth: maxDepth))
                 }
+                let collected = walk.elements
 
                 // Register handles (assigns e1, e2, … in order), then read compact fields.
                 let ids = await ElementHandleStore.shared.replace(with: collected, pid: pid)
@@ -65,11 +88,16 @@ struct SnapshotTools {
                     }
                 }
 
-                return ToolResult.json(.object([
+                var payload: [String: JSONValue] = [
                     "mode": .string(interactiveOnly ? "interactive" : "all"),
                     "count": .int(items.count),
+                    "root": .string(walk.root.rawValue),
                     "elements": .array(items),
-                ]))
+                ]
+                if walk.root == .application {
+                    payload["warning"] = .string("No AX-reachable window for this app, so the walk started at the application element and these elements are its MENU BAR, not window content. macOS hides windows on an INACTIVE Space from accessibility, and an app that has never been frontmost exposes no focused window either. Check list_windows for the real window list; switch to that app's Space or use activate_app to snapshot its content.")
+                }
+                return ToolResult.json(.object(payload))
             }
         )
     }

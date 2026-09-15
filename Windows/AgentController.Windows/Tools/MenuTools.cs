@@ -42,6 +42,18 @@ internal static class MenuTools
                 var item = current.FindFirst(TreeScope.Descendants, condition)
                     ?? throw new InvalidOperationException($"Menu item not found: {label}");
                 var isLast = index == path.Count - 1;
+                // A disabled leaf is a no-op dressed as a success. Not every UIA pattern
+                // refuses one — SelectionItemPattern.Select and ExpandCollapsePattern
+                // .Expand go through quietly — so the state is checked rather than left
+                // to whichever pattern the control happens to expose. Matches the macOS
+                // backend, where AXPress reports success on a greyed-out item outright.
+                if (isLast && !(bool)item.GetCurrentPropertyValue(AutomationElement.IsEnabledProperty))
+                {
+                    throw new InvalidOperationException(
+                        $"Menu item '{label}' is DISABLED — invoking it would have been a no-op, so nothing happened. " +
+                        "The app greys an item out when its precondition is unmet: no document open, nothing selected, " +
+                        "or no focused control for an edit command. Fix the precondition, then retry.");
+                }
                 if (!isLast)
                 {
                     if (item.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out var expandObject) && expandObject is ExpandCollapsePattern expand)

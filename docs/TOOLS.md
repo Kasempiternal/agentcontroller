@@ -1,6 +1,6 @@
 # Tool Reference
 
-AgentController exposes **49 MCP tools**. Every description below is the exact string the server returns from `tools/list`, so it matches what an agent sees. `Scripts/check-tool-contract.sh` enforces that in CI: the tool set, the counts quoted in prose, and these descriptions must all stay in step with both backends.
+AgentController exposes **50 MCP tools**. Every description below is the exact string the server returns from `tools/list`, so it matches what an agent sees. `Scripts/check-tool-contract.sh` enforces that in CI: the tool set, the counts quoted in prose, and these descriptions must all stay in step with both backends.
 
 ## Index
 
@@ -9,7 +9,7 @@ AgentController exposes **49 MCP tools**. Every description below is the exact s
 - [Inspection](#inspection): [`get_element_tree`](#get_element_tree), [`find_elements`](#find_elements), [`get_element_attributes`](#get_element_attributes), [`get_focused_element`](#get_focused_element), [`wait_for_element`](#wait_for_element)
 - [Assertions](#assertions): [`assert_visible`](#assert_visible), [`assert_not_visible`](#assert_not_visible), [`assert_value`](#assert_value)
 - [Text extraction](#text-extraction): [`read_text`](#read_text), [`read_all_text`](#read_all_text)
-- [Input](#input): [`click`](#click), [`double_click`](#double_click), [`right_click`](#right_click), [`type_text`](#type_text), [`send_shortcut`](#send_shortcut), [`scroll`](#scroll), [`scroll_until_visible`](#scroll_until_visible), [`swipe`](#swipe), [`drag_drop`](#drag_drop)
+- [Input](#input): [`click`](#click), [`double_click`](#double_click), [`right_click`](#right_click), [`type_text`](#type_text), [`perform_action`](#perform_action), [`send_shortcut`](#send_shortcut), [`scroll`](#scroll), [`scroll_until_visible`](#scroll_until_visible), [`swipe`](#swipe), [`drag_drop`](#drag_drop)
 - [Windows](#windows): [`list_windows`](#list_windows), [`get_window_bounds`](#get_window_bounds), [`set_window_bounds`](#set_window_bounds), [`minimize_window`](#minimize_window), [`restore_window`](#restore_window)
 - [Screenshots & video](#screenshots--video): [`screenshot_window`](#screenshot_window), [`screenshot_element`](#screenshot_element), [`screenshot_screen`](#screenshot_screen), [`start_recording`](#start_recording), [`stop_recording`](#stop_recording)
 - [Menus](#menus): [`navigate_menu`](#navigate_menu), [`get_menu_structure`](#get_menu_structure)
@@ -111,6 +111,13 @@ Alias of 'snapshot': compact, stable-id description of the focused window's elem
 | `app` | string | yes | Bundle ID, app name, or PID |
 | `maxDepth` | integer | no | Maximum tree depth to walk (default 12) |
 | `mode` | string | no | 'interactive' (default, controls only) or 'all' (every element) |
+
+Both report the `root` they walked: `focusedWindow`, `firstWindow`, or `application`.
+`application` is the degraded case — the app exposed no window at all, so the walk could
+only reach the menu bar and the elements you get back are menu items, not screen content.
+That looks like a healthy result (Preview returned 362 elements this way, every one an
+`AXMenuItem`), so it now comes with an explicit `warning`. See
+[`list_windows`](#list_windows) for why an app can have no accessibility-visible window.
 
 ## Inspection
 
@@ -349,7 +356,7 @@ Right-click a UI element (AX showMenu) or at coordinates to open a context menu.
 
 ### `type_text`
 
-Type text into the focused element, or into a specific element matched by selector/elementId. BACKGROUND-SAFE BY DEFAULT: for AXTextField/AXTextArea the value is set directly via AX (replaces the field, no keystrokes, no focus steal). When AX-set is rejected (e.g. some SwiftUI fields) the keyboard fallback focuses the control via AX (kAXFocusedAttribute, no app activation) and delivers keystrokes to the target PID — the user's keyboard focus and cursor are never disturbed. By default the fallback CLEARS the field first (Cmd+A then forward-delete) so re-running does not double the text — pass append:true to keep existing content and append instead. Set foreground:true only for apps that ignore PID-targeted keys (activates the app and types via the global HID stream).
+Type text into the focused element, or into a specific element matched by selector/elementId. BACKGROUND-SAFE BY DEFAULT: for AXTextField/AXTextArea the value is set directly via AX (replaces the field, no keystrokes, no focus steal); a search field additionally gets its action fired, because setting the string alone changes the text without running the search. When AX-set is rejected (e.g. some SwiftUI fields) the keyboard fallback focuses the control via AX (kAXFocusedAttribute, no app activation) and delivers keystrokes to the target PID — the user's keyboard focus and cursor are never disturbed. THE WRITE IS THEN READ BACK: `verified:true` means the text is observably in the field, an error means it demonstrably is not, and `verified:false` means the element exposes no readable value so you must confirm with read_text/assert_value (common for web content). By default the fallback CLEARS the field first (Cmd+A then forward-delete) so re-running does not double the text — pass append:true to keep existing content and append instead. Set foreground:true only for apps that ignore PID-targeted keys (activates the app and types via the global HID stream).
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -369,6 +376,40 @@ Type text into the focused element, or into a specific element matched by select
 | `title` | string | no | Exact AXTitle match |
 | `titleContains` | string | no | Partial AXTitle match (case-insensitive) |
 | `value` | string | no | Element AXValue |
+
+### `perform_action`
+
+Escape hatch: perform ANY accessibility action a control exposes, not just the ones with a dedicated tool. Call it WITHOUT `action` first to discover what the element supports — it returns the action list with a short gloss for each, plus the element's role, subrole and current value. Then call it again with one of those names. Use this for controls the standard tools cannot drive: AXIncrement/AXDecrement on steppers and sliders, AXPick on combo box items, AXConfirm to commit a field, AXRaise on a window, AXCancel to dismiss. The action vocabulary is the platform's own and is NOT portable across backends — discovery mode is how you find the right name on whichever platform you are on. BACKGROUND-SAFE: an accessibility action is delivered to the control directly, so nothing moves the cursor, activates the app, or steals focus.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `app` | string | yes | Bundle ID, app name, or PID |
+| `action` | string | no | Accessibility action name (e.g. 'AXPress', 'AXIncrement', 'AXConfirm'). Omit to list what this element supports instead of performing anything. |
+| `description` | string | no | Exact AXDescription match (SwiftUI Button labels often land here) |
+| `descriptionContains` | string | no | Partial AXDescription match (case-insensitive) |
+| `elementId` | string | no | Handle id from a prior snapshot/describe_screen — acts on that element directly |
+| `identifier` | string | no | Accessibility identifier (.accessibilityIdentifier in SwiftUI) |
+| `index` | integer | no | 0-based index to pick the Nth of several identical matches (default first) |
+| `labelContains` | string | no | Substring across title/description/help/value — use when you see the text but don't know which AX attribute carries it |
+| `role` | string | no | AX role (e.g. 'AXButton', 'AXTextField', 'AXStaticText') |
+| `scope` | string (`window` \| `app`) | no | Search scope: 'window' (default) or 'app' |
+| `timeout` | number | no | Seconds to keep retrying the element find (default 4) |
+| `title` | string | no | Exact AXTitle match |
+| `titleContains` | string | no | Partial AXTitle match (case-insensitive) |
+| `value` | string | no | Element AXValue |
+
+This is the one tool whose vocabulary is deliberately **not** portable. The macOS backend
+speaks accessibility action names (`AXPress`, `AXIncrement`, `AXPick`); the Windows backend
+speaks UI Automation pattern actions (`Invoke`, `Toggle`, `Increment`, `Expand`, `Select`).
+Translating between them would put back exactly the ceiling the tool exists to remove — the
+point of an escape hatch is reaching what the platform actually exposes. Discovery mode is
+what keeps that usable: ask the element what it supports, read the gloss, then ask for one
+of the names it gave you.
+
+Two failures are reported rather than performed. An action the element does not advertise
+returns an error listing the ones it does, and an action on a disabled control returns an
+error instead of a no-op that reports success — the same trap
+[`navigate_menu`](#navigate_menu) closes for menu items.
 
 ### `send_shortcut`
 
@@ -447,11 +488,38 @@ Drag from one position and drop at another. BACKGROUND-SAFE BY DEFAULT: the drag
 
 ### `list_windows`
 
-List all visible windows, optionally filtered by app
+List an app's windows (or every app's, if `app` is omitted). Each entry carries a `source`: 'accessibility' windows are fully manipulable and their `index` is the one windowIndex/set_window_bounds/minimize_window/restore_window address; 'focusedWindow' and 'windowServer' entries have NO index because macOS hides windows on an inactive Space from the accessibility window list — they are real and can still be screenshot by windowTitle, but no AX operation reaches them. A `note` explains the situation whenever such entries appear.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `app` | string | no | Bundle ID, app name, or PID (optional, lists all if omitted) |
+
+macOS excludes windows on an **inactive Space** from an app element's accessibility
+window list, and an app that has never been frontmost exposes no focused window either.
+That is a system behaviour, not an AgentController limitation — the same zero-window
+answer comes back from any process holding the accessibility permission. With one app
+fullscreen, every other app's windows disappear from the accessibility layer at once.
+
+Rather than report an empty list for an app whose windows are plainly on screen,
+enumeration falls through three tiers:
+
+| `source` | Recovered from | Has `index` | What still works |
+|---|---|---|---|
+| `accessibility` | `kAXWindows` | yes | everything |
+| `focusedWindow` | `kAXFocusedWindow` | no | reads, snapshots, `screenshot_window` by `windowTitle` |
+| `windowServer` | `CGWindowListCopyWindowInfo` | no | `screenshot_window` by `windowTitle` |
+
+Only `accessibility` entries can be moved, resized, minimized or restored, so only they
+carry an index. To get full access to a window in a lower tier, bring its Space forward
+or `activate_app` it.
+
+The `windowServer` tier trades precision for coverage, and the trade is deliberate. It
+cannot distinguish a window on an inactive Space from one the app has ordered out but not
+destroyed — AppKit keeps a dismissed panel around for reuse, and it stays in the window
+list. Both look identical from outside the app, and no window-server query separates them.
+So read a `windowServer` entry as "the app owns a window of this size and title", not as
+"this window is on screen". That is a small, labelled inaccuracy; the alternative it
+replaced was reporting zero windows for an app whose window the user is looking at.
 
 ### `get_window_bounds`
 
@@ -509,6 +577,23 @@ Capture a screenshot of a specific app window. Works in the background — the w
 | `windowIndex` | integer | no | Window index in the app's AX window order (same as list_windows), for windows with duplicate/empty titles |
 | `windowTitle` | string | no | Specific window title (optional; default = most plausible main window) |
 
+Some apps release their window's backing surface while the window is off-screen, and then
+there is nothing to capture. Browsers and GPU-composited apps do it most reliably —
+confirmed with Safari and with Ghostty — while TextEdit in the identical off-screen state
+captures fine, so this is per-app behaviour rather than a rule about off-screen windows.
+ScreenCaptureKit reports it as "Failed to start stream due to audio/video capture
+failure", which reads like a permission problem and is not one —
+`check_permissions` still reports screen recording, and `screenshot_screen` still works.
+`screenshot_window` translates the failure into that diagnosis and names the workarounds:
+`screenshot_screen` if the window is visible on the current Space, `unhide_app` or
+`restore_window` if it is hidden or minimized, or `snapshot` / `read_all_text` to read the
+UI structurally instead of as pixels.
+
+There is no fallback to add here. `SCContentFilter(display:including:)` does return an
+image for such a window, and that image is a blank frame of the right dimensions — it
+would convert an honest error into a screenshot that passes every automated check and
+shows nothing. `CGWindowListCreateImage` is unavailable from the macOS 15 SDK onward.
+
 ### `screenshot_element`
 
 Capture a screenshot of a specific UI element by cropping its enclosing window to the element's bounds. Returns a JPEG by default.
@@ -555,7 +640,7 @@ _No parameters._
 
 ### `navigate_menu`
 
-Navigate and click a menu item by path (e.g. ['File', 'Save As...']). BACKGROUND-SAFE BY DEFAULT: the menu hierarchy is resolved by READING the AX tree (no menu ever opens on screen) and only the leaf item is pressed — no cursor move, no app activation, nothing visible. Apps that populate submenus lazily fall back to an AX press-descend walk automatically. CAVEAT: clipboard/responder-chain items (Copy/Paste/Cut/Select All) need an ACTIVE app and can no-op in background apps even when the press reports success — verify the effect (read_text/get_clipboard) or activate_app first. Set foreground:true only for apps that expose their menu bar in the AX tree solely while frontmost.
+Navigate and click a menu item by path (e.g. ['File', 'Save As...']). BACKGROUND-SAFE BY DEFAULT: the menu hierarchy is resolved by READING the AX tree (no menu ever opens on screen) and only the leaf item is pressed — no cursor move, no app activation, nothing visible. Apps that populate submenus lazily fall back to an AX press-descend walk automatically. A DISABLED leaf is reported as an ERROR rather than a false success: macOS returns 'press succeeded' for a greyed-out item, so an action whose precondition is unmet (no document open, nothing selected) and responder-chain items (Copy/Paste/Cut/Select All) in a non-active app used to look like they worked. Set foreground:true only for apps that expose their menu bar in the AX tree solely while frontmost.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|

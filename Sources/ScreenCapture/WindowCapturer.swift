@@ -88,9 +88,24 @@ public struct WindowCapturer {
         config.showsCursor = false
         config.captureResolution = .best
 
-        let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
-        return ImageEncoder.encode(image, maxLongestSide: maxLongestSide, format: format, quality: quality)
+        do {
+            let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+            return ImageEncoder.encode(image, maxLongestSide: maxLongestSide, format: format, quality: quality)
+        } catch {
+            throw CaptureError.surfaceUnavailable(
+                title: window.title ?? "", onScreen: window.isOnScreen, underlying: error.localizedDescription
+            )
+        }
     }
+
+    // A note for whoever reads the `catch` above and reaches for a fallback: the obvious
+    // one does not work. `SCContentFilter(display:including:[window])` DOES return an
+    // image for a window whose surface is gone — a blank white frame of exactly the right
+    // dimensions. Wiring it in would turn an honest error into a screenshot that passes
+    // every check an agent can make and shows nothing. Verified against a Safari window
+    // whose Space was inactive: `desktopIndependentWindow` failed, the display filter
+    // "succeeded", and the PNG was blank. There is no supported replacement either —
+    // `CGWindowListCreateImage` is unavailable from the macOS 15 SDK onward.
 
     public static func captureScreen(
         screenIndex: Int = 0,
@@ -209,6 +224,14 @@ public enum CaptureError: Error, LocalizedError {
     case displayNotFound
     case captureFailure
     case permissionDenied
+    /// The window was found but ScreenCaptureKit could not read it. Raw SCKit reports
+    /// this as "Failed to start stream due to audio/video capture failure", which reads
+    /// like a broken permission or a broken machine and sends the caller off checking
+    /// both. It is neither: some apps release their window's backing surface while the
+    /// window is off-screen, leaving nothing to capture. Reproduced with Safari while its
+    /// Space was inactive, in a standalone process, with screen recording granted — and
+    /// TextEdit in the identical state captured fine, so it is per-app behaviour.
+    case surfaceUnavailable(title: String, onScreen: Bool, underlying: String)
 
     public var errorDescription: String? {
         switch self {
@@ -216,6 +239,12 @@ public enum CaptureError: Error, LocalizedError {
         case .displayNotFound: return "Display not found"
         case .captureFailure: return "Failed to capture screenshot"
         case .permissionDenied: return "Screen recording permission not granted. Go to System Settings > Privacy & Security > Screen Recording"
+        case .surfaceUnavailable(let title, let onScreen, let underlying):
+            let which = title.isEmpty ? "The window" : "Window '\(title)'"
+            let where_ = onScreen
+                ? "It IS on screen, so this is unusual — retry once; if it persists the app is refusing capture."
+                : "It is currently OFF SCREEN (another Space, or fully hidden), and some apps drop their window's backing surface in that state, leaving nothing to read. Browsers and GPU-composited apps do it most reliably (confirmed with Safari and Ghostty); TextEdit in the identical state captures fine, so it is per-app behaviour rather than a rule about off-screen windows."
+            return "\(which) exists but has no capturable content. \(where_) This is not a permissions problem: check_permissions still reports screenRecording, and screenshot_screen still works. Workarounds: screenshot_screen if the window is visible on the current Space, unhide_app/restore_window if it is hidden or minimized, or read the UI with snapshot/read_all_text instead of pixels. (Underlying: \(underlying))"
         }
     }
 }

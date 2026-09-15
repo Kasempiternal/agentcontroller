@@ -1,6 +1,24 @@
 import Foundation
 import MCPServer
 
+/// What a menu navigation actually did. A `Bool` collapsed four distinct outcomes into
+/// two, and the one it hid is the expensive one: `AXUIElementPerformAction(AXPress)`
+/// returns `.success` on a DISABLED menu item, so pressing an item the app has greyed
+/// out reported success while nothing happened. Observed on Preview with no document
+/// open — `Tools > Rotate Left` and `File > Print…` both press "successfully" and the
+/// print dialog never appears. That also covers the documented responder-chain caveat:
+/// Cut/Copy/Paste/Select All read `AXEnabled == false` in a non-key app.
+public enum MenuNavigationOutcome: Sendable {
+    /// Leaf found, enabled, and the press was accepted.
+    case pressed(label: String)
+    /// Leaf found but the app reports it disabled — pressing it would have been a no-op.
+    case disabled(label: String)
+    /// No item matched at some level of the path.
+    case notFound
+    /// Leaf found and enabled, but the app refused the AXPress.
+    case pressRefused(label: String)
+}
+
 public struct MenuNavigator {
     /// Normalize a menu label for matching: fold the Unicode horizontal ellipsis (U+2026
     /// "…") to three ASCII dots so a caller's `"Save As..."` matches the system's
@@ -27,20 +45,31 @@ public struct MenuNavigator {
         return nil
     }
 
-    public static func navigateMenu(pid: pid_t, menuPath: [String]) -> Bool {
+    public static func navigateMenu(pid: pid_t, menuPath: [String]) -> MenuNavigationOutcome {
         let appElement = AXElement.application(pid: pid)
-        guard let menuBar = appElement.menuBar else { return false }
+        guard let menuBar = appElement.menuBar else { return .notFound }
+        let leafName = menuPath.last ?? ""
 
         // Silent path first: most apps expose the FULL menu hierarchy in the AX tree
         // without any menu ever opening (getMenuStructure relies on exactly this), so we
         // descend by reading children only and press JUST the leaf. Nothing flashes on
         // screen, no 100ms-per-level waits, and it works while the app is frontmost too.
-        if let leaf = resolveLeafSilently(menuBar: menuBar, menuPath: menuPath), leaf.press() {
-            return true
+        if let leaf = resolveLeafSilently(menuBar: menuBar, menuPath: menuPath) {
+            // Enablement read without opening the menu can be stale: AppKit only runs
+            // `validateMenuItem:` when a menu is about to display. So a disabled reading
+            // here is a *suspicion*, and we pay for the visible press-descend walk to get
+            // AppKit's fresh verdict rather than refusing on stale state. An enabled
+            // reading is trusted — a stale "enabled" costs the same unverifiable press
+            // this tool always made.
+            if leaf.isEnabled {
+                return leaf.press() ? .pressed(label: leaf.title ?? leafName)
+                                    : .pressRefused(label: leaf.title ?? leafName)
+            }
         }
 
         // Fallback: apps that populate submenus lazily (only on actual open) need the
-        // visible press-descend walk.
+        // visible press-descend walk. Also the re-validation path for an item that read
+        // disabled above.
         return pressDescend(menuBar: menuBar, menuPath: menuPath, pid: pid)
     }
 
@@ -74,7 +103,7 @@ public struct MenuNavigator {
 
     /// Visible fallback walk: press each intermediate item to force lazy submenu
     /// population, then press the leaf. Closes any half-open menu on failure.
-    private static func pressDescend(menuBar: AXElement, menuPath: [String], pid: pid_t) -> Bool {
+    private static func pressDescend(menuBar: AXElement, menuPath: [String], pid: pid_t) -> MenuNavigationOutcome {
         var currentItems = menuBar.children
         for (index, menuName) in menuPath.enumerated() {
             guard let menuItem = matchItem(menuName, in: currentItems) else {
@@ -82,12 +111,20 @@ public struct MenuNavigator {
                 // menu hanging open. Route Escape to the target PID (background-safe) so
                 // closing a half-open menu never hits the global HID stream.
                 if index > 0 { InputSimulator.pressEscape(pid: pid) }
-                return false
+                return .notFound
             }
 
             if index == menuPath.count - 1 {
-                // Last item — click it.
-                return menuItem.press()
+                let label = menuItem.title ?? menuName
+                // Every ancestor menu is open now, so AppKit has run `validateMenuItem:`
+                // and this reading is authoritative. Pressing a disabled item does not
+                // dismiss the menu, so bail with Escape rather than leaving one hanging
+                // open over the user's screen.
+                guard menuItem.isEnabled else {
+                    if index > 0 { InputSimulator.pressEscape(pid: pid) }
+                    return .disabled(label: label)
+                }
+                return menuItem.press() ? .pressed(label: label) : .pressRefused(label: label)
             }
 
             // Open the submenu, then descend into the child whose role is AXMenu rather
@@ -100,10 +137,10 @@ public struct MenuNavigator {
                 // No descendable submenu — bail and close the open menu. Route Escape to
                 // the target PID (background-safe) rather than the global HID stream.
                 InputSimulator.pressEscape(pid: pid)
-                return false
+                return .notFound
             }
         }
-        return false
+        return .notFound
     }
 
     public static func getMenuStructure(pid: pid_t, maxDepth: Int = 3) -> JSONValue {

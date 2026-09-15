@@ -5,7 +5,7 @@
 </p>
 
 [![CI](https://github.com/Kasempiternal/agentcontroller/actions/workflows/ci.yml/badge.svg)](https://github.com/Kasempiternal/agentcontroller/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-2.5.0-blue)
+![Version](https://img.shields.io/badge/version-2.6.0-blue)
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B%20%7C%20Windows%2010%2F11%20%7C%20iOS-lightgrey)
 ![Swift](https://img.shields.io/badge/swift-5.10-orange)
 ![.NET](https://img.shields.io/badge/.NET-9.0-512BD4)
@@ -25,7 +25,7 @@ Its defining feature is background-first automation. On macOS, every tool is bac
 | Windows 10/11 | C#/.NET, UI Automation, Win32 `SendInput` | MCP stdio directly | Self-contained `.exe` |
 | iOS (simulator + iPhone) | TypeScript/Node, `idb`, native AX scanner, WebDriverAgent | MCP stdio directly (runs on the Mac) | `node dist/cli.js` |
 
-The two desktop backends register the same 49-tool contract. Windows currently has 46 native implementations and returns explicit unsupported errors for `reset_app_state`, `start_recording`, and `stop_recording`; see the [Windows guide](Windows/README.md) for platform-specific behavior. The iOS backend registers its own 36-tool surface shaped for phones (gestures, hardware buttons, device lifecycle) rather than force-fitting the desktop vocabulary — see the [iOS guide](iOS/README.md).
+The two desktop backends register the same 50-tool contract. Windows currently has 47 native implementations and returns explicit unsupported errors for `reset_app_state`, `start_recording`, and `stop_recording`; see the [Windows guide](Windows/README.md) for platform-specific behavior. The iOS backend registers its own 36-tool surface shaped for phones (gestures, hardware buttons, device lifecycle) rather than force-fitting the desktop vocabulary — see the [iOS guide](iOS/README.md).
 
 ---
 
@@ -39,6 +39,7 @@ The two desktop backends register the same 49-tool contract. Windows currently h
 - [Setup](#setup)
 - [Migrating from v1](#migrating-from-v1)
 - [Quick start](#quick-start)
+- [Command line](#command-line)
 - [Fully-background QA](#fully-background-qa)
 - [Tool catalog](#tool-catalog)
 - [Security](#security)
@@ -50,7 +51,7 @@ The two desktop backends register the same 49-tool contract. Windows currently h
 
 ## Highlights
 
-- **49 desktop MCP tools** covering app control, AX inspection, input, assertions, screenshots, video recording, menus, clipboard, windows, and replayable flows — see the full [Tool Reference](docs/TOOLS.md) — plus a **36-tool iOS backend** for simulators and physical iPhones ([iOS guide](iOS/README.md)).
+- **50 desktop MCP tools** covering app control, AX inspection, input, assertions, screenshots, video recording, menus, clipboard, windows, and replayable flows — see the full [Tool Reference](docs/TOOLS.md) — plus a **36-tool iOS backend** for simulators and physical iPhones ([iOS guide](iOS/README.md)).
 - **Background by default** — apps launch without activating, input is delivered per-process (`CGEvent.postToPid`) or via pure AX actions, menus are resolved by *reading* the AX tree, and screenshots read the window's own backing store (works even fully covered or hidden).
 - **Real assertions** — `assert_visible` / `assert_not_visible` / `assert_value` poll until satisfied and return MCP `isError` on failure, so an agent's control loop gets an unambiguous PASS/FAIL instead of parsing prose.
 - **Stable element handles** — `snapshot` returns a compact `[{id, role, label, enabled, frame}]` list; interaction tools accept `elementId` for O(1) reuse without re-searching.
@@ -77,7 +78,7 @@ AgentController runs as a menu-bar app (`LSUIElement`, no Dock icon) hosting a b
 |---|---|
 | `Sources/App` | Menu-bar app, permissions UX, server lifecycle |
 | `Sources/MCPServer` | HTTP listener, JSON-RPC 2.0, auth |
-| `Sources/MCPTools` | The 49 tool definitions and handlers |
+| `Sources/MCPTools` | The 50 tool definitions and handlers |
 | `Sources/AccessibilityEngine` | AX tree walking/search, input synthesis, window/app management |
 | `Sources/ScreenCapture` | ScreenCaptureKit screenshots, video recording, content caching |
 
@@ -206,6 +207,42 @@ Under the hood the agent composes tools like this:
 
 Selector matchers (`role`, `title`, `titleContains`, `identifier`, `value`, `description`, `descriptionContains`, `labelContains`, `index`) are accepted consistently across interaction, assertion, and inspection tools. Tip: use `labelContains` when you can see text on screen but don't know which AX attribute carries it — SwiftUI varies.
 
+## Command line
+
+Everything above assumes an MCP client. There is also a plain CLI, so a shell script, a
+Makefile, or a person poking at an app can drive the same tools with nothing else
+installed. `build.sh` puts it at `~/.agentcontroller/bin/agentcontroller`:
+
+```bash
+export PATH="$HOME/.agentcontroller/bin:$PATH"
+
+agentcontroller status                      # app running? permissions granted?
+agentcontroller tools menu                  # the tool list, filtered
+agentcontroller describe navigate_menu      # one tool's parameters
+
+agentcontroller snapshot app=com.apple.TextEdit
+agentcontroller click app=com.apple.TextEdit role=AXButton title=Save
+agentcontroller navigate_menu app=com.apple.TextEdit menuPath:='["Format","Make Plain Text"]'
+agentcontroller screenshot_window app=com.apple.Safari -o shot.jpg
+```
+
+`key=value` is typed from the tool's own schema, so `app=1234` stays the string a PID
+needs instead of becoming a number that resolves to nothing. `key:=<json>` passes literal
+JSON for arrays and objects.
+
+It is a **client of the running app**, not a second implementation: same loopback
+endpoint, same single Accessibility and Screen Recording grant, same Focus Guard. A CLI
+that drove the accessibility APIs itself would need its own permission grants and would
+sit outside Focus Guard, which is the one thing this project promises cannot happen.
+
+Exit codes make it scriptable without parsing prose — `0` the tool did what was asked,
+`1` it ran and reported failure, `2` a usage or transport problem:
+
+```bash
+agentcontroller assert_visible app=com.example.App labelContains=Welcome \
+  && echo PASS || echo FAIL
+```
+
 ## Fully-background QA
 
 Every tool is background-safe by default — a full test run happens while the user keeps working in another app, with their focus, cursor, and key window untouched:
@@ -220,16 +257,18 @@ Verified limitations, also stated in the tool descriptions so agents self-correc
 
 | Limitation | Workaround |
 |---|---|
-| The AX windows *list* is empty while an app is hidden | Use the default `scope: "window"`; focused-window tools and screenshots are unaffected |
+| macOS hides windows on an **inactive Space** from the accessibility layer entirely — with one app fullscreen, every other app reports zero AX windows | `list_windows` recovers them from the focused-window attribute and the window server and labels each entry's `source`; they can be screenshot by `windowTitle`, but only `source: "accessibility"` entries can be moved, resized or addressed by `windowIndex`. Bring the Space forward for full access. |
+| An app that has **never been frontmost** exposes no focused window either, so `snapshot` can only reach its menu bar | `snapshot` reports `root: "application"` with a warning rather than passing menu items off as screen content |
+| Some apps (Safari most reliably) release their window's backing surface while it is off-screen, so it cannot be captured | `screenshot_window` names the cause instead of surfacing the raw ScreenCaptureKit error; use `screenshot_screen`, `unhide_app`, or read the UI with `snapshot` / `read_all_text` |
 | Minimized windows cannot be captured | `restore_window` first (makes the window visible again) |
-| Clipboard / responder-chain commands (Cmd+C/V, Copy/Paste menu items) no-op without an active app | Verify content with `read_text` / `assert_value` instead, or `activate_app` briefly for paste flows |
+| Clipboard / responder-chain commands (Cmd+C/V, Copy/Paste menu items) no-op without an active app | `navigate_menu` now detects this — such items read as disabled and return an error rather than a false success. For the `send_shortcut` equivalents, verify with `read_text` / `assert_value`, or `activate_app` briefly for paste flows |
 | PID-targeted drags can desync (apps that poll the real pointer) | Set `foreground: true` for that gesture |
 
 The single intentionally focus-changing tool is `activate_app`; everything else only escalates behind an explicit `foreground: true`. And since v1.4.0, **Focus Guard** (default on, toggle in the menu bar) turns that convention into a hard guarantee: while enabled, the dispatcher refuses `activate_app` and every `foreground:true` call with an error that points the agent back to the background-safe path — a misbehaving agent *cannot* steal your focus.
 
 ## Tool catalog
 
-49 tools — full parameter documentation in **[docs/TOOLS.md](docs/TOOLS.md)** (generated from the live server's `tools/list`).
+50 tools — full parameter documentation in **[docs/TOOLS.md](docs/TOOLS.md)** (generated from the live server's `tools/list`).
 
 | Category | Tools |
 |---|---|

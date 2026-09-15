@@ -7,7 +7,7 @@ struct WindowTools {
     static func register(in registry: ToolRegistry) {
         registry.register(.init(
             name: "list_windows",
-            description: "List all visible windows, optionally filtered by app",
+            description: "List an app's windows (or every app's, if `app` is omitted). Each entry carries a `source`: 'accessibility' windows are fully manipulable and their `index` is the one windowIndex/set_window_bounds/minimize_window/restore_window address; 'focusedWindow' and 'windowServer' entries have NO index because macOS hides windows on an inactive Space from the accessibility window list — they are real and can still be screenshot by windowTitle, but no AX operation reaches them. A `note` explains the situation whenever such entries appear.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
@@ -15,15 +15,20 @@ struct WindowTools {
                 ]),
             ]),
             handler: { args in
+                // A named-but-unresolvable app must not silently widen to "every window
+                // on the system" — that answers a different question than the one asked.
+                if let requested = args?["app"]?.stringValue, AppManager.resolvePID(from: requested) == nil {
+                    return ToolResult.error("App not found or not running: \(requested)")
+                }
                 let pid = args?["app"]?.stringValue.flatMap { AppManager.resolvePID(from: $0) }
                 let windows = await MainActor.run { WindowManager.listWindows(pid: pid) }
                 let items: [JSONValue] = windows.map { w in
-                    .object([
+                    var fields: [String: JSONValue] = [
                         "title": .string(w.title),
                         "app": .string(w.appName),
                         "bundleId": .string(w.appBundleId ?? ""),
                         "pid": .int(Int(w.pid)),
-                        "index": .int(w.index),
+                        "source": .string(w.source.name),
                         "bounds": .object([
                             "x": .double(w.bounds.origin.x),
                             "y": .double(w.bounds.origin.y),
@@ -32,12 +37,20 @@ struct WindowTools {
                         ]),
                         "isMinimized": .bool(w.isMinimized),
                         "isFullScreen": .bool(w.isFullScreen),
-                    ])
+                    ]
+                    // The index only exists on the accessibility case, so there is no way
+                    // to emit one for a window AX never enumerated.
+                    if let index = w.source.index { fields["index"] = .int(index) }
+                    return .object(fields)
                 }
-                return ToolResult.json(.object([
+                var payload: [String: JSONValue] = [
                     "count": .int(items.count),
                     "windows": .array(items),
-                ]))
+                ]
+                if windows.contains(where: { $0.source.index == nil }) {
+                    payload["note"] = .string("Some windows are listed without an `index`: macOS omits windows on an INACTIVE Space (and apps that have never been frontmost) from the accessibility window list, so they were recovered from the focused-window attribute or the window server. They are real — screenshot_window with `windowTitle` reaches them — but windowIndex, set_window_bounds, minimize_window and restore_window cannot. Switching to that app's Space, or activate_app, restores full AX access.")
+                }
+                return ToolResult.json(.object(payload))
             }
         ))
 

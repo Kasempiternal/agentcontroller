@@ -6,7 +6,7 @@ struct MenuTools {
     static func register(in registry: ToolRegistry) {
         registry.register(.init(
             name: "navigate_menu",
-            description: "Navigate and click a menu item by path (e.g. ['File', 'Save As...']). BACKGROUND-SAFE BY DEFAULT: the menu hierarchy is resolved by READING the AX tree (no menu ever opens on screen) and only the leaf item is pressed — no cursor move, no app activation, nothing visible. Apps that populate submenus lazily fall back to an AX press-descend walk automatically. CAVEAT: clipboard/responder-chain items (Copy/Paste/Cut/Select All) need an ACTIVE app and can no-op in background apps even when the press reports success — verify the effect (read_text/get_clipboard) or activate_app first. Set foreground:true only for apps that expose their menu bar in the AX tree solely while frontmost.",
+            description: "Navigate and click a menu item by path (e.g. ['File', 'Save As...']). BACKGROUND-SAFE BY DEFAULT: the menu hierarchy is resolved by READING the AX tree (no menu ever opens on screen) and only the leaf item is pressed — no cursor move, no app activation, nothing visible. Apps that populate submenus lazily fall back to an AX press-descend walk automatically. A DISABLED leaf is reported as an ERROR rather than a false success: macOS returns 'press succeeded' for a greyed-out item, so an action whose precondition is unmet (no document open, nothing selected) and responder-chain items (Copy/Paste/Cut/Select All) in a non-active app used to look like they worked. Set foreground:true only for apps that expose their menu bar in the AX tree solely while frontmost.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
@@ -39,16 +39,24 @@ struct MenuTools {
                     activated = await MainActor.run { AppManager.activate(pid: pid) }
                     await AXExecutor.pause(0.2)
                 }
-                let success = await AXExecutor.app(pid).run {
+                let outcome = await AXExecutor.app(pid).run {
                     MenuNavigator.navigateMenu(pid: pid, menuPath: path)
                 }
-                guard success else {
-                    return ToolResult.error("Menu path not found or item refused: \(path.joined(separator: " > "))")
+                let readablePath = path.joined(separator: " > ")
+                switch outcome {
+                case .notFound:
+                    return ToolResult.error("Menu path not found: \(readablePath)")
+                case .pressRefused(let label):
+                    return ToolResult.error("Menu item '\(label)' is enabled but refused the press (\(readablePath))")
+                case .disabled(let label):
+                    return ToolResult.error("Menu item '\(label)' is DISABLED — pressing it would have been a no-op, so nothing happened (\(readablePath)). The app greys an item out when its precondition is unmet: no document open, nothing selected, or — for responder-chain items like Cut/Copy/Paste/Select All — the app is not active. Fix the precondition (open a document, make a selection) or use activate_app, then retry.")
+                case .pressed(let label):
+                    return ToolResult.action(success: true, method: "accessibility", extra: [
+                        "activated": .bool(activated),
+                        "menuPath": .array(path.map { .string($0) }),
+                        "item": .string(label),
+                    ])
                 }
-                return ToolResult.action(success: true, method: "accessibility", extra: [
-                    "activated": .bool(activated),
-                    "menuPath": .array(path.map { .string($0) }),
-                ])
             }
         ))
 
