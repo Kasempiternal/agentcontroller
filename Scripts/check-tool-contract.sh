@@ -100,10 +100,27 @@ fi
 # --- Prose tool counts must match reality -----------------------------------
 # Any "<N> tools" / "<N>-tool" / "<N> MCP tools" claim must equal one of the
 # real counts (desktop or iOS), so a number in the README can never quietly rot.
+#
+# The CHANGELOG is read down to its second version heading only. Everything
+# below that is a record of what a PAST release shipped: the 2.0.0 entry says
+# 49 tools because 49 is what 2.0.0 had, and "fixing" that number to match
+# today's registry would falsify the history the file exists to keep. Only the
+# Unreleased section and the newest release make a claim about the current
+# state, and those are exactly the ones this checks.
+changelog_current() {
+    awk '/^## \[/ { seen++ } seen < 2 { print }' CHANGELOG.md
+}
+
 COUNT_DRIFT=0
 for doc in README.md Windows/README.md iOS/README.md CHANGELOG.md docs/TOOLS.md NOTICE; do
     [ -f "$doc" ] || continue
-    claims=$({ grep -ohE '[0-9]+\*?\*?[[:space:]-]+(MCP[[:space:]]+)?tools?\b' "$doc" || true; } \
+    if [ "$doc" = "CHANGELOG.md" ]; then
+        changelog_current > "$WORK/changelog-current"
+        source_text="$WORK/changelog-current"
+    else
+        source_text="$doc"
+    fi
+    claims=$({ grep -ohE '[0-9]+\*?\*?[[:space:]-]+(MCP[[:space:]]+)?tools?\b' "$source_text" || true; } \
                 | grep -oE '^[0-9]+' | sort -u)
     for claimed in $claims; do
         if [ "$claimed" != "$MACOS_N" ] && [ "$claimed" != "$IOS_N" ]; then
@@ -169,6 +186,34 @@ if [ "$DESC_CHECKED" -eq 0 ]; then
     fail "extracted 0 descriptions from Sources/MCPTools — did the declaration shape change?"
 elif [ "$DESC_DRIFT" -eq 0 ]; then
     ok "all $DESC_CHECKED tool descriptions in docs/TOOLS.md match the source"
+fi
+
+# --- SwiftPM product names must not collide case-insensitively ---------------
+# SwiftPM writes every product into one build directory, and macOS ships a
+# case-INSENSITIVE filesystem, so two products differing only in case are the
+# same file: whichever links last silently overwrites the other. It cost real
+# time once — a CLI product named `agentcontroller` was overwritten by the app
+# product `AgentController`, and the symptom was the CLI hanging forever,
+# because the binary being invoked was the menu-bar app starting a SwiftUI run
+# loop. Nothing warns about it: `swift build` succeeds, and CI's Linux runners
+# are case-sensitive so they cannot reproduce it. Hence a name check, which is
+# filesystem-independent and runs everywhere.
+{ grep -oE '\.(executable|library)\(name:[[:space:]]*"[^"]+"' Package.swift || true; } \
+    | grep -oE '"[^"]+"' | tr -d '"' > "$WORK/products"
+PRODUCTS_N=$(wc -l < "$WORK/products" | tr -d ' ')
+if [ "$PRODUCTS_N" -eq 0 ]; then
+    fail "extracted 0 products from Package.swift — did the declaration shape change?"
+else
+    COLLISIONS=$(tr '[:upper:]' '[:lower:]' < "$WORK/products" | sort | uniq -d)
+    if [ -n "$COLLISIONS" ]; then
+        fail "SwiftPM product names collide on a case-insensitive filesystem"
+        for c in $COLLISIONS; do
+            note "colliding (lowercased): $c"
+            grep -iE "^$c\$" "$WORK/products" | while read -r p; do note "  declared as: $p"; done
+        done
+    else
+        ok "all $PRODUCTS_N SwiftPM product names are unique case-insensitively"
+    fi
 fi
 
 if [ "$FAILED" != 0 ]; then

@@ -151,6 +151,20 @@ chmod 700 ~/.agentcontroller
 cp Scripts/agentcontroller-mcp-bridge.sh ~/.agentcontroller/agentcontroller-mcp-bridge.sh
 chmod 700 ~/.agentcontroller/agentcontroller-mcp-bridge.sh
 
+say "Installing the agentcontroller CLI to ~/.agentcontroller/bin/"
+# Built as the product `agentcontroller-cli` and installed under the name users type.
+# The rename is not cosmetic: SwiftPM writes every product into one directory, and on
+# macOS's case-insensitive filesystem a product named `agentcontroller` IS the file
+# `AgentController` — the two silently overwrite each other.
+#
+# ~/.agentcontroller/bin rather than /usr/local/bin because that directory is root-owned:
+# installing there would put a sudo prompt in the middle of every build.
+mkdir -p ~/.agentcontroller/bin
+cp ".build/release/agentcontroller-cli" ~/.agentcontroller/bin/agentcontroller
+chmod 755 ~/.agentcontroller/bin/agentcontroller
+codesign --force --options runtime --timestamp --sign "$SIGN_ID" ~/.agentcontroller/bin/agentcontroller 2>/dev/null \
+    || codesign --force --sign - ~/.agentcontroller/bin/agentcontroller
+
 say "Launching"
 # Launch by path, not `open -a AgentController`: LaunchServices hasn't necessarily
 # indexed the just-copied bundle by name yet, which makes `-a` fail on a fresh install.
@@ -165,6 +179,12 @@ fi
 pgrep -fl AgentController || echo "(not running — check Console for crash)"
 
 printf '\n\033[1;32mDone.\033[0m First launch: grant Accessibility + Screen Recording once; they persist forever with Team ID U4VYZ8CUN9.\n'
+if ! command -v agentcontroller >/dev/null 2>&1; then
+    printf '\033[1;33mCLI:\033[0m installed at ~/.agentcontroller/bin/agentcontroller — put it on your PATH to use it:\n'
+    printf '        echo '"'"'export PATH="$HOME/.agentcontroller/bin:$PATH"'"'"' >> ~/.zshrc\n'
+else
+    printf '\033[1;32mCLI:\033[0m agentcontroller is on your PATH — try `agentcontroller tools`\n'
+fi
 if [ "$MODE" != "--dev" ] && [ -f "$DMG" ]; then
     if [ "$MODE" = "release" ]; then
         printf '\033[1;32mDistributable:\033[0m %s  (signed + notarized + stapled — ships anywhere)\n' "$DMG"
