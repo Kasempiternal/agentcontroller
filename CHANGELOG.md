@@ -6,6 +6,28 @@ All notable changes to AgentController are documented here. The format follows
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-09-15
+
+### Added
+- **Dynamic backend router.** One MCP surface for native apps, web pages, Chromium, Blender, and iOS simulators. `inspect_capabilities` probes identity (bundle ID / PID / URL / UDID) and handshakes native sockets; `snapshot` / `click` / `type_text` / `run_app_code` then use CDP compact a11y refs, bpy, idb/WDA, or AX without the agent picking Playwright vs accessibility. Asks only for multi-instance, missing add-on, or code-exec consent. Headless Chromium when no user session is needed; attach to `--remote-debugging-port` when one is. macOS stays background (AX / `postToPid`); HID/focus remains the escape hatch.
+- **`run_app_code`.** One script is the batch for Blender Python and in-page JavaScript. First use per backend requires `consent:true`.
+- **`run_steps` omits nested screenshots by default** (`includeNestedMedia:true` to keep them) so a batch is not one JPEG per click.
+- **Linux MCP stdio backend.** `Linux/` is a Python 3.11+ stdio server
+  (`agentcontroller-linux`) that registers the same 52-tool desktop contract as
+  macOS and Windows. Accessibility goes through AT-SPI (optional system
+  PyGObject, lazy-imported so headless CI still imports the package). X11
+  screenshots use ImageMagick `import`; Wayland uses `grim`. AT-SPI actions and
+  editable text run first; global pointer/keyboard fallbacks require explicit
+  `foreground:true` and restore prior focus. `reset_app_state`, `start_recording`,
+  and `stop_recording` return explicit MCP `isError` results rather than silent
+  no-ops. 49 native tools, three honest unsupported responses. Child processes
+  are always argv lists; the server never opens a listening socket.
+- **`perform_action` on Linux.** The AT-SPI Action interface backs the same
+  escape hatch macOS and Windows gained in 2.6.0: called without `action` it
+  lists each advertised action with the toolkit's own description; called with
+  one it validates against the advertised list and refuses disabled controls.
+  All three desktop backends now register the same 52-tool contract.
+
 ## [2.6.0] - 2026-08-16
 
 ### Added
@@ -434,7 +456,7 @@ contract across native macOS and Windows backends.
   calls out capability and security differences explicitly.
 
 ### Compatibility
-- Both backends register all 49 tool names. Windows implements 46 natively and
+- Both backends register all forty-nine tool names (the desktop contract at that release). Windows implements forty-six natively and
   returns truthful unsupported errors for app-state reset and video recording.
 - Existing installations and runtime data are not deleted during migration;
   v2 uses new application IDs and directories and must be registered once.

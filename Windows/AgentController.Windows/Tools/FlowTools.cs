@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using AgentController.Windows.Automation;
 using AgentController.Windows.Protocol;
 
 namespace AgentController.Windows.Tools;
@@ -13,9 +14,10 @@ internal static class FlowTools
         var runProperties = new JsonObject
         {
             ["steps"] = new JsonObject { ["type"] = "array", ["description"] = "Array of {tool, arguments} MCP tool calls." },
-            ["stopOnError"] = ToolSchema.Boolean("Stop after the first MCP tool error.", true)
+            ["stopOnError"] = ToolSchema.Boolean("Stop after the first MCP tool error.", true),
+            ["includeNestedMedia"] = ToolSchema.Boolean("Keep nested screenshot/image payloads in step results (default false).", false)
         };
-        registry.Register("run_steps", "Run a sequence of AgentController tool calls in order.", ToolSchema.Object(runProperties, "steps"),
+        registry.Register("run_steps", "THE default way to drive a UI: run an ordered list of tool steps in ONE call instead of one call per action.", ToolSchema.Object(runProperties, "steps"),
             args => RunSteps(registry, args));
 
         var saveProperties = new JsonObject
@@ -65,6 +67,7 @@ internal static class FlowTools
     {
         var steps = args["steps"] as JsonArray ?? throw new InvalidOperationException("steps must be an array.");
         var stopOnError = UiAutomationService.Bool(args, "stopOnError", true);
+        var includeNestedMedia = UiAutomationService.Bool(args, "includeNestedMedia", false);
         var results = new JsonArray();
         var passed = 0;
         for (var index = 0; index < steps.Count; index++)
@@ -85,7 +88,7 @@ internal static class FlowTools
                 ["index"] = index,
                 ["tool"] = name,
                 ["isError"] = isError,
-                ["result"] = result.DeepClone()
+                ["result"] = CompactStepResult(result, includeNestedMedia)
             });
             if (isError && stopOnError) break;
         }
@@ -103,5 +106,38 @@ internal static class FlowTools
         var filtered = new string(name.Where(character => char.IsLetterOrDigit(character) || character is '-' or '_' or ' ').ToArray()).Trim();
         if (string.IsNullOrWhiteSpace(filtered)) throw new InvalidOperationException("Flow name has no valid characters.");
         return filtered;
+    }
+
+    private static JsonObject CompactStepResult(JsonObject result, bool includeNestedMedia)
+    {
+        if (includeNestedMedia) return result.DeepClone().AsObject();
+        if (result["content"] is not JsonArray content) return result.DeepClone().AsObject();
+        var omitted = false;
+        var rewritten = new JsonArray();
+        foreach (var item in content)
+        {
+            if (item is JsonObject obj && obj["type"]?.GetValue<string>() == "image")
+            {
+                omitted = true;
+                var data = obj["data"]?.GetValue<string>() ?? "";
+                rewritten.Add(new JsonObject
+                {
+                    ["type"] = "text",
+                    ["text"] = new JsonObject
+                    {
+                        ["omitted"] = true,
+                        ["kind"] = "image",
+                        ["mimeType"] = obj["mimeType"]?.GetValue<string>() ?? "image",
+                        ["approxBytes"] = data.Length * 3 / 4
+                    }.ToJsonString()
+                });
+            }
+            else rewritten.Add(item?.DeepClone());
+        }
+        if (!omitted) return result.DeepClone().AsObject();
+        var copy = result.DeepClone().AsObject();
+        copy["content"] = rewritten;
+        copy["nestedMediaOmitted"] = true;
+        return copy;
     }
 }

@@ -81,10 +81,14 @@ internal sealed class StdioMcpServer(ToolRegistry registry)
                 ["version"] = "2.4.2"
             },
             ["instructions"] =
-                "AgentController Windows drives desktop applications through Windows UI Automation. " +
-                "Start with list_apps, then snapshot or find_elements. UI Automation patterns " +
-                "are background-safe; raw coordinate and keyboard fallbacks require foreground:true " +
-                "and may briefly move focus. Windows UIPI prevents controlling higher-integrity apps."
+                "AgentController Windows drives desktop apps, web pages, and DCC tools through ONE MCP. " +
+                "Do not pick Playwright vs UIA vs bpy — pass a target (process / URL) and the server routes: " +
+                "CDP compact a11y refs for URLs, bpy when a Blender socket handshakes, UI Automation otherwise. " +
+                "inspect_capabilities is the read-only probe. Start with list_apps or inspect_capabilities, " +
+                "then ONE snapshot and ONE run_steps of {tool, args} against element ids. Nested screenshots " +
+                "inside run_steps are omitted by default. UI Automation patterns are background-safe; raw " +
+                "coordinate and keyboard fallbacks require foreground:true and may briefly move focus. " +
+                "Windows UIPI prevents controlling higher-integrity apps."
         };
     }
 

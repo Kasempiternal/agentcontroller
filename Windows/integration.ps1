@@ -82,7 +82,7 @@ try {
     Invoke-RawCheck 'swipe' @{ app = $app; startX = $startX; startY = $startY; endX = $endX; endY = $endY; duration = 0.2; foreground = $true } 'Dragged' 'foreground-swipe'
     Invoke-RawCheck 'drag_drop' @{ app = $app; fromX = $endX; fromY = $endY; toX = $startX; toY = $startY; duration = 0.2; foreground = $true } 'Dragged' 'foreground-drag-drop'
 
-    Write-Host 'Windows integration passed: 49-tool registry, background UIA actions, all five foreground raw-input tools, assertions, and screenshot.'
+    Write-Host 'Windows integration passed: 51-tool registry, background UIA actions, all five foreground raw-input tools, assertions, and screenshot.'
 }
 finally {
     if (-not $fixtureProcess.HasExited) { $fixtureProcess.CloseMainWindow() | Out-Null }

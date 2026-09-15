@@ -1,7 +1,7 @@
 # Contributing to AgentController
 
 Thanks for taking a look. This project automates other people's applications on
-three operating systems, so a bug here doesn't just fail a test — it can move a
+four platforms, so a bug here doesn't just fail a test — it can move a
 real user's cursor or steal their focus mid-sentence. The conventions below
 exist mostly to prevent that.
 
@@ -20,6 +20,9 @@ Concretely, that means:
   five raw-input gestures are the exception: they require explicit
   `foreground:true` authorization and must restore the prior focus and cursor
   afterwards.
+- On **Linux**, AT-SPI actions and editable text run without moving the pointer.
+  The same five raw-input gestures require `foreground:true` and must restore
+  prior focus. X11 capture uses ImageMagick `import`; Wayland uses `grim`.
 - `activate_app` and `foreground:true` are last resorts, not conveniences.
 
 **A change that makes a tool steal focus where it previously did not is a
@@ -33,6 +36,7 @@ took.
 |---|---|
 | `Sources/` | macOS backend — Swift, AXUIElement, CGEvent, ScreenCaptureKit |
 | `Windows/` | Windows backend — C#/.NET, UI Automation, Win32 `SendInput` |
+| `Linux/` | Linux backend — Python 3.11+, AT-SPI, ImageMagick `import` / grim |
 | `iOS/` | iOS backend — TypeScript/Node, `idb`, WebDriverAgent |
 | `Scripts/` | Contract and release checks |
 | `docs/TOOLS.md` | Generated-by-hand tool reference, kept honest by CI |
@@ -51,7 +55,7 @@ thing to run locally:
 
 It enforces that:
 
-- both desktop backends register **the same** set of tool names;
+- all three desktop backends register **the same** set of tool names;
 - `docs/TOOLS.md` documents every registered tool and no others;
 - the `iOS/README.md` tool table matches the iOS registry;
 - every tool description in the docs matches the string in the source;
@@ -64,10 +68,11 @@ from ten to 36" — spell the old number as a word so it reads as prose rather
 than as a claim about today.
 
 **Adding a tool** means touching all of: the Swift registry, the C# registry,
-`docs/TOOLS.md`, and — if it applies to phones — the iOS registry and its README
-table. If a platform genuinely cannot support it, register it there anyway and
-return an explicit unsupported error explaining the limitation. Silently missing
-tools break the portability promise; honest errors do not.
+the Python registry, `docs/TOOLS.md`, and — if it applies to phones — the iOS
+registry and its README table. If a platform genuinely cannot support it,
+register it there anyway and return an explicit unsupported error explaining
+the limitation. Silently missing tools break the portability promise; honest
+errors do not.
 
 ## Running the checks
 
@@ -86,11 +91,18 @@ cd iOS && npm ci && npm run typecheck && npm run build
 # Windows backend (on Windows)
 dotnet build Windows\AgentController.Windows\AgentController.Windows.csproj -c Release
 .\Windows\smoke.ps1
+
+# Linux backend (headless; no desktop required)
+python3 -m compileall Linux/src
+PYTHONPATH=Linux/src python3 -m unittest discover -s Linux/tests -v
+bash -n Linux/smoke.sh
+./Linux/smoke.sh
 ```
 
 CI runs all of the above. `Windows/integration.ps1` drives real UI Automation
 against the test fixture and needs an interactive desktop, so it stays a local
-pre-release step rather than a CI job.
+pre-release step rather than a CI job. Linux GUI checks against a real app
+(optional `xvfb`) are the same kind of local step.
 
 ## Commits
 

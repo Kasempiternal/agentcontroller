@@ -1,8 +1,12 @@
 {
-  "_comment": "Copy to .mcp.json and replace <you> with your macOS username. .mcp.json is gitignored because the MCP client requires an absolute path, which is machine-specific. On Windows, point the command at Windows\\publish\\win-x64\\agentcontroller-windows.exe instead — see Windows/README.md.",
+  "_comment": "Copy to .mcp.json. .mcp.json is gitignored because some clients want a machine-specific absolute path. After `pip install -e Linux/`, python3 -m is enough.",
   "mcpServers": {
     "agentcontroller": {
       "command": "/Users/<you>/.agentcontroller/agentcontroller-mcp-bridge.sh"
+    },
+    "agentcontroller-linux": {
+      "command": "python3",
+      "args": ["-m", "agentcontroller_linux"]
     }
   }
 }

@@ -80,20 +80,30 @@ public struct MCPProtocolHandler: Sendable {
             protocolVersion = "2024-11-05"
         }
         let instructions = """
-        AgentController is a macOS QA-automation server that drives native apps via the \
-        Accessibility API. Start with `list_apps` to find a running app, then `snapshot` \
-        to inspect its UI.
+        AgentController drives native apps, web pages, browsers, and iOS simulators \
+        through ONE MCP. You never pick Playwright vs AX vs bpy vs idb — pass a \
+        target identity (bundle ID / pid / URL / simulator UDID) to the existing \
+        tools and the server routes to the best backend. `inspect_capabilities` \
+        is the read-only probe (handshake native sockets; it only reports \
+        multi-instance, missing add-on, or code-exec consent).
+
+        Start with `list_apps` or `inspect_capabilities`. Then `snapshot` for a \
+        compact element list. A URL uses CDP a11y refs (headless Chromium unless \
+        a user Chrome debug port is open). Blender uses bpy when the socket \
+        handshakes. An iOS UDID uses idb/WDA. Everything else is native AX.
 
         BATCH YOUR STEPS. `snapshot` returns stable element ids, and every interaction \
         tool takes an `elementId` that acts on that exact element with no search. So the \
         efficient loop is: ONE `snapshot`, then ONE `run_steps` carrying the whole \
         sequence of {tool, args} steps against those ids — not one tool call per action. \
         `run_steps` composes every tool in this server, reports {ran, failedAt, results}, \
-        and stops at the first failure by default. Re-snapshot only when the UI actually \
+        omits nested screenshots by default, and stops at the first failure by default. \
+        Re-snapshot only when the UI actually \
         changes shape (a new window, a new screen), not after every click. Driving \
         several apps is the same call: steps naming different `app` values run in one \
         batch. A run that issues one tool call per turn spends almost all of its wall \
-        clock waiting on the model, not on this server — a tool call here takes ~0.3s.
+        clock waiting on the model, not on this server — a tool call here takes ~0.3s. \
+        For Blender/DCC or a known web flow, `run_app_code` ships one script instead.
 
         PREFER `elementId` OVER SELECTORS. An id from a snapshot resolves in O(1); a \
         selector re-walks the accessibility tree, and one that matches nothing retries \

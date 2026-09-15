@@ -29,12 +29,12 @@ struct SnapshotTools {
 
     static func register(in registry: ToolRegistry) {
         let def = makeDefinition(name: "snapshot",
-            description: "Snapshot the focused window into a COMPACT list of elements with stable ids (also available as 'describe_screen'). Returns [{id, role, label, enabled, frame}] — far cheaper than get_element_tree. mode 'interactive' (default) keeps only controls; 'all' keeps every element. The ids feed interaction tools via elementId.")
+            description: "Snapshot a target into a COMPACT list of elements with stable ids (also available as 'describe_screen'). The server picks the backend from the identity: CDP a11y for a URL or attached Chrome page, bpy scene objects when a Blender socket handshakes, idb/WDA for an iOS simulator UDID, otherwise native AX. Returns [{id, role, label, enabled, frame}] plus backend. mode 'interactive' (default) keeps only controls; 'all' keeps every element. The ids feed interaction tools via elementId.")
         registry.register(def)
 
         // Alias: same handler under describe_screen so either name resolves.
         let alias = makeDefinition(name: "describe_screen",
-            description: "Alias of 'snapshot': compact, stable-id description of the focused window's elements [{id, role, label, enabled, frame}]. mode 'interactive' (default) or 'all'.")
+            description: "Alias of 'snapshot': compact, stable-id description. Same auto-routing as snapshot (CDP / bpy / idb / AX) returning [{id, role, label, enabled, frame}]. mode 'interactive' (default) or 'all'.")
         registry.register(alias)
     }
 
@@ -45,7 +45,7 @@ struct SnapshotTools {
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
-                    "app": .object(["type": .string("string"), "description": .string("Bundle ID, app name, or PID")]),
+                    "app": .object(["type": .string("string"), "description": .string("Bundle ID, app name, PID, URL, or iOS simulator UDID")]),
                     "mode": .object(["type": .string("string"), "description": .string("'interactive' (default, controls only) or 'all' (every element)")]),
                     "maxDepth": .object(["type": .string("integer"), "description": .string("Maximum tree depth to walk (default 12)")]),
                 ]),
