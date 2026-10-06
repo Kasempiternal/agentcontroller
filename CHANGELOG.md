@@ -6,6 +6,37 @@ All notable changes to AgentController are documented here. The format follows
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-10-06
+
+### Changed
+- **Redesigned app window.** Live status pill with the server port, stat tiles (tool
+  calls, uptime, default browser), permission rows with clear Granted / Enable states, a
+  Focus Guard card that explains itself in full, a live recent-activity feed, and a
+  Connect card with working copy buttons for the bridge command and `.mcp.json` (the old
+  window truncated the snippet to `{…`). The version now sits under the logo.
+- **Menu-bar popover** replaces the plain menu: live status, counters, Focus Guard switch,
+  the last few tool calls, and a shortcut into the full window.
+- Filled buttons use a deeper teal that meets 4.5:1 contrast with white text; the
+  status item has a real accessibility label instead of its SF Symbol name.
+
+### Security
+- The Chrome debug-port WebSocket is pinned to `ws://127.0.0.1:<probed port>`, and the
+  port is trusted only when this user owns the listener; previously the process on the
+  port chose where the agent's typed text, page content and JS went.
+- Web element ids carry the page's document id, so an id cannot act on a different
+  site's page after a cross-site navigation.
+- Out-of-range numbers from an agent or a debug port no longer crash the server.
+- The bearer token rotates whenever the listener is rebuilt, and all loopback traffic
+  (CLI, CDP, Blender) bypasses system proxies.
+
+### Breaking (since 2.x)
+- `run_steps` result entries are `{tool, isError, result, notices?}` (no nested MCP
+  envelope, no `step` field).
+- A URL with no browser named opens in the user's default browser, not a headless
+  Chromium; pass `headless:true` for the old behaviour.
+- App-scope searches skip the menu bar unless `includeMenus:true` or an `AXMenu*` role;
+  menu paths need an exact final item.
+
 ## [2.9.0] - 2026-10-06
 
 ### Fixed
