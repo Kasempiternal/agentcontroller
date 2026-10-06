@@ -81,7 +81,7 @@ final class BackendLogicTests: XCTestCase {
     // MARK: - Selector (M1)
 
     private func ref(_ node: Int, _ role: String, _ label: String) -> RoutedRef {
-        .cdp(sessionKey: "k", backendNodeId: node, role: role, label: label)
+        .cdp(sessionKey: "k", document: "d", backendNodeId: node, role: role, label: label)
     }
 
     func testSelectorMatchesRoleAndTextAcrossAXAndChromeSpellings() throws {
@@ -198,7 +198,7 @@ final class BackendLogicTests: XCTestCase {
         let centre = IOSSimBackend.center(of: ref)
         XCTAssertEqual(centre?.x, 38)
         XCTAssertEqual(centre?.y, 84)
-        XCTAssertNil(IOSSimBackend.center(of: .cdp(sessionKey: "k", backendNodeId: 1, role: "r", label: "l")))
+        XCTAssertNil(IOSSimBackend.center(of: .cdp(sessionKey: "k", document: "d", backendNodeId: 1, role: "r", label: "l")))
     }
 
     func testBootedAliasResolvesToTheRealUDID() {

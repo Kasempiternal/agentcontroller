@@ -310,6 +310,38 @@ final class BackendEndToEndTests: XCTestCase {
         XCTAssertTrue(text(result).contains("snapshot"), text(result))
     }
 
+    /// Chrome numbers DOM nodes per renderer process and a cross-site navigation swaps the
+    /// process, so an id read on one site resolves, on the next, to an unrelated node there.
+    func testAnIdFromAPageThatMovedToAnotherSiteIsStaleNotRetargeted() async throws {
+        let inputs = (0..<200).map { #"<input id="e\#($0)" aria-label="e\#($0)">"# }.joined()
+        let site = try LoopbackHTTPServer(pages: [
+            "/bank": #"<!doctype html><title>bank</title><input id="pw" aria-label="Password">"#,
+            "/elsewhere": #"<!doctype html><title>elsewhere</title><script>window.typed = []; document.addEventListener('input', e => typed.push(e.target.id + '=' + e.target.value))</script>"# + inputs,
+        ])
+        try site.start()
+        defer { site.stop() }
+        let bank = "http://127.0.0.1:\(site.port)/bank"
+        let password = try id(of: "Password", in: try payload(try await call("snapshot", ["url": .string(bank)])))
+
+        // 127.0.0.1 → localhost is a different site: the tab gets a new renderer process.
+        _ = try payload(try await call("run_app_code", ["url": .string(bank), "code": .string(
+            "setTimeout(() => { location.href = 'http://localhost:\(site.port)/elsewhere' }, 20); 'ok'")]))
+        var title = ""
+        for _ in 0..<50 where title != "elsewhere" {
+            try await Task.sleep(for: .milliseconds(100))
+            let read = try await call("run_app_code", ["url": .string(bank), "code": .string("document.title")])
+            title = (try? payload(read))?["result"]?["result"]?["value"]?.stringValue ?? ""
+        }
+        XCTAssertEqual(title, "elsewhere")
+        _ = try payload(try await call("run_app_code", ["url": .string(bank), "code": .string("document.getElementById('e3').focus(); 'ok'")]))
+
+        let typed = try await call("type_text", ["elementId": .string(password), "text": .string("hunter2")])
+        XCTAssertEqual(typed["isError"]?.boolValue, true, text(typed))
+        XCTAssertTrue(text(typed).contains("Stale element id"), text(typed))
+        let leaked = try payload(try await call("run_app_code", ["url": .string(bank), "code": .string("JSON.stringify(window.typed)")]))
+        XCTAssertEqual(leaked["result"]?["result"]?["value"]?.stringValue, "[]", "the bank page's password went to the other site")
+    }
+
     func testJavaScriptExceptionIsAnError() async throws {
         let url = try interactivePage()
         let result = try await call("run_app_code", ["url": .string(url), "code": .string("throw new Error('boom')")])

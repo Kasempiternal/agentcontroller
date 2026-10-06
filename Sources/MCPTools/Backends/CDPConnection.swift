@@ -126,7 +126,7 @@ actor CDPConnection {
 
     /// `enablingPage: false` for the browser-level endpoint, which has no Page domain.
     func open(enablingPage: Bool = true) async throws {
-        let task = URLSession.shared.webSocketTask(with: url)
+        let task = ChromeLauncher.loopbackSession.webSocketTask(with: url)
         task.maximumMessageSize = Self.maximumMessageSize
         self.task = task
         task.resume()

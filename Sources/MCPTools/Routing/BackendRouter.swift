@@ -236,14 +236,15 @@ public enum BackendRouter {
                 "elapsed": elapsed,
                 "backend": backend,
             ]
-            if case .cdp(_, _, let role, let label) = outcome.refs[first] {
+            if case .cdp(_, _, _, let role, let label) = outcome.refs[first] {
                 fields["role"] = .string(role)
                 if !label.isEmpty { fields["label"] = .string(label) }
             }
             return ToolResult.json(.object(fields))
         default:
             let ids = await RoutedHandleStore.shared.replace(refs: outcome.refs, scope: .cdp(outcome.key))
-            let limit = arguments["maxResults"]?.intValue ?? 20
+            // prefix() traps on a negative count.
+            let limit = max(arguments["maxResults"]?.intValue ?? 20, 0)
             let shown = Array(outcome.matched.prefix(limit))
             let elements = CDPAccessibility.compactElements(ids: shown.map { ids[$0] }, refs: shown.map { outcome.refs[$0] })
             return ToolResult.json(.object([

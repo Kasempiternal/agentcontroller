@@ -168,3 +168,53 @@ final class FakeDebugPortServer: @unchecked Sendable {
         }
     }
 }
+
+/// Static HTML over loopback HTTP. Reached as 127.0.0.1 and as localhost it is two different
+/// sites to Chrome, which puts each in its own renderer process.
+final class LoopbackHTTPServer: @unchecked Sendable {
+    private let listener: NWListener
+    private let queue = DispatchQueue(label: "test-http-server")
+    private let pages: [String: String]
+    private(set) var port: UInt16 = 0
+
+    init(pages: [String: String]) throws {
+        self.pages = pages
+        listener = try NWListener(using: .tcp)
+    }
+
+    func start() throws {
+        let ready = DispatchSemaphore(value: 0)
+        listener.stateUpdateHandler = { state in
+            if case .ready = state { ready.signal() }
+        }
+        listener.newConnectionHandler = { [weak self] connection in self?.serve(connection) }
+        listener.start(queue: queue)
+        guard ready.wait(timeout: .now() + 5) == .success, let bound = listener.port?.rawValue else {
+            throw NSError(domain: "LoopbackHTTPServer", code: 1)
+        }
+        port = bound
+    }
+
+    func stop() {
+        listener.cancel()
+    }
+
+    private func serve(_ connection: NWConnection) {
+        connection.start(queue: queue)
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { [weak self] data, _, _, _ in
+            guard let self, let data else {
+                connection.cancel()
+                return
+            }
+            let target = String(decoding: data, as: UTF8.self).split(separator: " ").dropFirst().first.map(String.init) ?? "/"
+            let page = self.pages[String(target.split(separator: "?").first ?? "/")]
+            let body = page ?? "not found"
+            let head = "HTTP/1.1 \(page == nil ? "404 Not Found" : "200 OK")\r\nContent-Type: text/html; charset=utf-8\r\n"
+                + "Content-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n"
+            connection.send(
+                content: Data((head + body).utf8), contentContext: .finalMessage, isComplete: true,
+                completion: .contentProcessed { _ in connection.cancel() }
+            )
+        }
+    }
+}

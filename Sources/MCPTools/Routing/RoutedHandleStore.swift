@@ -4,7 +4,9 @@ import AccessibilityEngine
 /// Element ids issued by non-AX backends (CDP, bpy, idb). Ids share the AX
 /// monotonic sequence so `eN` never silently aliases a different backend.
 public enum RoutedRef: Sendable, Equatable {
-    case cdp(sessionKey: String, backendNodeId: Int, role: String, label: String)
+    /// `document` is the main frame's loaderId when the node was read. A backendNodeId
+    /// means nothing outside that document: see `WebCDPBackend.requireDocument`.
+    case cdp(sessionKey: String, document: String, backendNodeId: Int, role: String, label: String)
     /// Carries the endpoint the snapshot was taken from, so an elementId acts on that
     /// exact Blender instead of re-handshaking and re-picking.
     case blender(name: String, kind: String, endpoint: BlenderEndpoint)

@@ -12,7 +12,7 @@ public actor HTTPServer {
     private let handler: Handler
     private var port: UInt16 = 0
     private var stopped = false
-    private var onPortChange: (@Sendable (UInt16) -> Void)?
+    private var onPortChange: (@Sendable (UInt16, String) -> Void)?
 
     /// Shared with the `@Sendable` connection handlers, which validate the Host header against
     /// it — and which therefore must see the new port after a listener restart.
@@ -21,7 +21,8 @@ public actor HTTPServer {
     /// Per-launch bearer token. Generated in `init` (before `start()` ever runs)
     /// so there is never an auth-not-armed window. 256 bits of CSPRNG entropy,
     /// hex-encoded. Clients MUST send `Authorization: Bearer <authToken>`.
-    public let authToken: String
+    /// Rotated whenever the listener is rebuilt (see `listenerFailed`).
+    public private(set) var authToken: String
 
     /// Max accepted request body size (16 MiB). Larger bodies are rejected with 413.
     private static let maxBodySize = 16 * 1024 * 1024
@@ -44,10 +45,11 @@ public actor HTTPServer {
         self.authToken = Self.generateToken()
     }
 
-    /// Called with the new port whenever the listener had to be rebuilt after it failed. The
-    /// bridges re-read the port file on a connection failure, so the owner of that file must
-    /// rewrite it here. Not called for the initial `start()`.
-    public func setPortChangeHandler(_ handler: @escaping @Sendable (UInt16) -> Void) {
+    /// Called with the new port AND the new token whenever the listener had to be rebuilt
+    /// after it failed. The bridges re-read both files on a connection failure or a 401, so
+    /// the owner of those files must rewrite them here — token first. Not called for the
+    /// initial `start()`.
+    public func setPortChangeHandler(_ handler: @escaping @Sendable (UInt16, String) -> Void) {
         onPortChange = handler
     }
 
@@ -150,6 +152,12 @@ public actor HTTPServer {
         failed.cancel()
         listener = nil
 
+        // New token for the new listener. While the old one was down its port was free,
+        // and a bridge that still had it cached may have sent `Authorization: Bearer <old>`
+        // to whatever process grabbed it in that window. Rotating makes such a captured
+        // token worthless; bridges recover by re-reading the token file on 401.
+        authToken = Self.generateToken()
+
         var delay: UInt64 = 500_000_000
         for _ in 0..<Self.restartAttempts {
             if stopped { return }
@@ -163,7 +171,7 @@ public actor HTTPServer {
                     listener = nil
                     return
                 }
-                onPortChange?(reborn)
+                onPortChange?(reborn, authToken)
                 return
             } catch {
                 try? await Task.sleep(nanoseconds: delay)

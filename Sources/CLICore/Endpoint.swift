@@ -61,6 +61,16 @@ public struct Endpoint: Equatable {
     /// One JSON-RPC round trip. Synchronous on purpose: a CLI process does one thing and
     /// exits, so a semaphore around URLSession is simpler than making main async and
     /// costs nothing here.
+    /// Proxy-free, cache-free: this request carries the bearer token, and
+    /// `URLSession.shared` would hand it to any system proxy that doesn't exempt 127.0.0.1.
+    private static let session: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.connectionProxyDictionary = [:]
+        config.urlCache = nil
+        config.httpCookieStorage = nil
+        return URLSession(configuration: config)
+    }()
+
     public func call(method: String, params: [String: Any]?) throws -> [String: Any] {
         var body: [String: Any] = ["jsonrpc": "2.0", "id": 1, "method": method]
         if let params { body["params"] = params }
@@ -76,7 +86,7 @@ public struct Endpoint: Equatable {
 
         var result: Result<(Data, HTTPURLResponse), Error>?
         let done = DispatchSemaphore(value: 0)
-        URLSession.shared.dataTask(with: request) { data, response, error in
+        Self.session.dataTask(with: request) { data, response, error in
             if let error {
                 result = .failure(Failure.unreachable(error.localizedDescription))
             } else if let data, let http = response as? HTTPURLResponse {

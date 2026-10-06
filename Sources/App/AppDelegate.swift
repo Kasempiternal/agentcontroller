@@ -93,9 +93,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.httpServer = server
         // A listener that dies after startup is rebuilt by the server, possibly on another
         // port; the port file is what the bridges re-read after a connection failure.
-        await server.setPortChangeHandler { port in
+        await server.setPortChangeHandler { [weak self] port, token in
+            // Token before port: a bridge that sees the new port must find the new token.
+            SetupManager.writeToken(token)
             SetupManager.writePort(port)
-            Task { @MainActor in appState.serverPort = port }
+            Task { @MainActor in
+                appState.serverPort = port
+                self?.publishedToken = token
+            }
         }
 
         do {
@@ -109,6 +114,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             publishedToken = token
             appState.isServerRunning = true
             appState.serverPort = port
+            appState.serverStartedAt = Date()
             print("AgentController MCP server running on port \(port)")
         } catch {
             print("Failed to start MCP server: \(error)")

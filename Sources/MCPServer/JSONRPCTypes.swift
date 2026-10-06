@@ -65,7 +65,10 @@ extension JSONValue {
     public var intValue: Int? {
         switch self {
         case .int(let i): return i
-        case .double(let d): return Int(d)
+        // `Int(d)` traps on NaN, ±inf and anything past Int's range, and the double here is
+        // whatever a client sent (`"maxResults": 1e300`) or a debug-port peer answered: one
+        // such number took down the server for every session.
+        case .double(let d): return Int(exactly: d.rounded(.towardZero))
         default: return nil
         }
     }

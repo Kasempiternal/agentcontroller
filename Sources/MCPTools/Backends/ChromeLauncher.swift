@@ -102,10 +102,73 @@ enum ChromeLauncher {
     /// candidate before it ever checked whether anything was listening.
     static func findExistingDebugPort() async -> UInt16? {
         for port in candidatePorts() {
-            guard await SocketProbe.connectAsync(port: port, timeoutMs: 80) else { continue }
+            guard await SocketProbe.connectAsync(port: port, timeoutMs: 80),
+                  listenerBelongsToCurrentUser(port: port) else { continue }
             if let browser = await browserName(port: port), isBrowser(browser) { return port }
         }
         return nil
+    }
+
+    /// Whether a process running as this user is what answers 127.0.0.1:`port`. A loopback
+    /// port belongs to whoever binds it first: another account on the Mac (or a service
+    /// account) can sit on 9222 while the user's Chrome is closed and answer /json/version
+    /// like a browser, and attaching to it hands that process every key the agent types,
+    /// every script it runs and every page it reads. libproc only shows this user's
+    /// processes' sockets, so "not found" means "someone else's". It does not tell this
+    /// user's own processes apart — a sandboxed app of theirs could still pose as Chrome.
+    static func listenerBelongsToCurrentUser(port: UInt16) -> Bool {
+        let uid = UInt32(getuid())
+        let needed = proc_listpids(UInt32(PROC_UID_ONLY), uid, nil, 0)
+        guard needed > 0 else { return false }
+        // Headroom for processes started between the sizing call and the listing.
+        var pids = [pid_t](repeating: 0, count: Int(needed) / MemoryLayout<pid_t>.stride + 64)
+        let filled = pids.withUnsafeMutableBytes {
+            proc_listpids(UInt32(PROC_UID_ONLY), uid, $0.baseAddress, Int32($0.count))
+        }
+        let loopback = in_addr_t(0x7F00_0001).bigEndian
+        for pid in pids.prefix(max(Int(filled), 0) / MemoryLayout<pid_t>.stride) where pid > 0 {
+            let fdBytes = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
+            guard fdBytes > 0 else { continue }
+            var fds = [proc_fdinfo](repeating: proc_fdinfo(), count: Int(fdBytes) / MemoryLayout<proc_fdinfo>.stride + 16)
+            let listed = fds.withUnsafeMutableBytes {
+                proc_pidinfo(pid, PROC_PIDLISTFDS, 0, $0.baseAddress, Int32($0.count))
+            }
+            for fd in fds.prefix(max(Int(listed), 0) / MemoryLayout<proc_fdinfo>.stride)
+            where fd.proc_fdtype == UInt32(PROX_FDTYPE_SOCKET) {
+                var info = socket_fdinfo()
+                let size = Int32(MemoryLayout<socket_fdinfo>.size)
+                guard proc_pidfdinfo(pid, fd.proc_fd, PROC_PIDFDSOCKETINFO, &info, size) == size,
+                      info.psi.soi_kind == Int32(SOCKINFO_TCP),
+                      info.psi.soi_proto.pri_tcp.tcpsi_state == Int32(TSI_S_LISTEN) else { continue }
+                let local = info.psi.soi_proto.pri_tcp.tcpsi_ini
+                guard UInt16(bigEndian: UInt16(truncatingIfNeeded: local.insi_lport)) == port,
+                      local.insi_vflag & UInt8(INI_IPV4) != 0 else { continue }
+                // Only a socket that receives a connection to 127.0.0.1 counts: one of ours
+                // on ::1 does not stop someone else holding 127.0.0.1 on the same port.
+                let address = local.insi_laddr.ina_46.i46a_addr4.s_addr
+                if address == loopback || address == INADDR_ANY { return true }
+            }
+        }
+        return false
+    }
+
+    /// The DevTools socket a debug port advertised, accepted only on that same port of
+    /// IPv4 loopback and rebuilt from the address that was probed. The advertised URL is
+    /// whatever the listener chose to say: taken verbatim, it could send the page's traffic
+    /// (typed text, run_app_code scripts, page content) to any host — and "localhost" can
+    /// resolve to ::1, where a different process may be listening.
+    static func debuggerSocketURL(_ advertised: String, port: UInt16) -> URL? {
+        guard let parts = URLComponents(string: advertised),
+              parts.scheme?.lowercased() == "ws",
+              parts.user == nil, parts.password == nil,
+              let host = parts.host?.lowercased(), host == "127.0.0.1" || host == "localhost",
+              parts.port == Int(port) else { return nil }
+        var socket = URLComponents()
+        socket.scheme = "ws"
+        socket.host = "127.0.0.1"
+        socket.port = Int(port)
+        socket.percentEncodedPath = parts.percentEncodedPath
+        return socket.url
     }
 
     /// `/json/version`'s `Browser` field ("Chrome/154.0…"). Node's inspector answers the
@@ -128,7 +191,7 @@ enum ChromeLauncher {
         }
         let data = try await http(url, timeout: 2)
         let json = try JSONDecoder().decode(JSONValue.self, from: data)
-        return (json.arrayValue ?? []).compactMap(pageTarget)
+        return (json.arrayValue ?? []).compactMap { pageTarget($0, port: port) }
     }
 
     /// A fresh tab. Chrome 111+ only accepts PUT here; older builds only accept GET.
@@ -143,7 +206,7 @@ enum ChromeLauncher {
             data = try await http(endpoint, method: "GET", timeout: 3)
         }
         guard let json = try? JSONDecoder().decode(JSONValue.self, from: data),
-              let target = pageTarget(json) else {
+              let target = pageTarget(json, port: port) else {
             throw CDPError.remote("Chrome did not return a page target for a new tab")
         }
         return target
@@ -157,7 +220,7 @@ enum ChromeLauncher {
               let data = try? await http(versionURL, timeout: 2),
               let version = try? JSONDecoder().decode(JSONValue.self, from: data),
               let socket = version["webSocketDebuggerUrl"]?.stringValue,
-              let socketURL = URL(string: socket) else {
+              let socketURL = debuggerSocketURL(socket, port: port) else {
             throw CDPError.remote("Chrome on port \(port) exposes no browser-level DevTools endpoint to open a background tab with")
         }
         let browser = CDPConnection(url: socketURL)
@@ -190,12 +253,18 @@ enum ChromeLauncher {
         _ = try? await http(url, timeout: 2)
     }
 
-    private static func pageTarget(_ item: JSONValue) -> PageTarget? {
-        guard let ws = item["webSocketDebuggerUrl"]?.stringValue, let wsURL = URL(string: ws) else { return nil }
+    private static func pageTarget(_ item: JSONValue, port: UInt16) -> PageTarget? {
+        guard let ws = item["webSocketDebuggerUrl"]?.stringValue,
+              let wsURL = debuggerSocketURL(ws, port: port) else { return nil }
         let type = item["type"]?.stringValue ?? "page"
         guard type == "page" || type == "webview" else { return nil }
         return PageTarget(id: item["id"]?.stringValue ?? ws, url: item["url"]?.stringValue ?? "", webSocketDebuggerURL: wsURL)
     }
+
+    /// The one session for every loopback connection in this module (DevTools HTTP, the CDP
+    /// and Blender WebSockets). `URLSession.shared` follows the system proxy, and a proxy
+    /// that does not exempt 127.0.0.1 would receive the agent's typed text and page content.
+    static let loopbackSession: URLSession = httpSession
 
     private static let httpSession: URLSession = {
         let config = URLSessionConfiguration.ephemeral

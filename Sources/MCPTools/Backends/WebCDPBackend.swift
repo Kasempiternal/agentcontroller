@@ -1,5 +1,6 @@
 import Foundation
 import MCPServer
+import AccessibilityEngine
 
 /// Chrome DevTools Protocol backend. One session = one page target, keyed by the URL the
 /// agent named. Every session lives in the single headless Chromium this app owns (as its
@@ -348,21 +349,51 @@ actor WebCDPBackend {
 
     func snapshot(identity: TargetIdentity, interactiveOnly: Bool) async throws -> PageSnapshot {
         try await perform(identity) { connection, session in
-            let refs = try await axRefs(connection, session: session, interactiveOnly: interactiveOnly)
+            let document = try await documentId(connection)
+            let refs = try await axRefs(connection, session: session, document: document, interactiveOnly: interactiveOnly)
             let url = try? await currentURL(connection)
             if let url { sessions[session.key]?.browserURL = url }
             return PageSnapshot(refs: refs, key: session.key, url: url ?? session.browserURL, loaded: session.loaded)
         }
     }
 
-    private func axRefs(_ connection: CDPConnection, session: Session, interactiveOnly: Bool) async throws -> [RoutedRef] {
+    /// `document` must be read BEFORE the tree: a navigation in between then leaves refs
+    /// tagged with the old document, which fail as stale. Read after, they would carry the
+    /// new document's id and pass as nodes of a page they never belonged to.
+    private func axRefs(
+        _ connection: CDPConnection,
+        session: Session,
+        document: String,
+        interactiveOnly: Bool
+    ) async throws -> [RoutedRef] {
         _ = try await connection.send(method: "Accessibility.enable")
         let tree = try await connection.send(method: "Accessibility.getFullAXTree", timeout: 30)
         return CDPAccessibility.flatten(
             nodes: tree["nodes"]?.arrayValue ?? [],
             interactiveOnly: interactiveOnly,
-            sessionKey: session.key
+            sessionKey: session.key,
+            document: document
         )
+    }
+
+    /// The main frame's loaderId: one per loaded document, unchanged by same-document
+    /// navigations (pushState, #fragment).
+    private func documentId(_ connection: CDPConnection) async throws -> String {
+        let tree = try await connection.send(method: "Page.getFrameTree")
+        guard let loader = tree["frameTree"]?["frame"]?["loaderId"]?.stringValue, !loader.isEmpty else {
+            throw CDPError.remote("Page.getFrameTree reported no loaderId for the main frame")
+        }
+        return loader
+    }
+
+    /// Element ids are only good on the document they were read from. Chrome numbers DOM
+    /// nodes per renderer process, and a cross-site navigation swaps the process: measured,
+    /// the backendNodeId of a password field on one origin resolved, after the tab moved to
+    /// another origin, to an unrelated <input> there. Without this, `type_text` on the old
+    /// id typed into the other site and reported success. Callers check AFTER reading the
+    /// node and BEFORE acting on it, so a navigation anywhere up to the check is caught.
+    private func requireDocument(_ document: String, _ connection: CDPConnection) async throws {
+        guard try await documentId(connection) == document else { throw CDPError.stale }
     }
 
     /// Polls the live page until `expect` holds or `timeout` passes. Always makes at least
@@ -378,17 +409,18 @@ actor WebCDPBackend {
         let started = Date()
         while true {
             var outcome = try await perform(identity) { connection, session -> QueryOutcome in
-                var refs = try await axRefs(connection, session: session, interactiveOnly: false)
+                let document = try await documentId(connection)
+                var refs = try await axRefs(connection, session: session, document: document, interactiveOnly: false)
                 var identified: Set<Int>?
                 if let identifier = selector.identifier {
                     identified = try await backendNodeIds(forIdentifier: identifier, connection: connection)
                     // The element exists in the DOM even where the AX tree drops it (an
                     // ignored wrapper div); it still counts as found.
                     let known = Set(refs.compactMap { ref -> Int? in
-                        if case .cdp(_, let id, _, _) = ref { return id } else { return nil }
+                        if case .cdp(_, _, let id, _, _) = ref { return id } else { return nil }
                     })
                     for id in identified?.subtracting(known).sorted() ?? [] {
-                        refs.append(.cdp(sessionKey: session.key, backendNodeId: id, role: "element", label: identifier))
+                        refs.append(.cdp(sessionKey: session.key, document: document, backendNodeId: id, role: "element", label: identifier))
                     }
                 }
                 let matched = selector.select(refs, identifiedNodes: identified)
@@ -397,7 +429,10 @@ actor WebCDPBackend {
             outcome.elapsed = Date().timeIntervalSince(started)
             outcome.satisfied = expect == .present ? !outcome.matched.isEmpty : outcome.matched.isEmpty
             if outcome.satisfied || outcome.elapsed >= timeout { return outcome }
-            try await Task.sleep(for: .seconds(min(pollInterval, max(timeout - outcome.elapsed, 0.05))))
+            // Not Task.sleep(for: .seconds(…)): the Duration conversion traps past ~1.7e20s,
+            // and both numbers are the agent's (`timeout`/`pollInterval: 1e300` crashed the
+            // server). `pause` caps the interval.
+            try await AXExecutor.pause(min(pollInterval, max(timeout - outcome.elapsed, 0.05)))
         }
     }
 
@@ -422,7 +457,7 @@ actor WebCDPBackend {
     /// fired no pointer/mouse events (many widgets listen for those) and never scrolled;
     /// a double click needs the clickCount-2 press for the browser to emit `dblclick`.
     func click(ref: RoutedRef, clickCount: Int = 1) async throws {
-        guard case .cdp(let key, let backendNodeId, _, _) = ref else {
+        guard case .cdp(let key, let document, let backendNodeId, _, _) = ref else {
             throw ToolError.actionFailed("Not a CDP element")
         }
         try await perform(ref: key) { connection in
@@ -436,6 +471,7 @@ actor WebCDPBackend {
             ) else {
                 throw CDPError.notClickable("it has no visible area (display:none, zero size, or fully clipped)")
             }
+            try await requireDocument(document, connection)
             try await mouse(connection, "mouseMoved", point, button: "none", buttons: 0, clickCount: 0)
             for press in 1...max(clickCount, 1) {
                 try await mouse(connection, "mousePressed", point, button: "left", buttons: 1, clickCount: press)
@@ -469,11 +505,12 @@ actor WebCDPBackend {
     /// pipeline. Assigning `this.value` skips it: React-style controlled inputs track
     /// value through input events and reset the field on the next render.
     func typeText(ref: RoutedRef, text: String) async throws {
-        guard case .cdp(let key, let backendNodeId, _, _) = ref else {
+        guard case .cdp(let key, let document, let backendNodeId, _, _) = ref else {
             throw ToolError.actionFailed("Not a CDP element")
         }
         try await perform(ref: key) { connection in
             let objectId = try await resolve(connection, backendNodeId: backendNodeId)
+            try await requireDocument(document, connection)
             let focused = try await connection.send(
                 method: "Runtime.callFunctionOn",
                 params: .object([
@@ -510,9 +547,10 @@ actor WebCDPBackend {
     }
 
     func readText(ref: RoutedRef) async throws -> String {
-        guard case .cdp(let key, let backendNodeId, _, let label) = ref else { return "" }
+        guard case .cdp(let key, let document, let backendNodeId, _, let label) = ref else { return "" }
         return try await perform(ref: key) { connection in
             let objectId = try await resolve(connection, backendNodeId: backendNodeId)
+            try await requireDocument(document, connection)
             let result = try await connection.send(
                 method: "Runtime.callFunctionOn",
                 params: .object([
@@ -752,7 +790,7 @@ struct CDPSelector: Equatable {
     func select(_ refs: [RoutedRef], identifiedNodes: Set<Int>?) -> [Int] {
         var hits: [Int] = []
         for (position, ref) in refs.enumerated() {
-            guard case .cdp(_, let node, let refRole, let label) = ref else { continue }
+            guard case .cdp(_, _, let node, let refRole, let label) = ref else { continue }
             if let role, Self.normalizedRole(role) != Self.normalizedRole(refRole) { continue }
             if let identifiedNodes, !identifiedNodes.contains(node) { continue }
             if exactText.contains(where: { $0.caseInsensitiveCompare(label) != .orderedSame }) { continue }
@@ -781,7 +819,7 @@ enum CDPAccessibility {
         "listbox", "menuitemcheckbox", "menuitemradio", "textfield",
     ]
 
-    static func flatten(nodes: [JSONValue], interactiveOnly: Bool, sessionKey: String = "page") -> [RoutedRef] {
+    static func flatten(nodes: [JSONValue], interactiveOnly: Bool, sessionKey: String, document: String) -> [RoutedRef] {
         var refs: [RoutedRef] = []
         for node in nodes {
             if node["ignored"]?.boolValue == true { continue }
@@ -789,14 +827,14 @@ enum CDPAccessibility {
             let name = axAtom(node["name"]) ?? ""
             if interactiveOnly && !interactiveRoles.contains(role.lowercased()) { continue }
             guard let backend = node["backendDOMNodeId"]?.intValue, backend > 0 else { continue }
-            refs.append(.cdp(sessionKey: sessionKey, backendNodeId: backend, role: role, label: name))
+            refs.append(.cdp(sessionKey: sessionKey, document: document, backendNodeId: backend, role: role, label: name))
         }
         return refs
     }
 
     static func compactElements(ids: [String], refs: [RoutedRef]) -> [JSONValue] {
         zip(ids, refs).map { id, ref in
-            guard case .cdp(_, _, let role, let label) = ref else {
+            guard case .cdp(_, _, _, let role, let label) = ref else {
                 return .object(["id": .string(id)])
             }
             var fields: [String: JSONValue] = [

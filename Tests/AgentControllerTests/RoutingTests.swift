@@ -132,10 +132,11 @@ final class RoutingTests: XCTestCase {
                 "backendDOMNodeId": .int(9),
             ]),
         ]
-        let refs = CDPAccessibility.flatten(nodes: nodes, interactiveOnly: true, sessionKey: "https://x")
+        let refs = CDPAccessibility.flatten(nodes: nodes, interactiveOnly: true, sessionKey: "https://x", document: "L1")
         XCTAssertEqual(refs.count, 1)
-        if case .cdp(let key, let nodeId, let role, let label) = refs[0] {
+        if case .cdp(let key, let document, let nodeId, let role, let label) = refs[0] {
             XCTAssertEqual(key, "https://x")
+            XCTAssertEqual(document, "L1")
             XCTAssertEqual(nodeId, 42)
             XCTAssertEqual(role, "button")
             XCTAssertEqual(label, "Save")

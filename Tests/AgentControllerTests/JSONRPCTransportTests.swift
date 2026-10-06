@@ -325,11 +325,42 @@ final class JSONRPCTransportTests: XCTestCase {
     /// NWListener reports `.failed` after startup when its socket is torn down; the server used
     /// to ignore it and kept claiming a port nothing listened on. The failure itself cannot be
     /// provoked from a test, so this hands the server its own live listener as the one that died.
+    /// While a dead listener's port is free, a bridge with the port cached can hand its
+    /// bearer token to whatever grabbed it. The rebuilt listener must not accept that token.
+    func testListenerRebuildRotatesTheTokenAndRejectsTheOldOne() async throws {
+        let (server, _) = try await startServer { _, _ in Data("{}".utf8) }
+        defer { Task { await server.stop() } }
+        let oldToken = await server.authToken
+        let announced = Recorder<String>()
+        await server.setPortChangeHandler { _, token in announced.add(token) }
+
+        let live = await server.listener
+        let dead = try XCTUnwrap(live)
+        await server.listenerFailed(dead)
+
+        let newToken = await server.authToken
+        XCTAssertNotEqual(newToken, oldToken)
+        XCTAssertEqual(announced.values.last, newToken, "the token-file owner was not given the rotated token")
+
+        let port = await server.assignedPort
+        let body = "{}"
+        let stale = try RawSocket(port: port)
+        defer { stale.close() }
+        stale.send("POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:\(port)\r\nAuthorization: Bearer \(oldToken)\r\n"
+            + "Content-Type: application/json\r\nContent-Length: \(body.utf8.count)\r\n\r\n" + body)
+        XCTAssertTrue(stale.receive(until: "401", timeout: 3).contains("401"), "a pre-restart token still authenticated")
+
+        let fresh = try RawSocket(port: port)
+        defer { fresh.close() }
+        fresh.send(await post(server, port: port, body: body) + body)
+        XCTAssertTrue(fresh.receive(until: "200 OK", timeout: 3).contains("200 OK"))
+    }
+
     func testListenerThatDiesIsRebuiltAndTheNewPortIsAnnounced() async throws {
         let (server, _) = try await startServer { _, _ in Data("{}".utf8) }
         defer { Task { await server.stop() } }
         let announced = Recorder<UInt16>()
-        await server.setPortChangeHandler { announced.add($0) }
+        await server.setPortChangeHandler { port, _ in announced.add(port) }
 
         let live = await server.listener
         let dead = try XCTUnwrap(live)

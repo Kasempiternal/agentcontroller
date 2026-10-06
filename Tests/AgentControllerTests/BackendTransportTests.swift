@@ -360,7 +360,7 @@ final class BackendTransportTests: XCTestCase {
         let store = RoutedHandleStore()
         let scope = RoutedScope.cdp("https://zero-refs.test/\(UUID().uuidString)")
         let other = RoutedScope.cdp("https://other.test/\(UUID().uuidString)")
-        let ref = RoutedRef.cdp(sessionKey: "a", backendNodeId: 1, role: "button", label: "x")
+        let ref = RoutedRef.cdp(sessionKey: "a", document: "d", backendNodeId: 1, role: "button", label: "x")
 
         let mineIDs = await store.replace(refs: [ref], scope: scope)
         let theirIDs = await store.replace(refs: [ref], scope: other)

@@ -212,7 +212,7 @@ enum WebSocketIO {
         timeoutMs: Int,
         maximumMessageSize: Int = 64 << 20
     ) async throws -> URLSessionWebSocketTask.Message {
-        let task = URLSession.shared.webSocketTask(with: url)
+        let task = ChromeLauncher.loopbackSession.webSocketTask(with: url)
         task.maximumMessageSize = maximumMessageSize
         task.resume()
         defer { task.cancel(with: .goingAway, reason: nil) }
