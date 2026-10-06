@@ -38,18 +38,26 @@ LOCK="$LOCK_BASE/out.lock"
 cleanup() {
     rm -rf "$LOCK_BASE" 2>/dev/null
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
 
-resolve_port() {
-    [ -f "$PORT_FILE" ] && cat "$PORT_FILE" || echo ""
-}
+# Names this bridge to the server. Every client numbers its JSON-RPC ids from 0, and the
+# server keys in-flight requests (for notifications/cancelled) by (client, id) — without a
+# distinct id here, one session's cancel could stop another session's call.
+CLIENT_ID="bash-$$"
 
-resolve_token() {
-    [ -f "$TOKEN_FILE" ] && cat "$TOKEN_FILE" || echo ""
+# Sets PORT and TOKEN in the CURRENT shell. `read` is a builtin: the `cat` it replaces cost a
+# fork+exec per file per request, inside a $(...) that cost another fork.
+read_endpoint() {
+    PORT=""
+    TOKEN=""
+    [ -f "$PORT_FILE" ] && read -r PORT < "$PORT_FILE"
+    [ -f "$TOKEN_FILE" ] && read -r TOKEN < "$TOKEN_FILE"
 }
 
 # First "id" member of the request line — string, number, or null. Empty result
 # means the request is a notification and must never receive a reply at all.
+# Four processes per call, so it runs only on the error paths that need an id to answer
+# under — never for a request that succeeds.
 extract_id() {
     printf '%s' "$1" \
         | grep -oE '"id"[[:space:]]*:[[:space:]]*("(\\.|[^"\\])*"|-?[0-9]+|null)' \
@@ -79,9 +87,11 @@ emit_line() {
     rmdir "$LOCK" 2>/dev/null
 }
 
-emit_error() { # $1 = request id ("" = notification → suppressed), $2 = message
-    [ -z "$1" ] && return
-    emit_line "{\"jsonrpc\":\"2.0\",\"id\":$1,\"error\":{\"code\":-32000,\"message\":\"$2\"}}"
+emit_error() { # $1 = the request line (a notification has no id → suppressed), $2 = message
+    local id
+    id=$(extract_id "$1")
+    [ -z "$id" ] && return
+    emit_line "{\"jsonrpc\":\"2.0\",\"id\":$id,\"error\":{\"code\":-32000,\"message\":\"$2\"}}"
 }
 
 # One request, start to finish. Runs in a background subshell, so it owns its own
@@ -91,16 +101,18 @@ handle_request() {
     local line="$1"
     local port="$2"
     local token="$3"
-    local req_id
-    req_id=$(extract_id "$line")
 
     do_request() {
         # Body via stdin (--data-binary @-): immune to ARG_MAX however large a
         # run_steps flow gets. curl's exit status survives as the pipeline status.
+        # `Expect:` suppresses curl's `Expect: 100-continue` on bodies over 1 MiB, which
+        # otherwise makes it wait a full second for an interim reply before sending them.
         printf '%s' "$line" | curl -s -o - -w '\n%{http_code}' --max-time "$MAX_TIME" \
             -X POST "http://127.0.0.1:${port}/mcp" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${token}" \
+            -H "X-AC-Client: ${CLIENT_ID}" \
+            -H 'Expect:' \
             --data-binary @- 2>/dev/null
     }
 
@@ -115,28 +127,30 @@ handle_request() {
     # curl 28 = deadline hit: the server accepted the connection but never
     # finished answering. Retrying immediately would just burn another deadline.
     if [ "$curl_rc" = "28" ]; then
-        emit_error "$req_id" "AgentController did not respond within ${MAX_TIME}s (server busy or hung on the target app)."
+        emit_error "$line" "AgentController did not respond within ${MAX_TIME}s (server busy or hung on the target app)."
         return
     fi
 
     if [ "$http_code" = "000" ]; then
         # Connection failed — AgentController restarted on a new port. Re-resolve both and retry once.
-        port=$(resolve_port)
-        token=$(resolve_token)
+        read_endpoint
+        port="$PORT"
+        token="$TOKEN"
         if [ -n "$port" ] && [ -n "$token" ]; then
             response=$(do_request)
             http_code="${response##*$'\n'}"
             body="${response%$'\n'*}"
         fi
         if [ "$http_code" = "000" ]; then
-            emit_error "$req_id" "Cannot connect to AgentController. Retrying on next request."
+            emit_error "$line" "Cannot connect to AgentController. Retrying on next request."
             return
         fi
     fi
 
     # 401 = stale token (AgentController restarted with a fresh token). Re-read and retry once.
     if [ "$http_code" = "401" ]; then
-        token=$(resolve_token)
+        read_endpoint
+        token="$TOKEN"
         if [ -n "$token" ]; then
             response=$(do_request)
             http_code="${response##*$'\n'}"
@@ -150,11 +164,23 @@ handle_request() {
     # Non-200 bodies (401/403/413) are plain {"error": ...} JSON, not JSON-RPC —
     # wrap them so the client can parse and correlate the failure.
     if [ "$http_code" != "200" ]; then
-        emit_error "$req_id" "AgentController rejected the request (HTTP ${http_code})."
+        emit_error "$line" "AgentController rejected the request (HTTP ${http_code})."
         return
     fi
 
     [ -n "$body" ] && emit_line "$body"
+}
+
+# Kill a worker and everything under it. The curl that is actually holding the HTTP
+# connection is a grandchild of the worker, so signalling the worker alone would leave curl
+# running to its 180s deadline — and the server would go on executing the abandoned tool call,
+# because it only learns the client left when that connection closes.
+kill_tree() {
+    local child
+    for child in $(pgrep -P "$1" 2>/dev/null); do
+        kill_tree "$child"
+    done
+    kill "$1" 2>/dev/null
 }
 
 # Wait up to 30s on startup for BOTH the port and token files to appear.
@@ -164,10 +190,30 @@ while { [ ! -f "$PORT_FILE" ] || [ ! -f "$TOKEN_FILE" ]; } && [ "$waited" -lt 30
     waited=$((waited + 1))
 done
 
-# In-flight PIDs, oldest first. bash 3.2 has no `wait -n`, so at the cap we block on the
+# Workers started, oldest first. bash 3.2 has no `wait -n`, so at the cap we block on the
 # OLDEST worker rather than the first to finish. That costs a little head-of-line delay
 # only once MAX_INFLIGHT requests are already running — the rail, not the hot path.
+# Ordering only: finished workers are never removed from this list, so it must not be used
+# to decide what to signal (see terminate).
 INFLIGHT_PIDS=""
+
+# Kills the workers that are running NOW. The set comes from the shell's own job table
+# (`jobs -rp`, bash 3.2 included), not from INFLIGHT_PIDS: that list keeps pids of workers
+# that already finished and were reaped, and the OS hands those numbers to unrelated
+# processes — killing the list killed whatever now owned a recycled pid.
+terminate() {
+    # The trap usually fires while the main loop sits in `IFS= read -r line`, and bash 3.2
+    # runs the handler inside that builtin's temporary environment: IFS is EMPTY here. Left
+    # alone, `$(jobs -rp)` is then one word holding every pid, and nothing gets killed.
+    local IFS=$' \t\n'
+    local pid
+    for pid in $(jobs -rp); do
+        kill_tree "$pid"
+    done
+    cleanup
+    exit 143
+}
+trap terminate TERM INT
 
 reap_at_cap() {
     set -- $INFLIGHT_PIDS
@@ -184,11 +230,10 @@ while IFS= read -r line; do
     # Resolved fresh per request: these are two tiny page-cached files, and reading them
     # here means a server restart self-heals on the very next request instead of after
     # one failed round-trip.
-    PORT=$(resolve_port)
-    TOKEN=$(resolve_token)
+    read_endpoint
 
     if [ -z "$PORT" ] || [ -z "$TOKEN" ]; then
-        emit_error "$(extract_id "$line")" "AgentController is not running. Launch the AgentController menu bar app first."
+        emit_error "$line" "AgentController is not running. Launch the AgentController menu bar app first."
         continue
     fi
 

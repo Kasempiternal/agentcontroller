@@ -3,6 +3,13 @@ import Foundation
 public protocol MCPToolProvider: Sendable {
     func listTools() -> [JSONValue]
     func callTool(name: String, arguments: JSONValue?) async throws -> JSONValue
+    /// Live facts appended to the `initialize` instructions (e.g. the user's default
+    /// browser). Computed per session so it is never stale.
+    func instructionsAddendum() -> String?
+}
+
+extension MCPToolProvider {
+    public func instructionsAddendum() -> String? { nil }
 }
 
 public struct MCPProtocolHandler: Sendable {
@@ -11,6 +18,8 @@ public struct MCPProtocolHandler: Sendable {
     /// Invoked with the tool name whenever `tools/call` dispatches a tool.
     /// The App layer wires this to AppState for telemetry; nil by default.
     private let onToolCall: (@Sendable (String) -> Void)?
+    /// In-flight `tools/call` requests, so `notifications/cancelled` can stop the one it names.
+    private let inFlight = InFlightRegistry()
 
     public init(
         toolProvider: MCPToolProvider,
@@ -27,23 +36,99 @@ public struct MCPProtocolHandler: Sendable {
         ])
     }
 
-    /// Returns nil for notifications (no `id`) — caller must not send a response.
-    public func handleRequest(_ data: Data) async -> Data? {
-        let decoder = JSONDecoder()
-        let encoder = JSONEncoder()
+    /// Key for requests that carry no `X-AC-Client` header. They share one namespace, so
+    /// JSON-RPC ids collide across unrelated clients; `notifications/cancelled` is therefore
+    /// honoured only from a client that names itself.
+    static let anonymousClient = "anon"
 
-        guard let request = try? decoder.decode(JSONRPCRequest.self, from: data) else {
-            let response = JSONRPCResponse.failure(.parseError, id: nil)
-            return (try? encoder.encode(response)) ?? Data()
+    /// Returns nil when the caller must send no response: notifications (no `id`) and
+    /// requests that were cancelled (MCP: a cancelled request gets no response).
+    ///
+    /// `clientId` names the stdio bridge session the request came from; JSON-RPC ids are
+    /// only unique within one session.
+    public func handleRequest(_ data: Data, clientId: String? = nil) async -> Data? {
+        let request: JSONRPCRequest
+        do {
+            request = try JSONDecoder().decode(JSONRPCRequest.self, from: data)
+        } catch {
+            return Self.encode(Self.rejection(of: data))
         }
 
+        let client = clientId ?? Self.anonymousClient
+
         // MCP spec: notifications (no id) MUST NOT receive a response
-        if request.id == nil {
+        guard let id = request.id else {
+            // A cancel with no session id names an id out of the namespace every header-less
+            // client shares — and they all number from 0, so it would stop another client's
+            // call. Those clients are still cancellable by hanging up.
+            if request.method == "notifications/cancelled", let clientId {
+                await cancelRequest(named: request.params, client: clientId)
+            }
             return nil
         }
 
-        let response = await dispatch(request)
-        return (try? encoder.encode(response)) ?? Data()
+        let response: JSONRPCResponse?
+        if request.method == "tools/call" {
+            response = await runCancellable(request, id: id, client: client)
+        } else {
+            response = await dispatch(request)
+        }
+        return response.map(Self.encode)
+    }
+
+    /// Why `data` is not a request. Valid JSON that is not a request object is an Invalid
+    /// Request and echoes the `id` when one is recoverable; text that is not JSON at all is a
+    /// Parse error, which has no id to give.
+    static func rejection(of data: Data) -> JSONRPCResponse {
+        struct IdOnly: Decodable { let id: JSONRPCId? }
+        guard (try? JSONDecoder().decode(JSONValue.self, from: data)) != nil else {
+            return .failure(.parseError, id: nil)
+        }
+        let id = (try? JSONDecoder().decode(IdOnly.self, from: data))?.id
+        return .failure(.invalidRequest, id: id)
+    }
+
+    /// An encoding failure must still answer. A silent empty 200 leaves the client waiting
+    /// out its whole deadline for a reply that is never coming.
+    static func encode(_ response: JSONRPCResponse) -> Data {
+        let encoder = JSONEncoder()
+        if let data = try? encoder.encode(response) { return data }
+        let fallback = JSONRPCResponse.failure(.internalError, id: response.id)
+        return (try? encoder.encode(fallback))
+            ?? Data(#"{"jsonrpc":"2.0","id":null,"error":{"code":-32603,"message":"Internal error"}}"#.utf8)
+    }
+
+    /// Runs the call as its own Task so `notifications/cancelled` (and an HTTP disconnect,
+    /// which cancels this task) can reach it. Returns nil when the call was cancelled.
+    private func runCancellable(_ request: JSONRPCRequest, id: JSONRPCId, client: String) async -> JSONRPCResponse? {
+        let key = InFlightRegistry.Key(client: client, id: id)
+        let call = Task { () -> JSONRPCResponse? in
+            let response = await handleToolsCall(request)
+            // Tools that honour cancellation return or throw early; either way the client
+            // has abandoned the request and must not be sent a result for it.
+            return Task.isCancelled ? nil : response
+        }
+        guard let token = await inFlight.register(key, cancel: { call.cancel() }) else {
+            call.cancel()
+            return nil
+        }
+        let response = await withTaskCancellationHandler {
+            await call.value
+        } onCancel: {
+            call.cancel()
+        }
+        await inFlight.finish(key, token: token)
+        return response
+    }
+
+    private func cancelRequest(named params: JSONValue?, client: String) async {
+        let id: JSONRPCId
+        switch params?["requestId"] {
+        case .int(let i)?: id = .int(i)
+        case .string(let s)?: id = .string(s)
+        default: return
+        }
+        await inFlight.cancel(.init(client: client, id: id))
     }
 
     private func dispatch(_ request: JSONRPCRequest) async -> JSONRPCResponse {
@@ -52,8 +137,6 @@ public struct MCPProtocolHandler: Sendable {
             return handleInitialize(request)
         case "tools/list":
             return handleToolsList(request)
-        case "tools/call":
-            return await handleToolsCall(request)
         case "ping":
             return JSONRPCResponse.success(.object([:]), id: request.id)
         default:
@@ -88,9 +171,18 @@ public struct MCPProtocolHandler: Sendable {
         multi-instance, missing add-on, or code-exec consent).
 
         Start with `list_apps` or `inspect_capabilities`. Then `snapshot` for a \
-        compact element list. A URL uses CDP a11y refs (headless Chromium unless \
-        a user Chrome debug port is open). Blender uses bpy when the socket \
-        handshakes. An iOS UDID uses idb/WDA. Everything else is native AX.
+        compact element list. Blender uses bpy when the socket handshakes. An iOS \
+        UDID uses idb/WDA. Everything else is native AX.
+
+        BROWSERS — the user's choice is binding. When the user names a browser \
+        ("in Safari", "use Firefox"), pass it as `app` (e.g. app:"Safari", \
+        url:"https://…") on snapshot/screenshot_window/read_all_text, or as \
+        `browser` on open_url. The server opens the page in THAT browser in the \
+        background, waits for it to load, and drives the real window — with the \
+        user's logins. Never substitute Chrome for a browser the user named. With \
+        no browser named, web pages go to the user's default browser. Pass \
+        headless:true only for scripted web testing that should not touch a \
+        visible browser (private headless Chromium via CDP, no user logins).
 
         BATCH YOUR STEPS. `snapshot` returns stable element ids, and every interaction \
         tool takes an `elementId` that acts on that exact element with no search. So the \
@@ -133,7 +225,9 @@ public struct MCPProtocolHandler: Sendable {
                 "tools": .object([:]),
             ]),
             "serverInfo": serverInfo,
-            "instructions": .string(instructions),
+            "instructions": .string(
+                toolProvider.instructionsAddendum().map { instructions + "\n\n" + $0 } ?? instructions
+            ),
         ])
         return .success(result, id: request.id)
     }

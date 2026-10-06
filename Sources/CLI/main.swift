@@ -27,6 +27,7 @@ USAGE
   agentcontroller tools [filter]           list tools (optionally filtered by substring)
   agentcontroller describe <tool>          show one tool's description and parameters
   agentcontroller status                   check the app is running and permissions are granted
+  agentcontroller mcp                      stdio MCP bridge for an MCP client's server config
 
 ARGUMENTS
   key=value      typed from the tool's own schema, so app=1234 stays the string a PID needs
@@ -223,6 +224,16 @@ case "describe":
 
 case "status":
     status(connect())
+
+case "mcp":
+    // stdout is the protocol channel from here on; nothing else may print to it.
+    // `--check` is how the app learns this binary has the subcommand (an older CLI would
+    // treat `mcp` as an unknown tool and exit 2).
+    if rest.first == "--check" {
+        print("agentcontroller mcp: ok")
+        exit(Exit.ok.rawValue)
+    }
+    MCPBridge().run()
 
 default:
     let endpoint = connect()

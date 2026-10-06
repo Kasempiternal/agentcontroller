@@ -42,6 +42,12 @@ public final class ToolRegistry: MCPToolProvider, @unchecked Sendable {
         tools[tool.name] = tool
     }
 
+    public func instructionsAddendum() -> String? {
+        guard let browser = BrowserResolver.systemDefault() else { return nil }
+        return "This Mac's default web browser is \(browser.name) (\(browser.bundleId)). " +
+            "A web page with no browser named goes there."
+    }
+
     public func listTools() -> [JSONValue] {
         tools.values.sorted(by: { $0.name < $1.name }).map { tool in
             // openWorldHint false: every tool acts on this Mac's UI, nothing
@@ -67,7 +73,7 @@ public final class ToolRegistry: MCPToolProvider, @unchecked Sendable {
         // Second normalization choke point (MCPProtocolHandler is the first):
         // handlers may force-unwrap `args`, so direct callers (flows, tests)
         // must never deliver nil either.
-        let arguments = arguments ?? .object([:])
+        var arguments = arguments ?? .object([:])
         guard let tool = tools[name] else {
             return ToolResult.error("Unknown tool: \(name)")
         }
@@ -89,15 +95,30 @@ public final class ToolRegistry: MCPToolProvider, @unchecked Sendable {
         // steal detected since the last call as an in-band warning — the only
         // feedback path that reaches an agent bypassing us via another tool.
         FocusWatcher.shared.noteDispatch()
-        if let routed = await BackendRouter.dispatch(name: name, arguments: arguments) {
-            if let incident = FocusWatcher.shared.consumeIncident() {
-                return ToolResult.appendingNotice(incident, to: routed)
-            }
-            return routed
+
+        // Browser choice happens here, once, before any backend sees the call.
+        var browserNotice: String?
+        switch try await BrowserRouting.prepare(name: name, arguments: arguments) {
+        case .unchanged:
+            break
+        case .rewritten(let rewritten, let notice):
+            arguments = rewritten
+            browserNotice = notice
+        case .failed(let error):
+            return error
         }
-        let result = try await tool.handler(arguments)
+
+        var result: JSONValue
+        if let routed = await BackendRouter.dispatch(name: name, arguments: arguments) {
+            result = routed
+        } else {
+            result = try await tool.handler(arguments)
+        }
+        if let browserNotice {
+            result = ToolResult.appendingNotice(browserNotice, to: result)
+        }
         if let incident = FocusWatcher.shared.consumeIncident() {
-            return ToolResult.appendingNotice(incident, to: result)
+            result = ToolResult.appendingNotice(incident, to: result)
         }
         return result
     }

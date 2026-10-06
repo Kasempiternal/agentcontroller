@@ -3,9 +3,20 @@ import Network
 import Security
 
 public actor HTTPServer {
-    private var listener: NWListener?
-    private let handler: @Sendable (Data) async -> Data?
+    /// Receives the request body and the caller's `X-AC-Client` id (nil when absent). The task
+    /// running it is cancelled if the client hangs up before the response is written.
+    public typealias Handler = @Sendable (_ body: Data, _ clientId: String?) async -> Data?
+
+    /// Readable (not settable) so tests can hand `listenerFailed` the live listener.
+    private(set) var listener: NWListener?
+    private let handler: Handler
     private var port: UInt16 = 0
+    private var stopped = false
+    private var onPortChange: (@Sendable (UInt16) -> Void)?
+
+    /// Shared with the `@Sendable` connection handlers, which validate the Host header against
+    /// it — and which therefore must see the new port after a listener restart.
+    private let portBox = PortBox()
 
     /// Per-launch bearer token. Generated in `init` (before `start()` ever runs)
     /// so there is never an auth-not-armed window. 256 bits of CSPRNG entropy,
@@ -15,14 +26,29 @@ public actor HTTPServer {
     /// Max accepted request body size (16 MiB). Larger bodies are rejected with 413.
     private static let maxBodySize = 16 * 1024 * 1024
 
+    /// Cap on the `X-AC-Client` value so a client cannot make us hold arbitrary strings as
+    /// in-flight keys.
+    private static let maxClientIdLength = 128
+
     /// Wall-clock deadline for a complete request to arrive (slowloris protection).
-    private static let readDeadlineSeconds: UInt64 = 10
+    private let readDeadline: TimeInterval
+
+    /// Restart attempts after a listener dies, with doubling backoff from 0.5s.
+    private static let restartAttempts = 6
 
     public var assignedPort: UInt16 { port }
 
-    public init(handler: @escaping @Sendable (Data) async -> Data?) {
+    public init(readDeadline: TimeInterval = 10, handler: @escaping Handler) {
         self.handler = handler
+        self.readDeadline = readDeadline
         self.authToken = Self.generateToken()
+    }
+
+    /// Called with the new port whenever the listener had to be rebuilt after it failed. The
+    /// bridges re-read the port file on a connection failure, so the owner of that file must
+    /// rewrite it here. Not called for the initial `start()`.
+    public func setPortChangeHandler(_ handler: @escaping @Sendable (UInt16) -> Void) {
+        onPortChange = handler
     }
 
     /// 32 random bytes (256 bits) from the system CSPRNG, hex-encoded.
@@ -40,72 +66,129 @@ public actor HTTPServer {
     }
 
     public func start() async throws -> UInt16 {
+        stopped = false
+        return try await launchListener(preferring: nil)
+    }
+
+    /// Binds a fresh loopback listener, resuming exactly once: on `.ready`, or on a failure or
+    /// cancellation that happens before it. A `.failed` AFTER ready is a dead server, and is
+    /// routed to `listenerFailed` instead of being dropped.
+    private func launchListener(preferring preferred: UInt16?) async throws -> UInt16 {
         let params = NWParameters.tcp
         params.allowLocalEndpointReuse = true
         // Pin the listener to IPv4 loopback so it never binds 0.0.0.0/::.
-        params.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: .any)
+        let requested = preferred.flatMap(NWEndpoint.Port.init(rawValue:)) ?? .any
+        params.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: requested)
 
         let listener = try NWListener(using: params)
         self.listener = listener
 
-        let token = self.authToken
-        let expectedPortBox = PortBox()
+        let token = authToken
+        let handler = self.handler
+        let portBox = self.portBox
+        let readDeadline = self.readDeadline
 
-        return try await withCheckedThrowingContinuation { continuation in
-            // Single-shot continuation guard. The stateUpdateHandler is @Sendable and
-            // may fire concurrently with retries, so guard resume() with a lock-backed box.
-            let resumeBox = ContinuationBox()
+        do {
+            let bound: UInt16 = try await withCheckedThrowingContinuation { continuation in
+                // Single-shot continuation guard. The stateUpdateHandler is @Sendable and
+                // may fire concurrently with retries, so guard resume() with a lock-backed box.
+                let resumeBox = ContinuationBox()
 
-            listener.stateUpdateHandler = { [weak self] state in
-                switch state {
-                case .ready:
-                    if let port = listener.port?.rawValue, resumeBox.claim() {
-                        expectedPortBox.set(port)
-                        Task { await self?.setPort(port) }
-                        continuation.resume(returning: port)
+                listener.stateUpdateHandler = { [weak self] state in
+                    switch state {
+                    case .ready:
+                        if let port = listener.port?.rawValue, resumeBox.claim() {
+                            portBox.set(port)
+                            continuation.resume(returning: port)
+                        }
+                    case .failed(let error):
+                        if resumeBox.claim() {
+                            listener.cancel()
+                            continuation.resume(throwing: error)
+                        } else {
+                            Task { await self?.listenerFailed(listener) }
+                        }
+                    case .cancelled:
+                        // Cancelled before ready (stop() raced start()): without this the
+                        // continuation is never resumed and start() hangs forever.
+                        if resumeBox.claim() {
+                            continuation.resume(throwing: CancellationError())
+                        }
+                    default:
+                        break
                     }
-                case .failed(let error):
-                    if resumeBox.claim() {
-                        continuation.resume(throwing: error)
+                }
+
+                listener.newConnectionHandler = { connection in
+                    Task {
+                        await Self.handleConnection(
+                            connection,
+                            handler: handler,
+                            authToken: token,
+                            expectedPort: portBox.get(),
+                            readDeadline: readDeadline
+                        )
                     }
-                default:
-                    break
                 }
-            }
 
-            listener.newConnectionHandler = { [handler] connection in
-                Task {
-                    await Self.handleConnection(
-                        connection,
-                        handler: handler,
-                        authToken: token,
-                        expectedPort: expectedPortBox.get()
-                    )
-                }
+                listener.start(queue: DispatchQueue(label: "agentcontroller.http"))
             }
-
-            listener.start(queue: DispatchQueue(label: "agentcontroller.http"))
+            port = bound
+            return bound
+        } catch {
+            listener.cancel()
+            if self.listener === listener { self.listener = nil }
+            throw error
         }
     }
 
-    private func setPort(_ p: UInt16) {
-        self.port = p
+    /// The listener died while serving (NWListener reports `.failed` when its socket is torn
+    /// down — network stack reset, wake from sleep). Without this the app kept showing
+    /// "Running on port N" while nothing listened on it.
+    func listenerFailed(_ failed: NWListener) async {
+        guard !stopped, listener === failed else { return }
+        failed.cancel()
+        listener = nil
+
+        var delay: UInt64 = 500_000_000
+        for _ in 0..<Self.restartAttempts {
+            if stopped { return }
+            do {
+                // Same port first, so bridges that cached it keep working untouched.
+                let reborn: UInt16
+                do { reborn = try await launchListener(preferring: port) }
+                catch { reborn = try await launchListener(preferring: nil) }
+                if stopped {
+                    listener?.cancel()
+                    listener = nil
+                    return
+                }
+                onPortChange?(reborn)
+                return
+            } catch {
+                try? await Task.sleep(nanoseconds: delay)
+                delay = min(delay * 2, 8_000_000_000)
+            }
+        }
+        print("AgentController MCP listener failed and could not be restarted")
     }
 
     public func stop() {
+        stopped = true
         listener?.cancel()
         listener = nil
     }
 
     private static func handleConnection(
         _ connection: NWConnection,
-        handler: @escaping @Sendable (Data) async -> Data?,
+        handler: @escaping Handler,
         authToken: String,
-        expectedPort: UInt16
+        expectedPort: UInt16,
+        readDeadline: TimeInterval
     ) async {
         connection.start(queue: DispatchQueue(label: "agentcontroller.http.conn"))
 
-        let received = await receiveHTTPRequest(connection)
+        let received = await receiveHTTPRequest(connection, deadline: readDeadline)
 
         guard let requestData = received.data else {
             // Either an empty/closed connection, or an over-limit body (413).
@@ -147,7 +230,15 @@ public actor HTTPServer {
         }
 
         let body = extractBody(from: requestData)
-        let responseBody = await handler(body)
+        let clientId = headers["x-ac-client"]
+            .map { String($0.prefix(maxClientIdLength)) }
+            .flatMap { $0.isEmpty ? nil : $0 }
+
+        // Its own Task so a client that gives up (curl --max-time, a killed bridge) can stop
+        // the work instead of leaving a tool running for a caller that is gone.
+        let work = Task { await handler(body, clientId) }
+        cancelWhenPeerCloses(connection) { work.cancel() }
+        let responseBody = await work.value
 
         let httpResponse: Data
         if let responseBody {
@@ -160,6 +251,24 @@ public actor HTTPServer {
         connection.cancel()
     }
 
+    /// Once the request is read nothing else is expected on the connection, so the only thing
+    /// a pending receive can report is the peer going away (FIN, or a reset). That is a hang-up
+    /// whether or not the client ever intended to read the response; a client that half-closes
+    /// after sending and still waits for a reply would be cancelled here, and no client of this
+    /// server does that (bridges use curl/URLSession, which hold the socket open).
+    private static func cancelWhenPeerCloses(_ connection: NWConnection, _ onClose: @escaping @Sendable () -> Void) {
+        func listen() {
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 1) { content, _, isComplete, error in
+                if error != nil || isComplete {
+                    onClose()
+                    return
+                }
+                listen()
+            }
+        }
+        listen()
+    }
+
     /// Result of an attempted request read. `tooLarge` flags an over-limit body so
     /// the caller can answer 413 rather than silently dropping the connection.
     private struct ReceiveResult {
@@ -167,27 +276,43 @@ public actor HTTPServer {
         let tooLarge: Bool
     }
 
-    private static func receiveHTTPRequest(_ connection: NWConnection) async -> ReceiveResult {
+    private static func receiveHTTPRequest(_ connection: NWConnection, deadline: TimeInterval) async -> ReceiveResult {
         // Race the receive loop against a wall-clock deadline (slowloris protection).
-        let deadline = readDeadlineSeconds
-        return await withTaskGroup(of: ReceiveResult?.self) { group in
+        let timedOut = Flag()
+        let received = await withTaskGroup(of: ReceiveResult?.self) { group -> ReceiveResult? in
             group.addTask {
                 await receiveLoop(connection)
             }
             group.addTask {
-                try? await Task.sleep(nanoseconds: deadline * 1_000_000_000)
-                return ReceiveResult(data: nil, tooLarge: false) // deadline hit
+                try? await Task.sleep(nanoseconds: UInt64(deadline * 1_000_000_000))
+                // A cancelled sleep means the request arrived in time.
+                guard !Task.isCancelled else { return nil }
+                timedOut.set()
+                // The receive child is parked in a continuation that group.cancelAll() cannot
+                // wake; without this the group waited on it forever and the deadline never
+                // fired. Cancelling the connection completes that receive with an error.
+                connection.cancel()
+                return nil
             }
-            let first = await group.next() ?? ReceiveResult(data: nil, tooLarge: false)
-            group.cancelAll()
-            return first ?? ReceiveResult(data: nil, tooLarge: false)
+            for await result in group {
+                if let result {
+                    group.cancelAll()
+                    return result
+                }
+            }
+            return nil
         }
+        if timedOut.isSet { return ReceiveResult(data: nil, tooLarge: false) }
+        return received ?? ReceiveResult(data: nil, tooLarge: false)
     }
+
+    private static let continueResponse = Data("HTTP/1.1 100 Continue\r\n\r\n".utf8)
 
     private static func receiveLoop(_ connection: NWConnection) async -> ReceiveResult {
         await withCheckedContinuation { (continuation: CheckedContinuation<ReceiveResult, Never>) in
             let resumeBox = ContinuationBox()
             var accumulated = Data()
+            var headersInspected = false
             func finish(_ result: ReceiveResult) {
                 if resumeBox.claim() {
                     continuation.resume(returning: result)
@@ -211,6 +336,15 @@ public actor HTTPServer {
                     if let complete = parseHTTPComplete(accumulated) {
                         finish(ReceiveResult(data: complete, tooLarge: false))
                         return
+                    }
+                    // curl sends `Expect: 100-continue` with bodies over 1 MiB and then WAITS
+                    // for the interim response before sending the body — measured 1.004s of
+                    // pure stall on a 1.1 MB request, against 6ms once answered.
+                    if !headersInspected, findHeaderEnd(in: accumulated) != nil {
+                        headersInspected = true
+                        if parseHeaders(from: accumulated)["expect"]?.lowercased() == "100-continue" {
+                            connection.send(content: continueResponse, completion: .idempotent)
+                        }
                     }
                     if error != nil || isComplete {
                         finish(ReceiveResult(data: accumulated.isEmpty ? nil : accumulated, tooLarge: false))
@@ -383,6 +517,23 @@ private final class PortBox: @unchecked Sendable {
     }
 
     func get() -> UInt16 {
+        lock.lock(); defer { lock.unlock() }
+        return value
+    }
+}
+
+/// Lock-backed one-way flag for `@Sendable` closures that must tell a sibling task something
+/// happened (here: the read deadline fired, so a failed receive is a timeout, not a request).
+private final class Flag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+
+    func set() {
+        lock.lock(); defer { lock.unlock() }
+        value = true
+    }
+
+    var isSet: Bool {
         lock.lock(); defer { lock.unlock() }
         return value
     }

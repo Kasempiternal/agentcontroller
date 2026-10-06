@@ -40,7 +40,10 @@ extension JSONValue: Codable {
         case .null: try container.encodeNil()
         case .bool(let v): try container.encode(v)
         case .int(let v): try container.encode(v)
-        case .double(let v): try container.encode(v)
+        // inf/NaN have no JSON spelling and JSONEncoder throws on them. One non-finite
+        // number in a snapshot (an AX frame with a NaN origin, a divide-by-zero ratio)
+        // used to fail the whole encode, which cost the caller the entire result.
+        case .double(let v): if v.isFinite { try container.encode(v) } else { try container.encodeNil() }
         case .string(let v): try container.encode(v)
         case .array(let v): try container.encode(v)
         case .object(let v): try container.encode(v)
@@ -167,6 +170,19 @@ public struct JSONRPCResponse: Codable, Sendable {
     public let result: JSONValue?
     public let error: JSONRPCError?
     public let id: JSONRPCId?
+
+    private enum CodingKeys: String, CodingKey { case jsonrpc, result, error, id }
+
+    /// Hand-written so an absent id is emitted as `"id":null`. The synthesized encoder drops
+    /// nil optionals, and a response with no `id` member cannot be correlated by any client:
+    /// the request that provoked it just waits out its own timeout.
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(jsonrpc, forKey: .jsonrpc)
+        try container.encodeIfPresent(result, forKey: .result)
+        try container.encodeIfPresent(error, forKey: .error)
+        if let id { try container.encode(id, forKey: .id) } else { try container.encodeNil(forKey: .id) }
+    }
 
     public init(result: JSONValue, id: JSONRPCId?) {
         self.jsonrpc = "2.0"

@@ -6,7 +6,7 @@ import Foundation
 /// Recording grant, and one Focus Guard, and they belong to the app. A CLI that drove
 /// AXUIElement itself would need its own TCC grants and would sit outside Focus Guard —
 /// which is the one thing this project promises never to happen.
-public struct Endpoint {
+public struct Endpoint: Equatable {
     public let port: String
     public let token: String
 
@@ -47,7 +47,8 @@ public struct Endpoint {
 
     /// Read the port and token the app writes on launch. Both are rewritten on every
     /// restart, so they are read per invocation and never cached to disk by the CLI.
-    public static func discover() throws -> Endpoint {
+    public static func discover(portFile: String = Endpoint.portFile,
+                                tokenFile: String = Endpoint.tokenFile) throws -> Endpoint {
         guard let port = try? String(contentsOfFile: portFile, encoding: .utf8),
               let token = try? String(contentsOfFile: tokenFile, encoding: .utf8)
         else { throw Failure.notRunning }

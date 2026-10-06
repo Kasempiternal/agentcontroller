@@ -124,11 +124,11 @@ struct StatusView: View {
 
             // Bridge path
             VStack(alignment: .leading) {
-                Text("MCP Bridge Script")
+                Text("MCP Bridge")
                     .font(.caption.bold())
                     .foregroundStyle(.secondary)
                 HStack {
-                    Text("~/.agentcontroller/agentcontroller-mcp-bridge.sh")
+                    Text(bridgeCommandDisplay)
                         .font(.system(.caption, design: .monospaced))
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
@@ -136,7 +136,7 @@ struct StatusView: View {
                     Button {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(
-                            SetupManager.bridgeScript.path,
+                            SetupManager.mcpLaunch.command,
                             forType: .string
                         )
                     } label: {
@@ -146,7 +146,7 @@ struct StatusView: View {
                     .help("Copy path")
                 }
 
-                // Copy-able .mcp.json snippet built from the bridge path — paste
+                // Copy-able .mcp.json snippet built from the active bridge command — paste
                 // straight into a project's .mcp.json.
                 Text(".mcp.json")
                     .font(.caption.bold())
@@ -177,12 +177,24 @@ struct StatusView: View {
         }
     }
 
+    /// The command shown to the user, home-abbreviated: the compiled `agentcontroller mcp`
+    /// when the installed CLI has it, else the bash bridge script.
+    private var bridgeCommandDisplay: String {
+        let launch = SetupManager.mcpLaunch
+        let command = (launch.command as NSString).abbreviatingWithTildeInPath
+        return ([command] + launch.args).joined(separator: " ")
+    }
+
     private var mcpJSONSnippet: String {
-        """
+        let launch = SetupManager.mcpLaunch
+        let args = launch.args.isEmpty
+            ? ""
+            : ",\n      \"args\": [" + launch.args.map { "\"\($0)\"" }.joined(separator: ", ") + "]"
+        return """
         {
           "mcpServers": {
             "agentcontroller": {
-              "command": "\(SetupManager.bridgeScript.path)"
+              "command": "\(launch.command)"\(args)
             }
           }
         }

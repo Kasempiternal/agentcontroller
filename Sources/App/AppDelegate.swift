@@ -3,11 +3,16 @@ import AccessibilityEngine
 import Foundation
 import MCPServer
 import MCPTools
+import ScreenCapture
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let appState = AppState()
     private var httpServer: HTTPServer?
+    /// The token this instance published. Termination removes the endpoint files only while
+    /// they still carry it: a second instance overwrites both files, and the first one quitting
+    /// afterwards used to delete the live instance's port and token out from under its bridges.
+    private var publishedToken: String?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Bound every AX call this process ever makes — a hung target app must
@@ -62,9 +67,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        RecordingShutdown.finalizeActiveRecording()
         appState.stopPermissionPolling()
-        SetupManager.removePort()
-        SetupManager.removeToken()
+        SetupManager.removeEndpointFiles(ifOwnedBy: publishedToken)
+        BackendLifecycle.shutdown()
         Task { await httpServer?.stop() }
     }
 
@@ -81,10 +87,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         )
 
-        let server = HTTPServer { data -> Data? in
-            await protocolHandler.handleRequest(data)
+        let server = HTTPServer { data, clientId -> Data? in
+            await protocolHandler.handleRequest(data, clientId: clientId)
         }
         self.httpServer = server
+        // A listener that dies after startup is rebuilt by the server, possibly on another
+        // port; the port file is what the bridges re-read after a connection failure.
+        await server.setPortChangeHandler { port in
+            SetupManager.writePort(port)
+            Task { @MainActor in appState.serverPort = port }
+        }
 
         do {
             let port = try await server.start()
@@ -94,6 +106,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let token = await server.authToken
             SetupManager.writeToken(token)
             SetupManager.writePort(port)
+            publishedToken = token
             appState.isServerRunning = true
             appState.serverPort = port
             print("AgentController MCP server running on port \(port)")

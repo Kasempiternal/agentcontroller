@@ -23,7 +23,9 @@ public struct ToolResult {
            let str = String(data: data, encoding: .utf8) {
             return text(str)
         }
-        return text("{}")
+        // Not "{}": an encode failure dressed as an empty object reads as a successful, empty
+        // result, and the caller never learns the payload was lost.
+        return error("Result could not be encoded as JSON")
     }
 
     public static func image(base64: String, mimeType: String = "image/png") -> JSONValue {

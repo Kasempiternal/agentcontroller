@@ -141,15 +141,24 @@ if [ "$MODE" != "--dev" ]; then
 fi
 
 say "Installing to /Applications"
-rm -rf /Applications/AgentController.app
-cp -R "$BUILD_DIR" /Applications/
+# Replace the bundle's CONTENTS, not the bundle folder. macOS App Management lets a
+# terminal empty an app bundle but refuses to remove the bundle directory itself, so the
+# old `rm -rf` + `cp -R` died half-way: Contents gone, an empty .app left behind, and the
+# MCP down for every open session until someone repaired it by hand.
+rm -rf /Applications/AgentController.app/Contents
+ditto "$BUILD_DIR" /Applications/AgentController.app
 xattr -cr /Applications/AgentController.app
 
 say "Deploying resilient MCP bridge to ~/.agentcontroller/"
 mkdir -p ~/.agentcontroller
 chmod 700 ~/.agentcontroller
-cp Scripts/agentcontroller-mcp-bridge.sh ~/.agentcontroller/agentcontroller-mcp-bridge.sh
-chmod 700 ~/.agentcontroller/agentcontroller-mcp-bridge.sh
+# Replace by rename, never in place: every open Claude session is EXECUTING this script,
+# and bash reads a script lazily from its file offset. `cp` truncates and rewrites the
+# same inode, so a live bridge would read the new bytes at the old offset (it does so when
+# stdin closes). A rename swaps the directory entry; running bridges keep the old inode.
+cp Scripts/agentcontroller-mcp-bridge.sh ~/.agentcontroller/.agentcontroller-mcp-bridge.sh.new
+chmod 700 ~/.agentcontroller/.agentcontroller-mcp-bridge.sh.new
+mv -f ~/.agentcontroller/.agentcontroller-mcp-bridge.sh.new ~/.agentcontroller/agentcontroller-mcp-bridge.sh
 
 say "Installing the agentcontroller CLI to ~/.agentcontroller/bin/"
 # Built as the product `agentcontroller-cli` and installed under the name users type.
@@ -160,10 +169,21 @@ say "Installing the agentcontroller CLI to ~/.agentcontroller/bin/"
 # ~/.agentcontroller/bin rather than /usr/local/bin because that directory is root-owned:
 # installing there would put a sudo prompt in the middle of every build.
 mkdir -p ~/.agentcontroller/bin
-cp ".build/release/agentcontroller-cli" ~/.agentcontroller/bin/agentcontroller
-chmod 755 ~/.agentcontroller/bin/agentcontroller
-codesign --force --options runtime --timestamp --sign "$SIGN_ID" ~/.agentcontroller/bin/agentcontroller 2>/dev/null \
-    || codesign --force --sign - ~/.agentcontroller/bin/agentcontroller
+# Sign a staged copy, then rename it into place. This binary is also the live MCP bridge
+# (`agentcontroller mcp`) for every open session; overwriting a running Mach-O in place
+# invalidates its code signature and the kernel SIGKILLs it on the next page-in.
+CLI_STAGED=~/.agentcontroller/bin/.agentcontroller.new
+cp ".build/release/agentcontroller-cli" "$CLI_STAGED"
+chmod 755 "$CLI_STAGED"
+codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$CLI_STAGED" 2>/dev/null \
+    || codesign --force --sign - "$CLI_STAGED"
+mv -f "$CLI_STAGED" ~/.agentcontroller/bin/agentcontroller
+
+# The same binary is the compiled MCP stdio bridge (`agentcontroller mcp`), which the app's
+# .mcp.json snippet prefers over the bash script. The app probes for this exact subcommand, so
+# fail here, loudly, if the signed binary does not run it.
+~/.agentcontroller/bin/agentcontroller mcp --check >/dev/null \
+    || die "Installed CLI does not run \`agentcontroller mcp\` (compiled MCP bridge)"
 
 say "Launching"
 # Launch by path, not `open -a AgentController`: LaunchServices hasn't necessarily
@@ -179,6 +199,7 @@ fi
 pgrep -fl AgentController || echo "(not running — check Console for crash)"
 
 printf '\n\033[1;32mDone.\033[0m First launch: grant Accessibility + Screen Recording once; they persist forever with Team ID U4VYZ8CUN9.\n'
+printf '\033[1;32mMCP bridge:\033[0m command ~/.agentcontroller/bin/agentcontroller, args ["mcp"]  (bash fallback: ~/.agentcontroller/agentcontroller-mcp-bridge.sh)\n'
 if ! command -v agentcontroller >/dev/null 2>&1; then
     printf '\033[1;33mCLI:\033[0m installed at ~/.agentcontroller/bin/agentcontroller — put it on your PATH to use it:\n'
     printf '        echo '"'"'export PATH="$HOME/.agentcontroller/bin:$PATH"'"'"' >> ~/.zshrc\n'
