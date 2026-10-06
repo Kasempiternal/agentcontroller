@@ -33,8 +33,6 @@ $(security find-identity -v -p codesigning 2>/dev/null | sed 's/^/         /')
     fi
 fi
 
-say "Killing any running AgentController"
-pkill -x AgentController 2>/dev/null || true
 
 say "Swift build (release, arm64)"
 swift build -c release --arch arm64
@@ -139,6 +137,13 @@ if [ "$MODE" != "--dev" ]; then
         spctl -a -t open --context context:primary-signature -vv "$DMG" 2>&1 | head -3 || true
     fi
 fi
+
+# Stop the running app only now, after the build, signing and notarization have all
+# succeeded. Killing it first (as this script used to) meant any compile or notary
+# failure left every open Claude session without AgentController.
+say "Stopping the running AgentController"
+pkill -x AgentController 2>/dev/null || true
+for _ in $(seq 1 20); do pgrep -x AgentController >/dev/null || break; sleep 0.25; done
 
 say "Installing to /Applications"
 # Replace the bundle's CONTENTS, not the bundle folder. macOS App Management lets a
