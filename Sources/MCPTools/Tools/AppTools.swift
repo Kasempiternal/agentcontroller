@@ -8,14 +8,33 @@ struct AppTools {
     /// `NSRunningApplication.hide()/unhide()` return values are unreliable (false even
     /// when the request lands, especially right after a background launch). Send the
     /// request, then poll the app's actual `isHidden` state briefly and report THAT.
-    static func setHiddenVerified(pid: pid_t, hidden: Bool) async -> Bool {
+    static func setHiddenVerified(pid: pid_t, hidden: Bool) async throws -> Bool {
         _ = await MainActor.run { hidden ? AppManager.hide(pid: pid) : AppManager.unhide(pid: pid) }
         for _ in 0..<10 {
             let state = await MainActor.run { NSRunningApplication(processIdentifier: pid)?.isHidden ?? false }
             if state == hidden { return state }
-            try? await Task.sleep(for: .milliseconds(100))
+            try await Task.sleep(for: .milliseconds(100))
         }
         return await MainActor.run { NSRunningApplication(processIdentifier: pid)?.isHidden ?? false }
+    }
+
+    /// How long `reset_app_state` waits for a quit request to take effect.
+    static let quitTimeout: TimeInterval = 5
+
+    /// Polls `condition` every `interval` seconds until it holds or `timeout` passes.
+    /// Returns whether it held; checks once more at the deadline's edge so a zero
+    /// timeout still answers for the present moment.
+    static func waitUntil(
+        timeout: TimeInterval,
+        interval: TimeInterval = 0.1,
+        _ condition: () async -> Bool
+    ) async throws -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while true {
+            if await condition() { return true }
+            if Date() >= deadline { return false }
+            try await Task.sleep(for: .seconds(interval))
+        }
     }
 
     static func register(in registry: ToolRegistry) {
@@ -96,7 +115,7 @@ struct AppTools {
             ]),
             handler: { args in
                 let pid = try args!.resolvePID()
-                let hidden = await setHiddenVerified(pid: pid, hidden: true)
+                let hidden = try await setHiddenVerified(pid: pid, hidden: true)
                 await ShareableContentCache.shared.invalidate()
                 return ToolResult.action(success: hidden, method: "hide", extra: [
                     "isHidden": .bool(hidden),
@@ -116,7 +135,7 @@ struct AppTools {
             ]),
             handler: { args in
                 let pid = try args!.resolvePID()
-                let hidden = await setHiddenVerified(pid: pid, hidden: false)
+                let hidden = try await setHiddenVerified(pid: pid, hidden: false)
                 await ShareableContentCache.shared.invalidate()
                 return ToolResult.action(success: !hidden, method: "unhide", extra: [
                     "isHidden": .bool(hidden),
@@ -178,11 +197,13 @@ struct AppTools {
 
         registry.register(.init(
             name: "open_url",
-            description: "Open a URL with the default handler (web link, deep link, or custom scheme like 'myapp://path'). BACKGROUND-SAFE BY DEFAULT: the handler app receives the URL WITHOUT being brought to the front — the user's focus is untouched. Set foreground:true to activate the handler app.",
+            description: "Open a URL in a REAL browser the user can see (web link, deep link, or custom scheme like 'myapp://path'). Web links go to the browser named in `browser` (or `app`), otherwise the user's DEFAULT browser — never silently a different one. If the user names a browser (\"in Safari\", \"use Firefox\"), pass it. headless:true instead opens the page in a private headless Chromium for scripted testing. BACKGROUND-SAFE BY DEFAULT: the browser receives the URL WITHOUT being brought to the front. Then `snapshot` with app=<that browser> reads the page.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
                     "url": .object(["type": .string("string"), "description": .string("URL to open (e.g. 'https://example.com' or 'myapp://route')")]),
+                    "browser": .object(["type": .string("string"), "description": .string("Browser to open web links in: 'safari', 'chrome', 'firefox', 'edge', 'brave', 'arc', a bundle id, or 'default' (the user's default browser, which is what you get when omitted).")]),
+                    "headless": .object(["type": .string("boolean"), "description": .string("Open in a private headless Chromium (CDP) instead of a visible browser. Only for scripted web testing; it has none of the user's logins.")]),
                     "foreground": .object(["type": .string("boolean"), "description": .string("Default false (handler app stays in the background). When true, activates the handler app.")]),
                 ]),
                 "required": .array([.string("url")]),
@@ -197,6 +218,28 @@ struct AppTools {
                 let foreground = args?["foreground"]?.boolValue ?? false
                 let config = NSWorkspace.OpenConfiguration()
                 config.activates = foreground
+
+                // Web links honour the named browser; deep links (myapp://) always go to
+                // whatever app registered the scheme.
+                let isWeb = ["http", "https"].contains(url.scheme?.lowercased() ?? "")
+                let named = args?["browser"]?.stringValue
+                    ?? args?["app"]?.stringValue.flatMap { BrowserResolver.isBrowserName($0) ? $0 : nil }
+                if isWeb, let named {
+                    guard let browser = BrowserResolver.named(named) else {
+                        return ToolResult.error("Browser '\(named)' is not installed. Installed default: \(BrowserResolver.systemDefault()?.name ?? "unknown"). Not falling back to another browser.")
+                    }
+                    do {
+                        let app = try await NSWorkspace.shared.open([url], withApplicationAt: browser.appURL, configuration: config)
+                        return ToolResult.action(success: true, method: "workspace", extra: [
+                            "url": .string(urlStr),
+                            "handler": .string(app.bundleIdentifier ?? browser.bundleId),
+                            "browser": .string(browser.name),
+                            "activated": .bool(foreground),
+                        ])
+                    } catch {
+                        return ToolResult.error("\(browser.name) could not open \(urlStr) (\(error.localizedDescription))")
+                    }
+                }
                 do {
                     let handler = try await NSWorkspace.shared.open(url, configuration: config)
                     return ToolResult.action(success: true, method: "workspace", extra: [
@@ -212,7 +255,7 @@ struct AppTools {
 
         registry.register(.init(
             name: "reset_app_state",
-            description: "Quit an app to reset its in-memory state. When wipeData:true AND the app is sandboxed (a Container exists for its bundle ID), ALSO delete ~/Library/Containers/<bundleId>/Data — this is DESTRUCTIVE and only happens behind the explicit wipeData:true flag. Without the flag, only quits.",
+            description: "Quit an app to reset its in-memory state, waiting up to 5s for it to actually exit (an error if a 'Save changes?' sheet or similar kept it alive). When wipeData:true AND the app is sandboxed (a Container exists for its bundle ID), ALSO delete ~/Library/Containers/<bundleId>/Data — this is DESTRUCTIVE, only happens behind the explicit wipeData:true flag, and is refused while the app (or another instance of it) is still running. Without the flag, only quits.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
@@ -243,10 +286,16 @@ struct AppTools {
                     return nil
                 }
 
-                // Quit if running.
+                // Quit if running. terminate() only REQUESTS a quit: an app with unsaved
+                // work answers with a "Save changes?" sheet and keeps running, so wait for
+                // the process to actually be gone rather than trusting the request.
                 var quit = false
+                var terminated = true
                 if let pid = runningPID {
                     quit = await MainActor.run { AppManager.quit(pid: pid) }
+                    terminated = try await waitUntil(timeout: quitTimeout) {
+                        await MainActor.run { NSRunningApplication(processIdentifier: pid)?.isTerminated ?? true }
+                    }
                     await ShareableContentCache.shared.invalidate()
                 }
 
@@ -255,6 +304,11 @@ struct AppTools {
                     "wiped": .bool(false),
                 ]
                 if let bundleId { fields["bundleId"] = .string(bundleId) }
+
+                // ToolResult.action(success: false) drops `extra`, so the reason has to ride in the error text.
+                guard terminated else {
+                    return ToolResult.error("\(appStr) is still running \(Int(quitTimeout))s after the quit request — most likely a 'Save changes?' sheet or another blocking dialog. Dismiss it (or force-quit the app) and retry.\(wipeData ? " Nothing was deleted." : "")")
+                }
 
                 guard wipeData else {
                     // Non-destructive path — never touch the filesystem without the flag.
@@ -265,8 +319,14 @@ struct AppTools {
                     return ToolResult.error("Cannot wipe data: could not resolve a bundle ID for '\(appStr)'")
                 }
 
-                // Give the app a beat to terminate and release file handles.
-                await AXExecutor.pause(0.5)
+                // The target process is gone, but a second instance of the same bundle
+                // shares the container; deleting it would pull the data out from under that one.
+                let othersRunning = await MainActor.run {
+                    NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).contains { !$0.isTerminated }
+                }
+                guard !othersRunning else {
+                    return ToolResult.error("Refusing to wipe data: another instance of \(bundleId) is still running and uses the same container. Quit it first. Nothing was deleted.")
+                }
 
                 let home = FileManager.default.homeDirectoryForCurrentUser
                 let dataDir = home

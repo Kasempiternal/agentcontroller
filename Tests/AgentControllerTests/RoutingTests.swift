@@ -30,14 +30,76 @@ final class RoutingTests: XCTestCase {
         XCTAssertEqual(app.bundleHint, "com.apple.TextEdit")
     }
 
-    func testIdentityFromArgumentsPrefersURL() {
+    /// The bug this guards: `{app: Safari, url: …}` used to become a URL identity, which
+    /// always routes to Chromium. The named app must win; the url is just where to go.
+    func testExplicitAppBeatsURL() {
         let args = JSONValue.object([
-            "app": .string("com.google.Chrome"),
+            "app": .string("Safari"),
             "url": .string("https://localhost:3000"),
         ])
         let id = TargetIdentity.from(arguments: args)
+        XCTAssertEqual(id?.kind, .application)
+        XCTAssertEqual(id?.raw, "Safari")
+        XCTAssertEqual(TargetIdentity.pageURL(arguments: args)?.absoluteString, "https://localhost:3000")
+    }
+
+    func testURLOnlyStillParsesAsURL() {
+        let id = TargetIdentity.from(arguments: .object(["url": .string("https://x.test")]))
         XCTAssertEqual(id?.kind, .url)
-        XCTAssertEqual(id?.raw, "https://localhost:3000")
+    }
+
+    func testSafariPrefixFrom280StillWorks() {
+        let args = JSONValue.object(["app": .string("safari:https://example.com/a")])
+        XCTAssertEqual(TargetIdentity.from(arguments: args)?.raw, "com.apple.Safari")
+        XCTAssertEqual(TargetIdentity.pageURL(arguments: args)?.absoluteString, "https://example.com/a")
+        // A custom-scheme app string is never misread as a browser prefix.
+        XCTAssertNil(TargetIdentity.splitBrowserPrefix("myapp:route"))
+    }
+
+    func testBrowserNamesResolve() {
+        XCTAssertTrue(BrowserResolver.isBrowserName("Safari"))
+        XCTAssertTrue(BrowserResolver.isBrowserName("com.apple.Safari"))
+        XCTAssertTrue(BrowserResolver.isBrowserName("google chrome"))
+        XCTAssertFalse(BrowserResolver.isBrowserName("TextEdit"))
+        // Safari ships with macOS, so it always resolves on a Mac.
+        XCTAssertEqual(BrowserResolver.named("safari")?.bundleId, "com.apple.Safari")
+        XCTAssertNil(BrowserResolver.named("netscape navigator"))
+    }
+
+    func testNamedBrowserIsNeverSubstituted() throws {
+        XCTAssertEqual(try BrowserResolver.choose(browser: "safari", app: nil, headless: nil),
+                       .browser(BrowserResolver.named("safari")!))
+        XCTAssertEqual(try BrowserResolver.choose(browser: nil, app: "com.apple.Safari", headless: nil),
+                       .browser(BrowserResolver.named("safari")!))
+        XCTAssertThrowsError(try BrowserResolver.choose(browser: "netscape navigator", app: nil, headless: nil))
+        XCTAssertEqual(try BrowserResolver.choose(browser: "headless", app: nil, headless: nil), .headless)
+    }
+
+    /// Owner's policy, decision 1: nothing named → the user's DEFAULT browser, never a
+    /// hidden Chromium. This is the "it always picks Chrome" bug, pinned.
+    func testNothingNamedGoesToDefaultBrowser() throws {
+        XCTAssertEqual(try BrowserResolver.choose(browser: nil, app: nil, headless: nil),
+                       .browser(BrowserResolver.systemDefault()!))
+        XCTAssertEqual(try BrowserResolver.choose(browser: "default", app: nil, headless: nil),
+                       .browser(BrowserResolver.systemDefault()!))
+    }
+
+    /// Owner's policy, decision 2: a named browser beats headless:true — on macOS the real
+    /// browser already runs in the background without focus. headless only when asked
+    /// for with no browser named.
+    func testNamedBrowserBeatsHeadlessFlag() throws {
+        let safari = BrowserResolver.named("safari")!
+        XCTAssertEqual(try BrowserResolver.choose(browser: "safari", app: nil, headless: true), .browser(safari))
+        XCTAssertEqual(try BrowserResolver.choose(browser: nil, app: "Safari", headless: true), .browser(safari))
+        XCTAssertEqual(try BrowserResolver.choose(browser: nil, app: nil, headless: true), .headless)
+    }
+
+    func testNavigationMatchToleratesRedirects() {
+        let want = URL(string: "https://example.com/docs")!
+        XCTAssertTrue(BrowserNavigator.matches("https://www.example.com/docs/", want))
+        XCTAssertTrue(BrowserNavigator.matches("https://example.com/docs/intro?x=1", want))
+        XCTAssertFalse(BrowserNavigator.matches("https://github.com/docs", want))
+        XCTAssertFalse(BrowserNavigator.matches(nil, want))
     }
 
     func testClassifyRoutesKnownIdentities() {
@@ -98,13 +160,13 @@ final class RoutingTests: XCTestCase {
 
     func testRunStepsOmitsNestedImages() {
         let image = ToolResult.image(base64: "aGVsbG8=", mimeType: "image/jpeg")
-        let compact = FlowTools.compactStepResult(image, includeNestedMedia: false)
-        XCTAssertEqual(compact["nestedMediaOmitted"]?.boolValue, true)
-        let text = compact["content"]?.arrayValue?.first?["text"]?.stringValue ?? ""
-        XCTAssertTrue(text.contains("omitted"))
-        XCTAssertFalse(text.contains("aGVsbG8="))
-        let kept = FlowTools.compactStepResult(image, includeNestedMedia: true)
-        XCTAssertEqual(kept["content"]?.arrayValue?.first?["type"]?.stringValue, "image")
+        let compact = FlowTools.flattenStepResult(image, includeNestedMedia: false).value
+        XCTAssertEqual(compact["omitted"]?.boolValue, true)
+        XCTAssertEqual(compact["mimeType"]?.stringValue, "image/jpeg")
+        XCTAssertNil(compact["data"], "the base64 payload must not survive")
+        let kept = FlowTools.flattenStepResult(image, includeNestedMedia: true).value
+        XCTAssertEqual(kept["type"]?.stringValue, "image")
+        XCTAssertEqual(kept["data"]?.stringValue, "aGVsbG8=")
     }
 
     func testInspectCapabilitiesIsRegisteredReadOnly() async throws {

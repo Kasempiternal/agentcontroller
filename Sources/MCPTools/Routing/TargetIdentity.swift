@@ -18,6 +18,14 @@ public struct TargetIdentity: Equatable, Sendable {
     public let pid: pid_t?
     public let bundleHint: String?
     public let udid: String?
+    /// The page a browser identity is meant to be on, when the caller (not the identity
+    /// string) knows it. `BrowserRouting` opens a page in the user's own Chrome and rewrites
+    /// the call to name only the app; without this the CDP backend has no way to tell which
+    /// of the user's tabs is the one that was just opened. Selects a tab, never navigates.
+    public private(set) var pageHint: URL?
+    /// The agent passed `headless:true`: the page belongs in the private headless Chromium,
+    /// whatever Chrome the user has open with a debug port.
+    public private(set) var headless = false
 
     public init(raw: String) {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -52,17 +60,55 @@ public struct TargetIdentity: Equatable, Sendable {
     /// Pull an identity out of a tool-arguments object. `app` is the historical
     /// field; `target`, `url`, and `udid` are accepted so a URL or simulator
     /// does not have to be stuffed into `app`.
+    ///
+    /// An explicit app ALWAYS beats `url`. `{app: "Safari", url: …}` means "this page, in
+    /// Safari": the url is where to navigate, not who to drive. The old order (url first)
+    /// turned every such call into a headless-Chromium session, which is how "use
+    /// Safari" kept ending up in Chrome.
     public static func from(arguments: JSONValue?) -> TargetIdentity? {
-        if let url = arguments?["url"]?.stringValue, parseURL(url) != nil {
-            return TargetIdentity(raw: url)
-        }
         if let udid = arguments?["udid"]?.stringValue, parseUDID(udid) != nil {
             return TargetIdentity(raw: udid)
         }
         for key in ["app", "target", "bundleId"] {
             if let value = arguments?[key]?.stringValue, !value.isEmpty {
+                // 2.8.0 spelled a Safari page as `safari:<url>`; keep that working.
+                if let (browser, _) = splitBrowserPrefix(value) {
+                    return TargetIdentity(raw: browser)
+                }
                 return TargetIdentity(raw: value)
             }
+        }
+        if let url = arguments?["url"]?.stringValue, parseURL(url) != nil {
+            return TargetIdentity(raw: url)
+        }
+        return nil
+    }
+
+    /// A copy that carries the routing hints read from the call's arguments.
+    public func routed(pageHint: URL?, headless: Bool) -> TargetIdentity {
+        var copy = self
+        copy.pageHint = pageHint
+        copy.headless = headless
+        return copy
+    }
+
+    /// The page an `app` + `url` (or `safari:<url>`) call wants the browser on.
+    public static func pageURL(arguments: JSONValue?) -> URL? {
+        for key in ["app", "target"] {
+            if let value = arguments?[key]?.stringValue, let (_, url) = splitBrowserPrefix(value) {
+                return url
+            }
+        }
+        if let raw = arguments?["url"]?.stringValue { return parseURL(raw) }
+        return nil
+    }
+
+    /// `safari:https://x` → ("com.apple.Safari", https://x). Only for browser prefixes,
+    /// so `myapp:route`-style strings are never misread.
+    static func splitBrowserPrefix(_ raw: String) -> (String, URL)? {
+        let prefixes = ["safari:": "com.apple.Safari", "chrome:": "com.google.Chrome"]
+        for (prefix, bundle) in prefixes where raw.lowercased().hasPrefix(prefix) {
+            if let url = parseURL(String(raw.dropFirst(prefix.count))) { return (bundle, url) }
         }
         return nil
     }
