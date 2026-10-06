@@ -1,4 +1,5 @@
 import Foundation
+import PortOwnership
 
 /// Talks to the AgentController menu-bar app over the same loopback JSON-RPC endpoint the
 /// MCP bridge uses. The CLI is deliberately a *client* of the running app rather than a
@@ -7,8 +8,14 @@ import Foundation
 /// AXUIElement itself would need its own TCC grants and would sit outside Focus Guard —
 /// which is the one thing this project promises never to happen.
 public struct Endpoint: Equatable {
-    public let port: String
+    public let port: UInt16
     public let token: String
+
+    /// Always 127.0.0.1: the port is a number by construction, so the file's contents can
+    /// only ever choose which loopback port, never which host.
+    var url: URL {
+        URL(string: "http://127.0.0.1:\(port)/mcp")!
+    }
 
     public static let portFile = "\(NSHomeDirectory())/.agentcontroller/mcp-port"
     public static let tokenFile = "\(NSHomeDirectory())/.agentcontroller/mcp-token"
@@ -52,15 +59,14 @@ public struct Endpoint: Equatable {
         guard let port = try? String(contentsOfFile: portFile, encoding: .utf8),
               let token = try? String(contentsOfFile: tokenFile, encoding: .utf8)
         else { throw Failure.notRunning }
-        let trimmedPort = port.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedPort.isEmpty, !trimmedToken.isEmpty else { throw Failure.notRunning }
-        return Endpoint(port: trimmedPort, token: trimmedToken)
+        // Parsed, not pasted into the URL: a port file reading "80@attacker.example" made
+        // the request — bearer token included — go to attacker.example.
+        guard let number = UInt16(port.trimmingCharacters(in: .whitespacesAndNewlines)), number > 0,
+              !trimmedToken.isEmpty else { throw Failure.notRunning }
+        return Endpoint(port: number, token: trimmedToken)
     }
 
-    /// One JSON-RPC round trip. Synchronous on purpose: a CLI process does one thing and
-    /// exits, so a semaphore around URLSession is simpler than making main async and
-    /// costs nothing here.
     /// Proxy-free, cache-free: this request carries the bearer token, and
     /// `URLSession.shared` would hand it to any system proxy that doesn't exempt 127.0.0.1.
     private static let session: URLSession = {
@@ -71,11 +77,27 @@ public struct Endpoint: Equatable {
         return URLSession(configuration: config)
     }()
 
-    public func call(method: String, params: [String: Any]?) throws -> [String: Any] {
+    /// One JSON-RPC round trip. Synchronous on purpose: a CLI process does one thing and
+    /// exits, so a semaphore around URLSession is simpler than making main async and
+    /// costs nothing here.
+    ///
+    /// `listenerIsOurs` is the check that the process on the port runs as this user; tests
+    /// stand in another user's listener, which they cannot create.
+    public func call(
+        method: String,
+        params: [String: Any]?,
+        listenerIsOurs: (UInt16) -> Bool = { LoopbackListener.owner(port: $0) != nil }
+    ) throws -> [String: Any] {
         var body: [String: Any] = ["jsonrpc": "2.0", "id": 1, "method": method]
         if let params { body["params"] = params }
 
-        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/mcp")!)
+        // A port the app gave up (it restarted, or its listener died) can be taken by any
+        // account on the Mac, which would then receive the token and the request.
+        guard listenerIsOurs(port) else {
+            throw Failure.unreachable("nothing running as you is listening on 127.0.0.1:\(port), so the request and its token were not sent")
+        }
+
+        var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")

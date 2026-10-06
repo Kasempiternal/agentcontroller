@@ -256,6 +256,38 @@ final class BackendTransportTests: XCTestCase {
         task.cancel(with: .goingAway, reason: nil)
     }
 
+    /// TOCTOU: ownership was checked at discovery, the socket opened later. If the port has
+    /// changed hands by the time we open (or reconnect), nothing may be sent to it.
+    func testOpenRefusesAPortThatIsNoLongerThisUsers() async throws {
+        let server = try LoopbackWebSocketServer()
+        let messages = Counter()
+        server.handler = { [self] text, reply in
+            messages.bump()
+            guard let (id, _) = request(text) else { return }
+            reply(answer(id))
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let original = CDPConnection.listenerIsOurs
+        CDPConnection.listenerIsOurs = { _ in false }   // the port changed hands
+        defer { CDPConnection.listenerIsOurs = original }
+
+        let connection = CDPConnection(url: server.url)
+        do {
+            try await connection.open()
+            XCTFail("opened a socket to a port another user now holds")
+        } catch let error as CDPError {
+            guard case .transport = error else { return XCTFail("wrong error: \(error)") }
+        }
+        XCTAssertEqual(messages.value, 0, "a message reached a listener that is not ours")
+
+        CDPConnection.listenerIsOurs = original          // ours again: opens normally
+        try await connection.open()
+        _ = try await connection.send(method: "Runtime.evaluate")
+        await connection.close()
+    }
+
     func testConnectionReceivesMessagesLargerThanTheDefaultLimit() async throws {
         let server = try LoopbackWebSocketServer()
         let blob = String(repeating: "y", count: 3_000_000)

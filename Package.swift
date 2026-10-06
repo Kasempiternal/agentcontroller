@@ -15,17 +15,24 @@ let package = Package(
         .executable(name: "agentcontroller-cli", targets: ["CLI"]),
     ],
     targets: [
-        // Foundation only, and no dependency on the tool targets: the CLI is a client of
-        // the running app's loopback endpoint, not a second implementation of the tools.
-        // One process owns the Accessibility and Screen Recording grants and enforces
-        // Focus Guard, and it stays that way.
+        // Foundation only (plus PortOwnership, which is Darwin only), and no dependency on
+        // the tool targets: the CLI is a client of the running app's loopback endpoint,
+        // not a second implementation of the tools. One process owns the Accessibility and
+        // Screen Recording grants and enforces Focus Guard, and it stays that way.
         //
         // Split in two so the parts worth testing are reachable: `main.swift` is
         // top-level code, which a test target cannot import, so argument parsing and the
         // transport live in a library and the executable is only the command dispatch.
         .target(
             name: "CLICore",
+            dependencies: ["PortOwnership"],
             path: "Sources/CLICore"
+        ),
+        // Who is listening on a loopback port. Shared by the CLI (before it sends the
+        // bearer token) and the CDP backend (before it attaches to a "user's Chrome").
+        .target(
+            name: "PortOwnership",
+            path: "Sources/PortOwnership"
         ),
         .executableTarget(
             name: "CLI",
@@ -56,12 +63,12 @@ let package = Package(
         ),
         .target(
             name: "MCPTools",
-            dependencies: ["AccessibilityEngine", "ScreenCapture", "MCPServer"],
+            dependencies: ["AccessibilityEngine", "ScreenCapture", "MCPServer", "PortOwnership"],
             path: "Sources/MCPTools"
         ),
         .testTarget(
             name: "AgentControllerTests",
-            dependencies: ["MCPServer", "AccessibilityEngine", "MCPTools", "ScreenCapture", "CLICore"],
+            dependencies: ["MCPServer", "AccessibilityEngine", "MCPTools", "ScreenCapture", "CLICore", "PortOwnership"],
             path: "Tests/AgentControllerTests"
         ),
     ]

@@ -116,14 +116,19 @@ struct SetupManager {
         PORT_FILE="$HOME/.agentcontroller/mcp-port"
         TOKEN_FILE="$HOME/.agentcontroller/mcp-token"
         while [ ! -f "$PORT_FILE" ] || [ ! -f "$TOKEN_FILE" ]; do sleep 1; done
-        read -r PORT < "$PORT_FILE"
-        read -r TOKEN < "$TOKEN_FILE"
         while IFS= read -r line; do
             [ -z "$line" ] && continue
+            # Re-read per request (builtins, no fork): the token rotates whenever the
+            # server's listener is rebuilt, and a value read once would 401 forever after.
+            read -r PORT < "$PORT_FILE"; read -r TOKEN < "$TOKEN_FILE"
+            # Digits only: "80@attacker.example" would make attacker.example the host.
+            case "$PORT" in ''|*[!0-9]*) continue ;; esac
+            # Token via a piped curl config, never argv, where `ps` shows it to every user.
             resp=$(printf '%s' "$line" | curl -s -o - -w '\\n%{http_code}' --max-time 180 \
+                -K <(printf 'header = "Authorization: Bearer %s"\\n' "$TOKEN") \
                 -X POST "http://127.0.0.1:${PORT}/mcp" \
                 -H "Content-Type: application/json" \
-                -H "Authorization: Bearer ${TOKEN}" -H "X-AC-Client: bash-$$" -H 'Expect:' --data-binary @- 2>/dev/null)
+                -H "X-AC-Client: bash-$$" -H 'Expect:' --data-binary @- 2>/dev/null)
             code=$(echo "$resp" | tail -1); body=$(echo "$resp" | sed '$d')
             [ "$code" = "204" ] && continue
             [ -n "$body" ] && echo "$body"

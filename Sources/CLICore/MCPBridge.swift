@@ -23,6 +23,7 @@ public final class MCPBridge: @unchecked Sendable {
 
     private let session: URLSession
     private let cache: EndpointCache
+    private let listener: ListenerCheck
     private let dispatcher = BoundedDispatcher(limit: MCPBridge.maxInFlight)
     private let output: LineOutput
     private let inFlight = DispatchGroup()
@@ -39,9 +40,10 @@ public final class MCPBridge: @unchecked Sendable {
     }
 
     /// `output` is the stdout writer in production; tests substitute a collector.
-    init(cache: EndpointCache, output: LineOutput) {
+    init(cache: EndpointCache, output: LineOutput, listener: ListenerCheck = ListenerCheck()) {
         self.cache = cache
         self.output = output
+        self.listener = listener
 
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = Self.requestDeadline
@@ -133,7 +135,23 @@ public final class MCPBridge: @unchecked Sendable {
     }
 
     private func send(_ line: Data, to endpoint: Endpoint, retried: Bool, completion: @escaping () -> Void) {
-        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(endpoint.port)/mcp")!)
+        // The endpoint is cached, and the port it names is free for any account on the Mac
+        // to take once the app restarts or its listener dies. Whatever holds it would get
+        // the bearer token and every tool call (typed text, scripts), and could answer in
+        // the app's name — so nothing goes to a listener that is not running as this user.
+        guard listener.isOurs(endpoint.port) else {
+            // Nothing was delivered: as with a refused connection, the files may name the
+            // app's new endpoint.
+            if !retried, let fresh = cache.refresh(replacing: endpoint) {
+                send(line, to: fresh, retried: true, completion: completion)
+                return
+            }
+            fail(line, "Nothing running as you is listening on AgentController's port \(endpoint.port), so the request was not sent. Is the menu bar app running?")
+            completion()
+            return
+        }
+
+        var request = URLRequest(url: endpoint.url)
         request.httpMethod = "POST"
         request.httpBody = line
         request.timeoutInterval = Self.requestDeadline

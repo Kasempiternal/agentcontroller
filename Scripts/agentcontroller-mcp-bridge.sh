@@ -52,6 +52,11 @@ read_endpoint() {
     TOKEN=""
     [ -f "$PORT_FILE" ] && read -r PORT < "$PORT_FILE"
     [ -f "$TOKEN_FILE" ] && read -r TOKEN < "$TOKEN_FILE"
+    # Digits only: the port is pasted into the URL, and "80@attacker.example" would make
+    # attacker.example the host the token is sent to.
+    case "$PORT" in
+        ''|*[!0-9]*) PORT="" ;;
+    esac
 }
 
 # First "id" member of the request line — string, number, or null. Empty result
@@ -107,10 +112,13 @@ handle_request() {
         # run_steps flow gets. curl's exit status survives as the pipeline status.
         # `Expect:` suppresses curl's `Expect: 100-continue` on bodies over 1 MiB, which
         # otherwise makes it wait a full second for an interim reply before sending them.
+        # The token goes in through a config read from a pipe (printf is a builtin): as a
+        # -H argument it sat in curl's argv for the whole request, where `ps` shows it to
+        # every account on the Mac.
         printf '%s' "$line" | curl -s -o - -w '\n%{http_code}' --max-time "$MAX_TIME" \
             -X POST "http://127.0.0.1:${port}/mcp" \
             -H "Content-Type: application/json" \
-            -H "Authorization: Bearer ${token}" \
+            -K <(printf 'header = "Authorization: Bearer %s"\n' "$token") \
             -H "X-AC-Client: ${CLIENT_ID}" \
             -H 'Expect:' \
             --data-binary @- 2>/dev/null

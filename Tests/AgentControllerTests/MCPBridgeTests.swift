@@ -1,5 +1,6 @@
 import XCTest
 import MCPServer
+import PortOwnership
 @testable import CLICore
 
 /// The pure parts of `agentcontroller mcp` (line framing, id recovery, the in-flight cap, the
@@ -158,7 +159,7 @@ final class MCPBridgeTests: XCTestCase {
 
     func testResolveCachesUntilToldOtherwise() throws {
         let reads = Counter()
-        let cache = EndpointCache(startupWait: 0) { reads.bump(); return Endpoint(port: "1", token: "t") }
+        let cache = EndpointCache(startupWait: 0) { reads.bump(); return Endpoint(port: 1, token: "t") }
         _ = try cache.resolve()
         _ = try cache.resolve()
         XCTAssertEqual(reads.value, 1, "the files are read once, not per request")
@@ -176,7 +177,7 @@ final class MCPBridgeTests: XCTestCase {
         }
         let started = Date()
         let endpoint = try cache.resolve()
-        XCTAssertEqual(endpoint, Endpoint(port: "4242", token: "secret"))
+        XCTAssertEqual(endpoint, Endpoint(port: 4242, token: "secret"))
         XCTAssertGreaterThan(Date().timeIntervalSince(started), 0.15)
     }
 
@@ -187,14 +188,14 @@ final class MCPBridgeTests: XCTestCase {
 
     func testRefreshReturnsChangedEndpointAndNilForAnUnchangedOne() throws {
         let box = Recorder<Endpoint>()
-        let old = Endpoint(port: "1", token: "old")
+        let old = Endpoint(port: 1, token: "old")
         let cache = EndpointCache(startupWait: 0) { box.values.last ?? old }
         box.add(old)
         XCTAssertEqual(try cache.resolve(), old)
 
         XCTAssertNil(cache.refresh(replacing: old), "same files, same failure: nothing to retry with")
 
-        let new = Endpoint(port: "2", token: "new")
+        let new = Endpoint(port: 2, token: "new")
         box.add(new)
         XCTAssertEqual(cache.refresh(replacing: old), new)
         XCTAssertEqual(try cache.resolve(), new, "the refreshed endpoint is now the cached one")
@@ -232,7 +233,7 @@ final class MCPBridgeTests: XCTestCase {
     }
 
     private func bridge(_ rig: Rig, output: LineOutput, token: String? = nil, port: UInt16? = nil) -> MCPBridge {
-        let endpoint = Endpoint(port: String(port ?? rig.port), token: token ?? rig.token)
+        let endpoint = Endpoint(port: port ?? rig.port, token: token ?? rig.token)
         return MCPBridge(cache: EndpointCache(startupWait: 0) { endpoint }, output: output)
     }
 
@@ -320,8 +321,8 @@ final class MCPBridgeTests: XCTestCase {
         let rig = try await makeRig()
         defer { Task { await rig.server.stop() } }
         let out = Collector()
-        let stale = Endpoint(port: String(rig.port), token: "stale")
-        let fresh = Endpoint(port: String(rig.port), token: rig.token)
+        let stale = Endpoint(port: rig.port, token: "stale")
+        let fresh = Endpoint(port: rig.port, token: rig.token)
         let reads = Counter()
         let cache = EndpointCache(startupWait: 0) {
             reads.bump()
@@ -339,8 +340,8 @@ final class MCPBridgeTests: XCTestCase {
         let rig = try await makeRig()
         defer { Task { await rig.server.stop() } }
         let out = Collector()
-        let dead = Endpoint(port: "1", token: rig.token)   // nothing listens on port 1
-        let live = Endpoint(port: String(rig.port), token: rig.token)
+        let dead = Endpoint(port: 1, token: rig.token)   // nothing listens on port 1
+        let live = Endpoint(port: rig.port, token: rig.token)
         let reads = Counter()
         let cache = EndpointCache(startupWait: 0) {
             reads.bump()
@@ -357,7 +358,7 @@ final class MCPBridgeTests: XCTestCase {
     /// notification must stay silent.
     func testUnreachableServerAnswersRequestsWithAnErrorUnderTheirID() async throws {
         let out = Collector()
-        let dead = Endpoint(port: "1", token: "t")
+        let dead = Endpoint(port: 1, token: "t")
         let relay = MCPBridge(cache: EndpointCache(startupWait: 0) { dead }, output: out)
 
         relay.accept(Data(#"{"jsonrpc":"2.0","id":"req-9","method":"tools/call","params":{}}"#.utf8))
@@ -379,6 +380,88 @@ final class MCPBridgeTests: XCTestCase {
         XCTAssertTrue(relay.waitUntilIdle(timeout: 5))
         XCTAssertEqual(out.ids(), [.int(3)])
         XCTAssertTrue(Wire.decode(out.lines[0])["error"]?["message"]?.stringValue?.contains("not running") == true)
+    }
+
+    // MARK: - Where the token may go
+
+    func testThePortFileCanOnlyChooseALoopbackPort() throws {
+        for contents in ["80@attacker.example", "4242@attacker.example:80", "99999", "0", "-1", "abc", ""] {
+            let (portFile, tokenFile, cleanup) = try tempFiles(port: contents, token: "secret")
+            defer { cleanup() }
+            XCTAssertThrowsError(try Endpoint.discover(portFile: portFile, tokenFile: tokenFile), contents)
+        }
+        let (portFile, tokenFile, cleanup) = try tempFiles(port: " 4242\n", token: "secret\n")
+        defer { cleanup() }
+        let endpoint = try Endpoint.discover(portFile: portFile, tokenFile: tokenFile)
+        XCTAssertEqual(endpoint.url.absoluteString, "http://127.0.0.1:4242/mcp")
+    }
+
+    /// The app restarted (or its listener died) and another account took the port the bridge
+    /// had cached. It must get neither the token nor the request, and the bridge must find the
+    /// app where the files now say it is.
+    func testATakenPortGetsNothingAndTheBridgeFollowsTheFiles() async throws {
+        let rig = try await makeRig()
+        defer { Task { await rig.server.stop() } }
+        let squatter = try FakeDebugPortServer()
+        try squatter.start()
+        defer { squatter.stop() }
+        let reads = Counter()
+        let cache = EndpointCache(startupWait: 0) {
+            reads.bump()
+            return Endpoint(port: reads.value == 1 ? squatter.port : rig.port, token: rig.token)
+        }
+        // The squatter runs in this process, so it stands in for another user's listener here.
+        let listener = ListenerCheck(owner: { $0 == squatter.port ? nil : LoopbackListener.owner(port: $0) })
+        let out = Collector()
+        let relay = MCPBridge(cache: cache, output: out, listener: listener)
+
+        relay.accept(Wire.request(1, "ping"))
+        XCTAssertTrue(relay.waitUntilIdle(timeout: 5))
+        XCTAssertEqual(squatter.connections, 0, "the request and its bearer token went to the squatter")
+        XCTAssertEqual(out.ids(), [.int(1)])
+        XCTAssertNotNil(Wire.decode(out.lines[0])["result"], "answered by the app on its new port")
+    }
+
+    func testATakenPortWithNoNewerEndpointIsAnErrorNotARequest() throws {
+        let squatter = try FakeDebugPortServer()
+        try squatter.start()
+        defer { squatter.stop() }
+        let out = Collector()
+        let relay = MCPBridge(
+            cache: EndpointCache(startupWait: 0) { Endpoint(port: squatter.port, token: "secret") },
+            output: out,
+            listener: ListenerCheck(owner: { _ in nil }))
+
+        relay.accept(Wire.request(4, "ping"))
+        XCTAssertTrue(relay.waitUntilIdle(timeout: 5))
+        XCTAssertEqual(squatter.connections, 0)
+        XCTAssertEqual(out.ids(), [.int(4)])
+        XCTAssertEqual(Wire.decode(out.lines[0])["error"]?["code"]?.intValue, -32000)
+
+        XCTAssertThrowsError(try Endpoint(port: squatter.port, token: "secret")
+            .call(method: "tools/list", params: nil, listenerIsOurs: { _ in false }))
+        XCTAssertEqual(squatter.connections, 0, "the CLI sent its token to the squatter")
+    }
+
+    /// Every request is checked, so the check must not walk every process each time.
+    func testTheListenerCheckRewalksOnlyWhenTheKnownProcessLetsGo() {
+        let walks = Counter()
+        let holding = Recorder<Bool>()
+        holding.add(true)
+        let check = ListenerCheck(
+            owner: { _ in walks.bump(); return 4242 },
+            holds: { pid, _ in pid == 4242 && holding.values.last == true })
+        XCTAssertTrue(check.isOurs(9))
+        XCTAssertTrue(check.isOurs(9))
+        XCTAssertTrue(check.isOurs(9))
+        XCTAssertEqual(walks.value, 1)
+
+        holding.add(false)
+        XCTAssertTrue(check.isOurs(9))
+        XCTAssertEqual(walks.value, 2, "a process that no longer listens is looked up again")
+
+        let nobody = ListenerCheck(owner: { _ in nil }, holds: { _, _ in true })
+        XCTAssertFalse(nobody.isOurs(9))
     }
 
     private func text(_ data: Data) -> String { String(decoding: data, as: UTF8.self) }

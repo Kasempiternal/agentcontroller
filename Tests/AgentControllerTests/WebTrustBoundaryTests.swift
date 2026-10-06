@@ -1,5 +1,6 @@
 import XCTest
 import MCPServer
+import PortOwnership
 #if canImport(Darwin)
 import Darwin
 #endif
@@ -137,7 +138,7 @@ final class WebTrustBoundaryTests: XCTestCase {
     // MARK: - Whose debug port it is
 
     func testOnlyAListenerOfThisUserOn127001PassesForTheUsersChrome() throws {
-        XCTAssertTrue(ChromeLauncher.listenerBelongsToCurrentUser(port: chrome.port))
+        XCTAssertNotNil(LoopbackListener.owner(port: chrome.port))
 
         // Ours, but on ::1 only: a connection to 127.0.0.1 on that port reaches someone else.
         let fd = socket(AF_INET6, SOCK_STREAM, 0)
@@ -156,10 +157,36 @@ final class WebTrustBoundaryTests: XCTestCase {
         }
         XCTAssertTrue(bound)
         let v6Port = UInt16(bigEndian: address.sin6_port)
-        XCTAssertFalse(ChromeLauncher.listenerBelongsToCurrentUser(port: v6Port))
+        XCTAssertNil(LoopbackListener.owner(port: v6Port))
 
         Darwin.close(fd)
-        XCTAssertFalse(ChromeLauncher.listenerBelongsToCurrentUser(port: v6Port), "nothing listens there at all")
+        XCTAssertNil(LoopbackListener.owner(port: v6Port), "nothing listens there at all")
+    }
+
+    // MARK: - Whose socket it is once connected
+
+    func testTheFarEndOfAnOpenConnectionIsFoundAmongThisUsersProcesses() async throws {
+        XCTAssertFalse(LoopbackListener.connectedPeersBelongToCurrentUser(port: chrome.port), "no connection yet: nothing vouches for the port")
+        let connection = CDPConnection(url: URL(string: "ws://127.0.0.1:\(chrome.port)/devtools/page/t1")!)
+        try await connection.open()
+        XCTAssertTrue(LoopbackListener.connectedPeersBelongToCurrentUser(port: chrome.port))
+        await connection.close()
+    }
+
+    /// The listener was checked at discovery and again just before the connect, but the port
+    /// can change hands in between. Whoever holds the connected socket gets one harmless
+    /// command, and the session never starts.
+    func testASessionWhoseSocketIsHeldByAnotherUserNeverStarts() async throws {
+        servePage("https://bank.test/login", document: Box("loader-bank"))
+        let original = CDPConnection.peerIsOurs
+        CDPConnection.peerIsOurs = { _ in false }
+        defer { CDPConnection.peerIsOurs = original }
+
+        do {
+            _ = try await WebCDPBackend.shared.snapshot(identity: TargetIdentity(raw: "https://bank.test/login"), interactiveOnly: true)
+            XCTFail("a session started on a socket another user holds")
+        } catch {}
+        XCTAssertEqual(Set(chrome.methods), ["Page.enable"], "more than the opening handshake reached the socket")
     }
 
     // MARK: - Element ids belong to one document

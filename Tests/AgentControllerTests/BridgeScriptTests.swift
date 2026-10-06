@@ -74,4 +74,61 @@ final class BridgeScriptTests: XCTestCase {
         }
         XCTAssertTrue(left.isEmpty, "in-flight curl processes outlived the bridge: \(left)")
     }
+
+    private func arguments(of pid: Int32) -> String {
+        let ps = Process()
+        ps.executableURL = URL(fileURLWithPath: "/bin/ps")
+        ps.arguments = ["-ww", "-o", "args=", "-p", "\(pid)"]
+        let out = Pipe()
+        ps.standardOutput = out
+        ps.standardError = FileHandle.nullDevice
+        try? ps.run()
+        ps.waitUntilExit()
+        return String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+    }
+
+    /// `ps` shows every account on the Mac each process's arguments, so the bearer token must
+    /// not be among curl's — and must still reach the server.
+    func testTheTokenReachesTheServerButNotCurlsArguments() async throws {
+        let provider = FakeProvider()
+        let handler = MCPProtocolHandler(toolProvider: provider)
+        let server = HTTPServer { body, clientId in await handler.handleRequest(body, clientId: clientId) }
+        let port = try await server.start()
+        defer { Task { await server.stop() } }
+        let token = await server.authToken
+
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("ac-bridge-\(UUID().uuidString)")
+        let state = home.appendingPathComponent(".agentcontroller")
+        try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        try "\(port)".write(to: state.appendingPathComponent("mcp-port"), atomically: true, encoding: .utf8)
+        try token.write(to: state.appendingPathComponent("mcp-token"), atomically: true, encoding: .utf8)
+
+        let bridge = Process()
+        bridge.executableURL = URL(fileURLWithPath: "/bin/bash")
+        bridge.arguments = [script.path]
+        bridge.environment = ["HOME": home.path, "TMPDIR": home.path, "PATH": "/usr/bin:/bin"]
+        let stdin = Pipe()
+        bridge.standardInput = stdin
+        bridge.standardOutput = FileHandle.nullDevice
+        bridge.standardError = FileHandle.nullDevice
+        try bridge.run()
+        defer { if bridge.isRunning { kill(bridge.processIdentifier, SIGKILL) } }
+
+        // A call the fake tool holds open, so its curl is still running when inspected.
+        stdin.fileHandleForWriting.write(Wire.call(1, "slow", tag: "held") + Data([0x0A]))
+        let authorized = await eventually { provider.started.contains("held") }
+        XCTAssertTrue(authorized, "the server never ran the call: the token did not reach it")
+
+        let curls = pids(matching: "127.0.0.1:\(port)/mcp")
+        XCTAssertFalse(curls.isEmpty, "no curl in flight to inspect")
+        for pid in curls {
+            let argv = arguments(of: pid)
+            XCTAssertFalse(argv.isEmpty)
+            XCTAssertFalse(argv.contains(token), "curl's arguments carry the bearer token: \(argv)")
+        }
+
+        kill(bridge.processIdentifier, SIGTERM)
+        bridge.waitUntilExit()
+    }
 }

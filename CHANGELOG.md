@@ -28,6 +28,12 @@ All notable changes to AgentController are documented here. The format follows
 - Out-of-range numbers from an agent or a debug port no longer crash the server.
 - The bearer token rotates whenever the listener is rebuilt, and all loopback traffic
   (CLI, CDP, Blender) bypasses system proxies.
+- The MCP bridge and CLI send nothing (no token, no request) to a port unless one of this
+  user's processes is listening on it; the port file can only name a loopback port
+  (`80@attacker.example` used to redirect the token); the bash bridges no longer put the
+  token in curl's arguments, where `ps` shows it to every account.
+- CDP re-verifies the debug port's owner at every connect and confirms the far end of the
+  established socket belongs to this user before sending any agent data.
 
 ### Breaking (since 2.x)
 - `run_steps` result entries are `{tool, isError, result, notices?}` (no nested MCP

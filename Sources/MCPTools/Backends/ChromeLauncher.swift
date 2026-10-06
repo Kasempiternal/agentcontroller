@@ -1,4 +1,5 @@
 import Foundation
+import PortOwnership
 import MCPServer
 #if canImport(Darwin)
 import Darwin
@@ -102,54 +103,14 @@ enum ChromeLauncher {
     /// candidate before it ever checked whether anything was listening.
     static func findExistingDebugPort() async -> UInt16? {
         for port in candidatePorts() {
+            // Another account can sit on 9222 while the user's Chrome is closed and answer
+            // /json/version like a browser; attaching would hand it every key the agent types,
+            // every script it runs and every page it reads.
             guard await SocketProbe.connectAsync(port: port, timeoutMs: 80),
-                  listenerBelongsToCurrentUser(port: port) else { continue }
+                  LoopbackListener.owner(port: port) != nil else { continue }
             if let browser = await browserName(port: port), isBrowser(browser) { return port }
         }
         return nil
-    }
-
-    /// Whether a process running as this user is what answers 127.0.0.1:`port`. A loopback
-    /// port belongs to whoever binds it first: another account on the Mac (or a service
-    /// account) can sit on 9222 while the user's Chrome is closed and answer /json/version
-    /// like a browser, and attaching to it hands that process every key the agent types,
-    /// every script it runs and every page it reads. libproc only shows this user's
-    /// processes' sockets, so "not found" means "someone else's". It does not tell this
-    /// user's own processes apart — a sandboxed app of theirs could still pose as Chrome.
-    static func listenerBelongsToCurrentUser(port: UInt16) -> Bool {
-        let uid = UInt32(getuid())
-        let needed = proc_listpids(UInt32(PROC_UID_ONLY), uid, nil, 0)
-        guard needed > 0 else { return false }
-        // Headroom for processes started between the sizing call and the listing.
-        var pids = [pid_t](repeating: 0, count: Int(needed) / MemoryLayout<pid_t>.stride + 64)
-        let filled = pids.withUnsafeMutableBytes {
-            proc_listpids(UInt32(PROC_UID_ONLY), uid, $0.baseAddress, Int32($0.count))
-        }
-        let loopback = in_addr_t(0x7F00_0001).bigEndian
-        for pid in pids.prefix(max(Int(filled), 0) / MemoryLayout<pid_t>.stride) where pid > 0 {
-            let fdBytes = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
-            guard fdBytes > 0 else { continue }
-            var fds = [proc_fdinfo](repeating: proc_fdinfo(), count: Int(fdBytes) / MemoryLayout<proc_fdinfo>.stride + 16)
-            let listed = fds.withUnsafeMutableBytes {
-                proc_pidinfo(pid, PROC_PIDLISTFDS, 0, $0.baseAddress, Int32($0.count))
-            }
-            for fd in fds.prefix(max(Int(listed), 0) / MemoryLayout<proc_fdinfo>.stride)
-            where fd.proc_fdtype == UInt32(PROX_FDTYPE_SOCKET) {
-                var info = socket_fdinfo()
-                let size = Int32(MemoryLayout<socket_fdinfo>.size)
-                guard proc_pidfdinfo(pid, fd.proc_fd, PROC_PIDFDSOCKETINFO, &info, size) == size,
-                      info.psi.soi_kind == Int32(SOCKINFO_TCP),
-                      info.psi.soi_proto.pri_tcp.tcpsi_state == Int32(TSI_S_LISTEN) else { continue }
-                let local = info.psi.soi_proto.pri_tcp.tcpsi_ini
-                guard UInt16(bigEndian: UInt16(truncatingIfNeeded: local.insi_lport)) == port,
-                      local.insi_vflag & UInt8(INI_IPV4) != 0 else { continue }
-                // Only a socket that receives a connection to 127.0.0.1 counts: one of ours
-                // on ::1 does not stop someone else holding 127.0.0.1 on the same port.
-                let address = local.insi_laddr.ina_46.i46a_addr4.s_addr
-                if address == loopback || address == INADDR_ANY { return true }
-            }
-        }
-        return false
     }
 
     /// The DevTools socket a debug port advertised, accepted only on that same port of

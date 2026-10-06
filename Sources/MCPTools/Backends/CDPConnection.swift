@@ -1,5 +1,6 @@
 import Foundation
 import MCPServer
+import PortOwnership
 
 /// Every way a CDP call can fail, split by what the caller should do next.
 /// `transport` means the socket is gone — drop the connection and reconnect; everything
@@ -124,16 +125,44 @@ actor CDPConnection {
 
     var isOpen: Bool { task != nil && closedReason == nil }
 
+    /// Is a process of THIS user listening on the port? Swappable so tests can stand in
+    /// another user's listener, which they cannot create.
+    nonisolated(unsafe) static var listenerIsOurs: @Sendable (UInt16) -> Bool = {
+        LoopbackListener.owner(port: $0) != nil
+    }
+
+    /// Is the far end of every connection this process has to the port held by a process of
+    /// THIS user? Swappable for the same reason as `listenerIsOurs`.
+    nonisolated(unsafe) static var peerIsOurs: @Sendable (UInt16) -> Bool = {
+        LoopbackListener.connectedPeersBelongToCurrentUser(port: $0)
+    }
+
     /// `enablingPage: false` for the browser-level endpoint, which has no Page domain.
     func open(enablingPage: Bool = true) async throws {
+        guard let raw = url.port, let port = UInt16(exactly: raw) else {
+            throw CDPError.transport("DevTools socket URL \(url.absoluteString) names no port")
+        }
+        // Re-verified at every open and reconnect, not only at discovery: between the
+        // discovery check and this moment Chrome can exit and another account can bind the
+        // freed port, and everything sent on this socket (typed text, page JS) would go to
+        // it. This narrows the window to the WebSocket handshake itself.
+        if !Self.listenerIsOurs(port) {
+            throw CDPError.transport("The DevTools port \(port) is no longer held by one of this user's processes; refusing to connect.")
+        }
         let task = ChromeLauncher.loopbackSession.webSocketTask(with: url)
         task.maximumMessageSize = Self.maximumMessageSize
         self.task = task
         task.resume()
         reader = Task { await self.readLoop(task) }
-        guard enablingPage else { return }
         do {
-            _ = try await send(method: "Page.enable")
+            // A first round trip that carries nothing of the agent's. Once it is answered the
+            // socket is up, and the process actually holding its far end — not whoever was
+            // listening a moment before the connect — is checked before anything that
+            // matters is sent. That closes the handshake window the listener check leaves.
+            _ = try await send(method: enablingPage ? "Page.enable" : "Browser.getVersion")
+            guard Self.peerIsOurs(port) else {
+                throw CDPError.transport("The DevTools socket on port \(port) is not held by one of this user's processes; closed before anything was sent on it.")
+            }
         } catch {
             close(reason: "open failed")
             throw error
