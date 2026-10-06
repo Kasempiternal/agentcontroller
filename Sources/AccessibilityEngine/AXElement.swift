@@ -38,7 +38,7 @@ public final class AXElement: @unchecked Sendable {
 
     /// Unwrap a CF array of AXUIElement refs into Swift `AXElement` wrappers.
     /// Shared helper for `children`, `windows`, and batched tree reads.
-    static func elements(fromCFArray cf: CFTypeRef?) -> [AXElement] {
+    public static func elements(fromCFArray cf: CFTypeRef?) -> [AXElement] {
         guard let cf, CFGetTypeID(cf) == CFArrayGetTypeID() else { return [] }
         let array = cf as! CFArray
         let count = CFArrayGetCount(array)
@@ -51,27 +51,78 @@ public final class AXElement: @unchecked Sendable {
 
     // MARK: - Attributes
 
-    /// Bounded retry for transient AX failures. `AXUIElementCopyAttributeValue` /
-    /// `AXUIElementCopyMultipleAttributeValues` return `.cannotComplete` when the
-    /// target app is momentarily busy (mid-layout, main thread blocked) — a one-shot
-    /// read then sees nil and callers report a phantom "element not found". We retry
-    /// ONLY `.cannotComplete` (never `.attributeUnsupported` / `.noValue` /
-    /// `.invalidUIElement`, which are stable answers) with a short backoff. The first
-    /// attempt is unconditional, so success-path latency is unchanged.
-    private static let transientRetryAttempts = 3
-    private static let transientRetryBackoffMicros: useconds_t = 18_000  // ~18ms
-
-    public func attribute<T>(_ name: String) -> T? {
-        var value: CFTypeRef?
-        var result = AXUIElementCopyAttributeValue(ref, name as CFString, &value)
+    /// Every read funnels through here so the busy-retry and the stall breaker are
+    /// decided in one place. `call` performs one AX copy and reports its `AXError`.
+    ///
+    /// `.cannotComplete` means two different things and they need opposite answers:
+    /// - it comes back in a few ms when the target is momentarily busy (mid-layout,
+    ///   main thread blocked) — worth a short retry, or callers report a phantom
+    ///   "element not found";
+    /// - it comes back only after the whole messaging timeout when the target is hung —
+    ///   retrying that three times turned the 2s timeout into ~6s per attribute, and a
+    ///   walk reads thousands of attributes.
+    /// The elapsed time of the failed call tells them apart (`AXTransientRetry`). A stall
+    /// also opens the per-pid `AXStallBreaker`, so the rest of a walk against a hung app
+    /// fails in microseconds instead of paying the timeout once per node.
+    private func guardedRead<V>(_ call: (inout V?) -> AXError) -> V? {
+        let pid = breakerPID
+        if let pid, AXStallBreaker.shared.isOpen(pid: pid) { return nil }
         var attempt = 1
-        while result == .cannotComplete && attempt < Self.transientRetryAttempts {
-            usleep(Self.transientRetryBackoffMicros)
-            value = nil
-            result = AXUIElementCopyAttributeValue(ref, name as CFString, &value)
+        while true {
+            var out: V?
+            let started = AXTransientRetry.nowNanos()
+            let result = call(&out)
+            if result == .success { return out }
+            let elapsed = AXTransientRetry.nowNanos() &- started
+            if AXTransientRetry.isStall(result: result, elapsedNanos: elapsed) {
+                if let pid { AXStallBreaker.shared.trip(pid: pid) }
+                return nil
+            }
+            guard AXTransientRetry.shouldRetry(result: result, elapsedNanos: elapsed, attempt: attempt) else {
+                return nil
+            }
+            usleep(AXTransientRetry.backoffMicros)
             attempt += 1
         }
-        guard result == .success, let value else { return nil }
+    }
+
+    /// The owning process, for breaker bookkeeping. Nil for the system-wide element,
+    /// which has no single pid to quarantine.
+    private var breakerPID: pid_t? {
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(ref, &pid) == .success, pid > 0 else { return nil }
+        return pid
+    }
+
+    public enum Liveness: Sendable, Equatable {
+        case alive
+        /// The app answered that this element no longer exists (`.invalidUIElement` and kin).
+        case gone
+        /// The app did not answer: its stall breaker is open, or it replied `.cannotComplete`
+        /// (busy mid-layout, or hung). Says nothing about the element itself.
+        case unresponsive
+    }
+
+    /// Why a read of this element came back empty, from one role read with no retry.
+    /// The retrying reads cannot tell a destroyed element from an app that did not answer,
+    /// and the two need opposite recoveries (re-snapshot vs. try again).
+    public func liveness() -> Liveness {
+        if let pid = breakerPID, AXStallBreaker.shared.isOpen(pid: pid) { return .unresponsive }
+        var out: CFTypeRef?
+        switch AXUIElementCopyAttributeValue(ref, kAXRoleAttribute as CFString, &out) {
+        case .success: return .alive
+        case .cannotComplete: return .unresponsive
+        default: return .gone
+        }
+    }
+
+    /// False once the process has exited. `EPERM` still means "exists".
+    public static func isProcessAlive(_ pid: pid_t) -> Bool {
+        kill(pid, 0) == 0 || errno != ESRCH
+    }
+
+    public func attribute<T>(_ name: String) -> T? {
+        let value: CFTypeRef? = guardedRead { AXUIElementCopyAttributeValue(ref, name as CFString, &$0) }
         return value as? T
     }
 
@@ -82,24 +133,15 @@ public final class AXElement: @unchecked Sendable {
     /// Batched multi-attribute read via AXUIElementCopyMultipleAttributeValues.
     /// Missing and unsupported attributes are absent from the returned dict.
     public func readAttributes(_ names: [String]) -> [String: CFTypeRef] {
-        var values: CFArray?
-        // rawValue 0: return CFError markers for missing attrs instead of bailing on first error
-        var result = AXUIElementCopyMultipleAttributeValues(
-            ref, names as CFArray, AXCopyMultipleAttributeOptions(rawValue: 0), &values
-        )
-        // Same transient-busy retry as `attribute(_:)`. This is the hot path (one call
-        // per node in tree/search), so a flaky `.cannotComplete` here would otherwise
-        // drop a whole node's attributes.
-        var attempt = 1
-        while result == .cannotComplete && attempt < Self.transientRetryAttempts {
-            usleep(Self.transientRetryBackoffMicros)
-            values = nil
-            result = AXUIElementCopyMultipleAttributeValues(
-                ref, names as CFArray, AXCopyMultipleAttributeOptions(rawValue: 0), &values
+        // rawValue 0: return CFError markers for missing attrs instead of bailing on first error.
+        // This is the hot path (one call per node in tree/search), so a flaky
+        // `.cannotComplete` here would otherwise drop a whole node's attributes.
+        let values: CFArray? = guardedRead {
+            AXUIElementCopyMultipleAttributeValues(
+                ref, names as CFArray, AXCopyMultipleAttributeOptions(rawValue: 0), &$0
             )
-            attempt += 1
         }
-        guard result == .success, let values else { return [:] }
+        guard let values else { return [:] }
         let count = CFArrayGetCount(values)
         var out: [String: CFTypeRef] = [:]
         for i in 0..<min(count, names.count) {
@@ -120,16 +162,7 @@ public final class AXElement: @unchecked Sendable {
     /// fractional number → .double. AXValue point/size and other types yield nil.
     /// `stringValue: String?` is unchanged for back-compat.
     public var valueJSON: JSONValue? {
-        var raw: CFTypeRef?
-        var result = AXUIElementCopyAttributeValue(ref, kAXValueAttribute as CFString, &raw)
-        var attempt = 1
-        while result == .cannotComplete && attempt < Self.transientRetryAttempts {
-            usleep(Self.transientRetryBackoffMicros)
-            raw = nil
-            result = AXUIElementCopyAttributeValue(ref, kAXValueAttribute as CFString, &raw)
-            attempt += 1
-        }
-        guard result == .success, let raw else { return nil }
+        let raw: CFTypeRef? = guardedRead { AXUIElementCopyAttributeValue(ref, kAXValueAttribute as CFString, &$0) }
         return AXValueExtract.jsonValue(raw)
     }
 
@@ -204,9 +237,7 @@ public final class AXElement: @unchecked Sendable {
     // MARK: - Actions
 
     public var actionNames: [String] {
-        var names: CFArray?
-        let result = AXUIElementCopyActionNames(ref, &names)
-        guard result == .success, let names else { return [] }
+        let names: CFArray? = guardedRead { AXUIElementCopyActionNames(ref, &$0) }
         return names as? [String] ?? []
     }
 
@@ -321,5 +352,74 @@ public enum AXValueExtract {
             return nil
         }
         return nil
+    }
+}
+
+/// When a failed AX read is worth repeating, decided from how long the failed call took.
+/// Pure so the thresholds are testable without a hung app.
+enum AXTransientRetry {
+    static let maxAttempts = 3
+    static let backoffMicros: useconds_t = 18_000
+
+    /// A `.cannotComplete` that came back faster than this was the target being busy
+    /// right now; one that took longer was waiting on the messaging timeout.
+    static let busyCeilingNanos: UInt64 = 50_000_000
+
+    /// A `.cannotComplete` that took at least this long counts as a stall: 90% of the
+    /// default tool timeout (2s). A hung app only answers when the messaging timeout
+    /// expires, so it still trips the breaker on its first read. The old floor (0.5s)
+    /// also caught apps that were merely SLOW — Safari mid-page-load answers in 0.5-1.9s —
+    /// and the open breaker then failed every read for 1.5s: a snapshot taken right after
+    /// opening a page came back with 0 elements, not even the menu bar.
+    static let stallFloorNanos: UInt64 = 1_800_000_000
+
+    static func nowNanos() -> UInt64 { DispatchTime.now().uptimeNanoseconds }
+
+    /// Only `.cannotComplete` is ever retried; `.attributeUnsupported` / `.noValue` /
+    /// `.invalidUIElement` are stable answers.
+    static func shouldRetry(result: AXError, elapsedNanos: UInt64, attempt: Int) -> Bool {
+        result == .cannotComplete && elapsedNanos < busyCeilingNanos && attempt < maxAttempts
+    }
+
+    static func isStall(result: AXError, elapsedNanos: UInt64) -> Bool {
+        result == .cannotComplete && elapsedNanos >= stallFloorNanos
+    }
+}
+
+/// Per-pid circuit breaker for hung target apps.
+///
+/// A hung app answers every read only after the messaging timeout, so a 600-node walk
+/// costs 600 x 2s. After one stall, reads against that pid return nothing immediately for
+/// `window` seconds; the first read after the window is the probe that finds out whether
+/// the app recovered. Callers already treat an empty read as "unreadable", so no new
+/// failure mode is introduced — the walk just ends quickly instead of eventually.
+final class AXStallBreaker: @unchecked Sendable {
+    static let shared = AXStallBreaker()
+    static let windowNanos: UInt64 = 1_500_000_000
+
+    private let lock = NSLock()
+    private var openUntil: [pid_t: UInt64] = [:]
+    private let clock: @Sendable () -> UInt64
+
+    init(clock: @escaping @Sendable () -> UInt64 = { AXTransientRetry.nowNanos() }) {
+        self.clock = clock
+    }
+
+    func isOpen(pid: pid_t) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let until = openUntil[pid] else { return false }
+        if clock() < until { return true }
+        openUntil[pid] = nil
+        return false
+    }
+
+    func trip(pid: pid_t) {
+        lock.lock()
+        defer { lock.unlock() }
+        let now = clock()
+        // Expired entries for other pids would otherwise accumulate across a long session.
+        openUntil = openUntil.filter { $0.value > now }
+        openUntil[pid] = now &+ Self.windowNanos
     }
 }

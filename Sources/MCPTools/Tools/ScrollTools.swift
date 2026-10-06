@@ -4,6 +4,31 @@ import MCPServer
 import AccessibilityEngine
 
 struct ScrollTools {
+    /// Termination rule for the scroll_until_visible loop, extracted so it is testable
+    /// without an app. The old loop used `break` inside a `switch`, which only leaves the
+    /// switch: once maxScrolls was spent it fell back to the top of the `while` and ran
+    /// back-to-back tree searches — each a full AX walk — until the 20s deadline.
+    static func canScrollAgain(scrolls: Int, maxScrolls: Int, now: Date, deadline: Date) -> Bool {
+        scrolls < maxScrolls && now < deadline
+    }
+
+    /// One look at the target during scroll_until_visible.
+    enum Visibility: Sendable {
+        case visible
+        /// In the tree but outside the window. `center` is where to aim the wheel; nil
+        /// when no window frame is known.
+        case offscreen(center: CGPoint?)
+        /// Not in the tree (yet) — a lazily-built list may materialize rows as it scrolls.
+        case notFound(center: CGPoint?)
+
+        var center: CGPoint? {
+            switch self {
+            case .visible: return nil
+            case .offscreen(let c), .notFound(let c): return c
+            }
+        }
+    }
+
     static func register(in registry: ToolRegistry) {
         registry.register(.init(
             name: "scroll",
@@ -30,20 +55,9 @@ struct ScrollTools {
                 let deltaX = args?["deltaX"]?.intValue ?? 0
                 let foreground = args?["foreground"]?.boolValue ?? false
 
-                var activated = false
-                if foreground {
-                    activated = await MainActor.run { AppManager.activate(pid: pid) }
-                    await AXExecutor.pause(0.1)
+                return try await InteractionTools.coordinateInput(pid: pid, x: x, y: y, foreground: foreground) { target, point in
+                    InputSimulator.scroll(at: point, deltaX: Int32(deltaX), deltaY: Int32(deltaY), pid: target)
                 }
-                let targetPid: pid_t? = foreground ? nil : pid
-                await AXExecutor.lane(pid: pid, foreground: foreground).run {
-                    InputSimulator.scroll(at: CGPoint(x: x, y: y), deltaX: Int32(deltaX), deltaY: Int32(deltaY), pid: targetPid)
-                }
-                var extra: [String: JSONValue] = ["activated": .bool(activated)]
-                if !foreground, let warning = await offTargetWarning(pid: pid, x: x, y: y) {
-                    extra["warning"] = .string(warning)
-                }
-                return ToolResult.action(success: true, method: foreground ? "coordinate" : "coordinate-pid", extra: extra)
             }
         ))
 
@@ -58,7 +72,7 @@ struct ScrollTools {
                     "startY": .object(["type": .string("number"), "description": .string("Start Y coordinate")]),
                     "endX": .object(["type": .string("number"), "description": .string("End X coordinate")]),
                     "endY": .object(["type": .string("number"), "description": .string("End Y coordinate")]),
-                    "duration": .object(["type": .string("number"), "description": .string("Duration in seconds (default 0.3)")]),
+                    "duration": .object(["type": .string("number"), "description": .string("Duration in seconds (default 0.3, clamped to 0-5)")]),
                     "foreground": .object(["type": .string("boolean"), "description": .string("Default false (background-safe). When true, activates the app and drags via the global HID stream (moves the real cursor).")]),
                 ]),
                 "required": .array([.string("app"), .string("startX"), .string("startY"), .string("endX"), .string("endY")]),
@@ -71,23 +85,11 @@ struct ScrollTools {
                       let ey = args?["endY"]?.doubleValue else {
                     throw ToolError.missingParameter("startX, startY, endX, endY")
                 }
-                let duration = args?["duration"]?.doubleValue ?? 0.3
+                let duration = InputSimulator.clampedGestureDuration(args?["duration"]?.doubleValue ?? 0.3)
                 let foreground = args?["foreground"]?.boolValue ?? false
 
-                var activated = false
-                if foreground {
-                    activated = await MainActor.run { AppManager.activate(pid: pid) }
-                    await AXExecutor.pause(0.1)
-                }
-                let targetPid: pid_t? = foreground ? nil : pid
-                await AXExecutor.lane(pid: pid, foreground: foreground).run {
-                    InputSimulator.drag(from: CGPoint(x: sx, y: sy), to: CGPoint(x: ex, y: ey), duration: duration, pid: targetPid)
-                }
-                var extra: [String: JSONValue] = ["activated": .bool(activated)]
-                if !foreground, let warning = await offTargetWarning(pid: pid, x: sx, y: sy) {
-                    extra["warning"] = .string(warning)
-                }
-                return ToolResult.action(success: true, method: foreground ? "coordinate" : "coordinate-pid", extra: extra)
+                return try await InteractionTools.dragInput(
+                    pid: pid, from: CGPoint(x: sx, y: sy), to: CGPoint(x: ex, y: ey), duration: duration, foreground: foreground)
             }
         ))
 
@@ -116,26 +118,14 @@ struct ScrollTools {
                 }
                 let foreground = args?["foreground"]?.boolValue ?? false
 
-                var activated = false
-                if foreground {
-                    activated = await MainActor.run { AppManager.activate(pid: pid) }
-                    await AXExecutor.pause(0.1)
-                }
-                let targetPid: pid_t? = foreground ? nil : pid
-                await AXExecutor.lane(pid: pid, foreground: foreground).run {
-                    InputSimulator.drag(from: CGPoint(x: fx, y: fy), to: CGPoint(x: tx, y: ty), duration: 0.5, pid: targetPid)
-                }
-                var extra: [String: JSONValue] = ["activated": .bool(activated)]
-                if !foreground, let warning = await offTargetWarning(pid: pid, x: fx, y: fy) {
-                    extra["warning"] = .string(warning)
-                }
-                return ToolResult.action(success: true, method: foreground ? "coordinate" : "coordinate-pid", extra: extra)
+                return try await InteractionTools.dragInput(
+                    pid: pid, from: CGPoint(x: fx, y: fy), to: CGPoint(x: tx, y: ty), duration: 0.5, foreground: foreground)
             }
         ))
 
         registry.register(.init(
             name: "scroll_until_visible",
-            description: "Scroll until an element matching the selector is on-screen. BACKGROUND-SAFE: prefers the native one-call AXScrollToVisible (pure AX, no input events); the wheel-scroll fallback is delivered to the target PID without warping the cursor or activating the app. Re-checks the element's frame against the focused window bounds, up to maxScrolls/timeout. Returns offscreen:true if the element exists but stays outside the window; errors if never found. Set foreground:true only for apps that ignore PID-targeted scrolls (activates + global HID, moves the real cursor).",
+            description: "Scroll until an element matching the selector is on-screen. BACKGROUND-SAFE: prefers the native one-call AXScrollToVisible (pure AX, no input events); the wheel-scroll fallback is delivered to the target PID without warping the cursor or activating the app. Re-checks the element's frame against the focused window bounds, up to maxScrolls/timeout. ERRORS if the element never becomes visible — the message says whether it was never in the tree or was in the tree but stayed outside the window. Set foreground:true only for apps that ignore PID-targeted scrolls (activates + global HID, moves the real cursor).",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object(SelectorSchema.merged(into: [
@@ -151,100 +141,75 @@ struct ScrollTools {
             handler: { args in
                 let pid = try args!.resolvePID()
                 let direction = args?["direction"]?.stringValue ?? "down"
-                let maxScrolls = args?["maxScrolls"]?.intValue ?? 20
+                let maxScrolls = max(0, args?["maxScrolls"]?.intValue ?? 20)
                 let timeout = args?["timeout"]?.doubleValue ?? 20.0
                 let criteria = AXElementSearchCriteria(from: args, maxResults: 1)
                 let foreground = args?["foreground"]?.boolValue ?? false
+                let scope = args?["scope"]?.stringValue ?? "window"
 
                 // Background-safe: never activate. The AXScrollToVisible primary path and
                 // the PID-targeted wheel fallback both run without bringing the app
-                // forward or moving the cursor. foreground:true restores activate + global
-                // HID scrolls for apps that ignore PID-targeted scrolls.
-                var activated = false
-                if foreground {
-                    activated = await MainActor.run { AppManager.activate(pid: pid) }
-                    await AXExecutor.pause(0.1)
-                }
-                let targetPid: pid_t? = foreground ? nil : pid
-
+                // forward or moving the cursor. foreground:true makes each wheel step
+                // activate-and-verify the app first (see InteractionTools.deliver), so a
+                // step never posts a global scroll into the user's app.
                 let deadline = Date().addingTimeInterval(timeout)
                 // Negative deltaY scrolls down (content moves up), positive scrolls up.
                 let deltaY: Int32 = (direction == "up") ? 60 : -60
 
                 var scrolls = 0
-                while Date() < deadline {
+                var last: Visibility = .notFound(center: nil)
+                while true {
                     // One AXExecutor pass: find element, try native scroll-to-visible, and
-                    // measure visibility against the focused window. Returns the outcome.
-                    enum Step: Sendable { case visible, offscreen(CGPoint), notFound }
-                    let step: Step = await AXExecutor.app(pid).run { () -> Step in
+                    // measure visibility against the window. The wheel target comes out of
+                    // the same pass so a miss costs one lane hop, not two.
+                    last = await AXExecutor.app(pid).run { () -> Visibility in
                         let appElement = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
-                        let scope = args?["scope"]?.stringValue ?? "window"
                         let window = appElement.focusedWindow
+                        // An app that never took focus has no focused window but still has
+                        // windows; aiming at its first one beats aiming at nothing.
+                        let winFrame = (window ?? appElement.windows.first)?.frame
+                        let center = winFrame.map { CGPoint(x: $0.midX, y: $0.midY) }
                         let root: AXElement = (scope == "app") ? appElement : (window ?? appElement)
                         guard let r = AXElementSearch.find(root: root, criteria: criteria).first else {
-                            return .notFound
+                            return .notFound(center: center)
                         }
                         let element = r.element
                         // Prefer the native one-call scroll-to-visible. The SDK ships no
                         // `kAXScrollToVisibleAction` constant, so the action name string is
                         // used directly (supported by AXScrollArea children).
-                        if element.performAction("AXScrollToVisible") {
-                            return .visible
-                        }
-                        // Otherwise check whether the element frame sits inside the window.
-                        let winFrame = window?.frame
+                        if element.performAction("AXScrollToVisible") { return .visible }
                         if let ef = element.frame, let wf = winFrame, wf.contains(CGPoint(x: ef.midX, y: ef.midY)) {
                             return .visible
                         }
-                        // Found but outside the window; need a wheel scroll at the window center.
-                        let center = winFrame.map { CGPoint(x: $0.midX, y: $0.midY) }
-                            ?? CGPoint(x: 400, y: 400)
-                        return .offscreen(center)
+                        return .offscreen(center: center)
                     }
-
-                    switch step {
-                    case .visible:
+                    if case .visible = last {
                         return ToolResult.action(success: true, method: "accessibility", extra: [
-                            "found": .bool(true), "scrolls": .int(scrolls), "activated": .bool(activated),
+                            "found": .bool(true), "scrolls": .int(scrolls), "activated": .bool(foreground),
                         ])
-                    case .notFound:
-                        if scrolls >= maxScrolls { break }
-                        // Element not in tree yet — scroll the focused window center and retry.
-                        let center = await AXExecutor.app(pid).run { () -> CGPoint in
-                            let appElement = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
-                            if let wf = appElement.focusedWindow?.frame { return CGPoint(x: wf.midX, y: wf.midY) }
-                            return CGPoint(x: 400, y: 400)
-                        }
-                        await AXExecutor.lane(pid: pid, foreground: foreground).run { InputSimulator.scroll(at: center, deltaY: deltaY, pid: targetPid) }
-                        scrolls += 1
-                        await AXExecutor.pause(0.15)
-                    case .offscreen(let center):
-                        if scrolls >= maxScrolls {
-                            return ToolResult.action(success: true, method: "accessibility", extra: [
-                                "found": .bool(true), "offscreen": .bool(true),
-                                "scrolls": .int(scrolls), "activated": .bool(activated),
-                            ])
-                        }
-                        await AXExecutor.lane(pid: pid, foreground: foreground).run { InputSimulator.scroll(at: center, deltaY: deltaY, pid: targetPid) }
-                        scrolls += 1
-                        await AXExecutor.pause(0.15)
                     }
+                    guard canScrollAgain(scrolls: scrolls, maxScrolls: maxScrolls, now: Date(), deadline: deadline) else { break }
+                    // Scrolling at a guessed point can hit another app's window or nothing
+                    // at all, and still report success — so with no frame to aim at, stop.
+                    guard let center = last.center else {
+                        return ToolResult.error("Cannot scroll: the app exposes no window frame to aim the scroll wheel at (no focused window and no AX windows), so a wheel step would land at an arbitrary screen point. Bring a window up (list_windows, activate_app) and retry. Target: \(InteractionTools.describe(args))")
+                    }
+                    if case .refused(let error) = try await InteractionTools.deliver(pid: pid, foreground: foreground, {
+                        InputSimulator.scroll(at: center, deltaY: deltaY, pid: $0)
+                    }) {
+                        return error
+                    }
+                    scrolls += 1
+                    try await AXExecutor.pause(0.15)
                 }
 
-                // Deadline or maxScrolls exhausted: one last find to report offscreen vs miss.
-                let finalState: Bool = await AXExecutor.app(pid).run {
-                    let appElement = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
-                    let scope = args?["scope"]?.stringValue ?? "window"
-                    let root: AXElement = (scope == "app") ? appElement : (appElement.focusedWindow ?? appElement)
-                    return AXElementSearch.find(root: root, criteria: criteria).first != nil
+                // maxScrolls or the deadline ran out with the element still not visible.
+                // `last` is the look taken after the final scroll, so it is the verdict.
+                let limits = "after \(scrolls) scroll(s) (maxScrolls=\(maxScrolls), timeout=\(timeout)s)"
+                if case .offscreen = last {
+                    return ToolResult.error("The element exists but stayed outside the window \(limits): \(InteractionTools.describe(args)). Try a larger maxScrolls, direction:'\(direction == "up" ? "down" : "up")', or scope:'app' if it lives in another window.")
                 }
-                if finalState {
-                    return ToolResult.action(success: true, method: "accessibility", extra: [
-                        "found": .bool(true), "offscreen": .bool(true),
-                        "scrolls": .int(scrolls), "activated": .bool(activated),
-                    ])
-                }
-                return ToolResult.error("Element never became visible after \(scrolls) scroll(s): \(InteractionTools.describe(args))")
+                return ToolResult.error("Element never became visible \(limits): \(InteractionTools.describe(args))")
             }
         ))
     }

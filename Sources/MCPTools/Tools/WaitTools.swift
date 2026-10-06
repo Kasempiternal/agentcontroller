@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import Foundation
 import MCPServer
 import AccessibilityEngine
@@ -31,22 +32,32 @@ struct WaitTools {
                     if NSRunningApplication(processIdentifier: pid) == nil {
                         return ToolResult.error("App is no longer running (pid \(pid))")
                     }
-                    let found = await AXExecutor.app(pid).run { () -> AXElementSearchResult? in
-                        let root = SearchScope.root(pid: pid, args: args, defaultScope: "app")
-                        return AXElementSearch.find(root: root, criteria: criteria).first
+                    // The hit's role/title are read inside the lane, in the same hop as the
+                    // search: read afterwards they would race the app's other lane work.
+                    struct Hit: Sendable {
+                        let path: String
+                        let role: String
+                        let title: String?
                     }
-                    if let r = found {
-                        let elapsed = Date().timeIntervalSince(start)
+                    let found = await AXExecutor.app(pid).run { () -> Hit? in
+                        let root = SearchScope.root(pid: pid, args: args, defaultScope: "app")
+                        guard let r = AXElementSearch.find(root: root, criteria: criteria).first else { return nil }
+                        let a = r.element.readAttributes([kAXRoleAttribute, kAXTitleAttribute])
+                        return Hit(path: r.path, role: (a[kAXRoleAttribute] as? String) ?? "unknown", title: a[kAXTitleAttribute] as? String)
+                    }
+                    if let hit = found {
                         var fields: [String: JSONValue] = [
                             "found": .bool(true),
-                            "elapsed": .double(elapsed),
-                            "path": .string(r.path),
-                            "role": .string(r.element.role ?? "unknown"),
+                            "elapsed": .double(Date().timeIntervalSince(start)),
+                            "path": .string(hit.path),
+                            "role": .string(hit.role),
                         ]
-                        if let t = r.element.title { fields["title"] = .string(t) }
+                        if let t = hit.title { fields["title"] = .string(t) }
                         return ToolResult.json(.object(fields))
                     }
-                    try await Task.sleep(for: .milliseconds(Int(pollInterval * 1000)))
+                    // Floor the interval: pollInterval:0 would otherwise spin full AX tree
+                    // walks back to back.
+                    try await AXExecutor.pause(max(pollInterval, 0.05))
                 }
 
                 return ToolResult.json(.object([

@@ -24,12 +24,34 @@ import Foundation
 /// lands within `attributionWindow` of the last tool dispatch — an agent steals
 /// focus mid-run, a human clicks when the run is quiet. A wrong restore is one
 /// click to undo; a silent steal mid-typing is not.
+///
+/// The time window alone could not tell the two apart: a user who Cmd-Tabs or clicks to
+/// the driven app a few seconds after a tool call is inside `attributionWindow` too, and
+/// got yanked straight back out. So an activation that lands within `userInputGrace` of a
+/// real mouse, scroll or key event is the user's own and is never restored. This works
+/// because the server's own events are PID-targeted (`postToPid`) and never reach the
+/// HID system state this reads; the foreground paths that do are exactly the ones marked
+/// as expected activations.
 public final class FocusWatcher: @unchecked Sendable {
     public static let shared = FocusWatcher()
 
     /// Seconds after the last tool dispatch during which a driven-app
     /// activation is attributed to the agent rather than the user.
     public static let attributionWindow: TimeInterval = 30
+
+    /// An activation this soon after a physical input was the user's. It has to outlast the
+    /// gap between the input and the activation it causes: Cmd-Tab activates when Cmd is
+    /// RELEASED, after however long the user held the switcher open, and a Dock click
+    /// activates on mouse-UP.
+    public static let userInputGrace: TimeInterval = 2.0
+
+    /// What counts as the user's own input. Presses alone missed the ones that end in an
+    /// activation: a mouse release, a key release, and the modifier change that closes the
+    /// app switcher. Scrolling covers Mission Control and trackpad gestures.
+    static let userInputEvents: [CGEventType] = [
+        .leftMouseDown, .leftMouseUp, .rightMouseDown, .otherMouseDown,
+        .scrollWheel, .keyDown, .keyUp, .flagsChanged,
+    ]
 
     private let lock = NSLock()
     private var drivenPIDs: Set<pid_t> = []
@@ -51,13 +73,23 @@ public final class FocusWatcher: @unchecked Sendable {
         drivenPIDs: Set<pid_t>,
         expected: Bool,
         guardEnabled: Bool,
-        secondsSinceLastDispatch: TimeInterval?
+        secondsSinceLastDispatch: TimeInterval?,
+        secondsSinceUserInput: TimeInterval? = nil
     ) -> Bool {
         guard guardEnabled else { return false }
         guard drivenPIDs.contains(activatedPID) else { return false }
         guard !expected else { return false }
+        if let sinceInput = secondsSinceUserInput, sinceInput < userInputGrace { return false }
         guard let elapsed = secondsSinceLastDispatch else { return false }
         return elapsed >= 0 && elapsed <= attributionWindow
+    }
+
+    /// Seconds since the user's last physical input (`userInputEvents`), from the HID system
+    /// state. Infinity when none has ever been seen this session.
+    static func secondsSinceUserInput() -> TimeInterval {
+        userInputEvents
+            .map { CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: $0) }
+            .min() ?? .infinity
     }
 
     /// The in-band warning attached to the next tool result after a restore.
@@ -138,7 +170,8 @@ public final class FocusWatcher: @unchecked Sendable {
             drivenPIDs: drivenPIDs,
             expected: expected,
             guardEnabled: FocusGuard.isEnabled,
-            secondsSinceLastDispatch: elapsed
+            secondsSinceLastDispatch: elapsed,
+            secondsSinceUserInput: Self.secondsSinceUserInput()
         )
         if !stolen, !drivenPIDs.contains(pid) {
             // A non-driven app coming forward is the user (or the system) — that

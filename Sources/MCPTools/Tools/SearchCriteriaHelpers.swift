@@ -17,7 +17,8 @@ extension AXElementSearchCriteria {
             description: args?["description"]?.stringValue,
             descriptionContains: args?["descriptionContains"]?.stringValue,
             labelContains: args?["labelContains"]?.stringValue,
-            maxResults: maxResults
+            maxResults: maxResults,
+            includeMenus: args?["includeMenus"]?.boolValue ?? false
         )
         // `index` is a property on the criteria struct (AccessibilityEngine). When set,
         // the search returns the Nth match instead of the first.
@@ -43,6 +44,7 @@ public enum SelectorSchema {
             "descriptionContains": .object(["type": .string("string"), "description": .string("Partial AXDescription match (case-insensitive)")]),
             "labelContains": .object(["type": .string("string"), "description": .string("Substring across title/description/help/value — use when you see the text but don't know which AX attribute carries it")]),
             "index": .object(["type": .string("integer"), "description": .string("0-based index to pick the Nth of several identical matches (default first)")]),
+            "includeMenus": .object(["type": .string("boolean"), "description": .string("With scope 'app': also search the menu bar. Off by default, because closed menu items (every 'Save', 'Close', 'Copy') would otherwise match; a role starting with 'AXMenu' turns it on implicitly.")]),
         ]
     }
 
@@ -60,17 +62,21 @@ public enum SelectorSchema {
         .object([
             "type": .string("string"),
             "enum": .array([.string("window"), .string("app")]),
-            "description": .string("Search scope: 'window' (focused window only — faster) or 'app' (all windows + menu bar). Default '\(def)'."),
+            "description": .string("Search scope: 'window' (focused window only — faster) or 'app' (all windows; the menu bar only with includeMenus). Default '\(def)'."),
         ])
     }
 }
 
 /// Shared scope handling for every tool that searches the AX tree.
 enum SearchScope {
-    /// Resolve the BFS root honoring the `scope` arg: 'app' searches from the app root
-    /// (all windows + menu bar), 'window' from the app's focused window. Each app keeps
-    /// its own focused window even while in the background, so 'window' works without
-    /// the app being frontmost.
+    /// Resolve the BFS root honoring the `scope` arg: 'app' searches from the app root,
+    /// 'window' from the app's focused window. Each app keeps its own focused window even
+    /// while in the background, so 'window' works without the app being frontmost.
+    ///
+    /// An application root is not walked as-is: `AXElementSearch` expands it to the app's
+    /// windows plus its focused window and skips the menu bar unless the criteria ask for
+    /// it (`includeMenus` or an AXMenu* role), so 'app' means "everything on screen", not
+    /// "everything on screen and every menu item that could ever be opened".
     static func root(pid: pid_t, args: JSONValue?, defaultScope: String) -> AXElement {
         let appElement = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
         let scope = args?["scope"]?.stringValue ?? defaultScope

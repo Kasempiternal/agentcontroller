@@ -20,13 +20,20 @@ public struct AXElementSearchCriteria: Sendable {
     /// When nil, behavior is unchanged. Set via the memberwise init or assigned after
     /// init (e.g. `criteria.index = n`).
     public var index: Int?
+    /// Walk the menu bar when the search root is an application element. Off by default:
+    /// the menu bar holds hundreds of always-present items (every "Close", "Save", "Copy"
+    /// the app has), so an app-wide `titleContains: "Save"` matched a closed menu entry
+    /// and assert_visible passed with no Save dialog on screen. Roles starting with
+    /// "AXMenu" opt in implicitly — asking for a menu item is asking for the menu bar.
+    public var includeMenus: Bool
 
     public init(role: String? = nil, title: String? = nil, titleContains: String? = nil,
                 identifier: String? = nil, value: String? = nil,
                 description: String? = nil, descriptionContains: String? = nil,
                 labelContains: String? = nil,
                 maxResults: Int = 20,
-                index: Int? = nil) {
+                index: Int? = nil,
+                includeMenus: Bool = false) {
         self.role = role
         self.title = title
         self.titleContains = titleContains
@@ -37,6 +44,12 @@ public struct AXElementSearchCriteria: Sendable {
         self.labelContains = labelContains
         self.maxResults = maxResults
         self.index = index
+        self.includeMenus = includeMenus
+    }
+
+    /// Whether an application-rooted search descends into the menu bar.
+    public var walksMenuBar: Bool {
+        includeMenus || role?.hasPrefix("AXMenu") == true
     }
 
     /// True when at least one element matcher is set. `matches` requires this
@@ -84,8 +97,40 @@ public struct AXSearchProbe: Sendable {
     public let oneAway: Int
     /// How many criteria the caller supplied.
     public let criteriaCount: Int
+    /// Visited elements whose attributes could not be read at all (hung, busy or gone).
+    /// Their subtrees were never enumerated, so a miss says nothing about them.
+    public let unreadableNodes: Int
+    /// The search root itself could not be read.
+    public let rootUnreadable: Bool
+    /// The root is an application and its window list READ BACK as empty (an answer, not a
+    /// failed read): the app is running with nothing on screen. A walk of such an app
+    /// visits only the root, which looks exactly like an app that exposes no tree.
+    public let appHasNoWindows: Bool
+
+    public init(nodesVisited: Int, nearMisses: Int, oneAway: Int, criteriaCount: Int,
+                unreadableNodes: Int = 0, rootUnreadable: Bool = false, appHasNoWindows: Bool = false) {
+        self.nodesVisited = nodesVisited
+        self.nearMisses = nearMisses
+        self.oneAway = oneAway
+        self.criteriaCount = criteriaCount
+        self.unreadableNodes = unreadableNodes
+        self.rootUnreadable = rootUnreadable
+        self.appHasNoWindows = appHasNoWindows
+    }
 
     public static let empty = AXSearchProbe(nodesVisited: 0, nearMisses: 0, oneAway: 0, criteriaCount: 0)
+
+    /// Whether a zero-result walk is evidence of absence. A walk that read the root, got
+    /// at least one level below it, and could read nearly everything it touched actually
+    /// looked; anything less (dead pid, hung app, no accessibility permission, a window
+    /// that exposes nothing) returns zero results too, and must not be mistaken for
+    /// "the element is gone". An app whose window list read back empty has nothing on
+    /// screen to be found, so its one-node walk is complete rather than uninformative.
+    public var isConclusive: Bool {
+        if rootUnreadable { return false }
+        if appHasNoWindows { return true }
+        return nodesVisited >= 2 && unreadableNodes * 4 <= nodesVisited
+    }
 }
 
 public struct AXElementSearch {
@@ -98,16 +143,30 @@ public struct AXElementSearch {
     /// can reach the Nth one, but still bound total matches collected.
     private static let indexMatchCap = 5_000
 
-    /// Attributes a single node may need for matching + building its children's path
-    /// labels. Read once per node in one batched IPC round-trip (vs 6-9 separate reads).
-    private static let matchAttrs: [String] = [
-        kAXRoleAttribute as String,
-        kAXTitleAttribute as String,
-        kAXIdentifierAttribute as String,
-        kAXValueAttribute as String,
-        kAXDescriptionAttribute as String,
-        kAXHelpAttribute as String,
-        kAXChildrenAttribute as String,
+    /// Attributes one node needs for THIS search, read in one batched IPC round-trip.
+    /// role/title/identifier build the path label and children drive the walk, so they are
+    /// always read. The rest are fetched only when a criterion looks at them — AXValue in
+    /// particular is the full text of every text area, and used to cross IPC for every node
+    /// of every poll even when the selector was a button title.
+    static func matchAttributes(for criteria: AXElementSearchCriteria) -> [String] {
+        var names = [
+            kAXRoleAttribute as String,
+            kAXTitleAttribute as String,
+            kAXIdentifierAttribute as String,
+            kAXChildrenAttribute as String,
+        ]
+        let label = criteria.labelContains != nil
+        if label || criteria.description != nil || criteria.descriptionContains != nil {
+            names.append(kAXDescriptionAttribute as String)
+        }
+        if label { names.append(kAXHelpAttribute as String) }
+        if label || criteria.value != nil { names.append(kAXValueAttribute as String) }
+        return names
+    }
+
+    private static let menuBarAttrs: [String] = [
+        kAXMenuBarAttribute as String,
+        kAXExtrasMenuBarAttribute as String,
     ]
 
     /// Default `maxDepth` matches `snapshot`'s walk depth (12) — a shallower
@@ -156,6 +215,10 @@ public struct AXElementSearch {
         // identity hash) and cap total nodes visited.
         var visited = Set<Int>()
         var nodesVisited = 0
+        var unreadable = 0
+        var rootUnreadable = false
+        var appHasNoWindows = false
+        let attributeNames = matchAttributes(for: criteria)
 
         // When `index` is requested we must collect enough matches to reach the Nth, so
         // the per-loop result limit is relaxed (still bounded by `indexMatchCap`).
@@ -171,7 +234,11 @@ public struct AXElementSearch {
 
             // Single batched read per node, reused for matching, this node's path label,
             // and enumerating children.
-            let attrs = element.readAttributes(matchAttrs)
+            let attrs = element.readAttributes(attributeNames)
+            if attrs.isEmpty {
+                unreadable += 1
+                if depth == 0 { rootUnreadable = true }
+            }
 
             // Build this node's path from its own snapshot. Root keeps the literal "root".
             let path: String
@@ -194,7 +261,13 @@ public struct AXElementSearch {
             }
 
             if depth < maxDepth {
-                let kids = AXElement.elements(fromCFArray: attrs[kAXChildrenAttribute as String])
+                var kids = AXElement.elements(fromCFArray: attrs[kAXChildrenAttribute as String])
+                if depth == 0, (attrs[kAXRoleAttribute as String] as? String) == kAXApplicationRole as String,
+                   !criteria.walksMenuBar {
+                    let expanded = appWindowChildren(app: element, children: kids)
+                    kids = expanded.children
+                    appHasNoWindows = expanded.windowListEmpty
+                }
                 for (i, child) in kids.enumerated() {
                     queue.append((child, path, i, depth + 1))
                 }
@@ -205,8 +278,38 @@ public struct AXElementSearch {
             nodesVisited: nodesVisited,
             nearMisses: nearMisses,
             oneAway: oneAway,
-            criteriaCount: criteria.criteriaCount
+            criteriaCount: criteria.criteriaCount,
+            unreadableNodes: unreadable,
+            rootUnreadable: rootUnreadable,
+            appHasNoWindows: appHasNoWindows
         )
+    }
+
+    /// The application element's children for an app-wide search without menus: its
+    /// children minus the menu bars, plus every window in `kAXWindows` and the focused
+    /// window. Fullscreen and other-Space windows are missing from `kAXWindows` and from
+    /// `kAXChildren` alike but still answer as the focused window, so an app-wide
+    /// assert_visible would otherwise not see the window the user is looking at. Duplicates
+    /// are harmless: the walk dedupes by element identity.
+    ///
+    /// `windowListEmpty` is true only when `kAXWindows` was READ and came back as an empty
+    /// array and nothing else is left to walk: a running app with no windows. A failed read
+    /// (hung or busy app) leaves it false, because that is not an answer.
+    private static func appWindowChildren(app: AXElement, children: [AXElement]) -> (children: [AXElement], windowListEmpty: Bool) {
+        let extra = app.readAttributes(menuBarAttrs + [
+            kAXWindowsAttribute as String,
+            kAXFocusedWindowAttribute as String,
+        ])
+        let menuBars = menuBarAttrs.compactMap { extra[$0] }
+        var out = children.filter { child in !menuBars.contains { CFEqual($0, child.ref) } }
+        let windows = AXElement.elements(fromCFArray: extra[kAXWindowsAttribute as String])
+        out.append(contentsOf: windows)
+        if let focused = extra[kAXFocusedWindowAttribute as String],
+           CFGetTypeID(focused) == AXUIElementGetTypeID() {
+            out.append(AXElement(focused as! AXUIElement))
+        }
+        let windowsRead = extra[kAXWindowsAttribute as String].map { CFGetTypeID($0) == CFArrayGetTypeID() } ?? false
+        return (out, windowsRead && out.isEmpty)
     }
 
     /// How many of the supplied criteria this node satisfies, from a single pre-read

@@ -92,17 +92,6 @@ public struct InputSimulator {
         }
     }
 
-    /// Clear the focused text field before typing so a re-run replaces rather than
-    /// appends (the CGEvent type path otherwise inserts at the caret, doubling text on
-    /// repeat). Select-all (Cmd+A) then forward-delete leaves an empty field. When `pid`
-    /// is provided the keystrokes are delivered to that process via `postToPid` (no
-    /// global tap, no frontmost requirement).
-    public static func clearFocusedField(pid: pid_t? = nil) {
-        sendShortcut(keyCode: CGKeyCode(kVK_ANSI_A), modifiers: .maskCommand, pid: pid)
-        usleep(5_000)
-        pressKey(CGKeyCode(kVK_ForwardDelete), pid: pid)
-    }
-
     /// Send a key chord. When `pid` is provided (default for tool use) the events are
     /// delivered to that process via `postToPid` so the chord lands in its queue without
     /// activating it or touching the global HID stream. Pass `pid: nil` for the explicit
@@ -153,6 +142,72 @@ public struct InputSimulator {
 
     // MARK: - Drag
 
+    /// Longest a synthetic gesture may take. A drag holds the mouse button down for its
+    /// whole duration, so an unbounded one is an unbounded grab on the user's pointer
+    /// (foreground) or on the app's drag state (background).
+    public static let maxGestureDuration: TimeInterval = 5
+
+    /// The one rule for an agent-supplied gesture duration: finite and within
+    /// `0...maxGestureDuration`. A negative value used to reach `UInt32(negative)` in the
+    /// pacing sleep and trap AFTER the mouse-down was posted, killing the process with the
+    /// button still held.
+    public static func clampedGestureDuration(_ duration: TimeInterval) -> TimeInterval {
+        guard duration.isFinite else { return 0.3 }
+        return min(max(duration, 0), maxGestureDuration)
+    }
+
+    /// A drag cut into the three kinds of event it is made of, so a caller that needs to
+    /// re-check the world between them (the foreground path) can. `drag` is just all of
+    /// them in a row.
+    public struct DragPlan: Sendable, Equatable {
+        public let start: CGPoint
+        public let end: CGPoint
+        public let steps: Int
+        /// Pause after each drag event, in microseconds.
+        let stepMicros: UInt32
+
+        /// ~60 events per second, never fewer than 10 so even an instant swipe is a drag.
+        public init(from start: CGPoint, to end: CGPoint, duration: TimeInterval) {
+            let seconds = InputSimulator.clampedGestureDuration(duration)
+            self.start = start
+            self.end = end
+            steps = max(Int(seconds * 60), 10)
+            stepMicros = UInt32(seconds / Double(steps) * 1_000_000)
+        }
+
+        /// Drag events per chunk on the foreground path: ~250ms of input between
+        /// frontmost re-checks.
+        static let stepsPerChunk = 15
+
+        /// The drag events (1...steps) grouped for chunked delivery.
+        public var stepChunks: [ClosedRange<Int>] {
+            stride(from: 1, through: steps, by: Self.stepsPerChunk).map { $0...min($0 + Self.stepsPerChunk - 1, steps) }
+        }
+    }
+
+    public static func press(_ plan: DragPlan, pid: pid_t? = nil) {
+        guard let mouseDown = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: plan.start, mouseButton: .left) else { return }
+        deliver(mouseDown, toPid: pid)
+    }
+
+    public static func move(_ plan: DragPlan, steps: ClosedRange<Int>, pid: pid_t? = nil) {
+        for i in steps {
+            let t = CGFloat(i) / CGFloat(plan.steps)
+            let point = CGPoint(
+                x: plan.start.x + (plan.end.x - plan.start.x) * t,
+                y: plan.start.y + (plan.end.y - plan.start.y) * t
+            )
+            guard let drag = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDragged, mouseCursorPosition: point, mouseButton: .left) else { continue }
+            deliver(drag, toPid: pid)
+            usleep(plan.stepMicros)
+        }
+    }
+
+    public static func release(_ plan: DragPlan, pid: pid_t? = nil) {
+        guard let mouseUp = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: plan.end, mouseButton: .left) else { return }
+        deliver(mouseUp, toPid: pid)
+    }
+
     /// Drag from `start` to `end`. When `pid` is provided the down/drag/up events are
     /// delivered to that process via `postToPid`, so the real cursor is NOT warped and
     /// the app is not activated. NOTE: a drag inherently carries a cursor position, and
@@ -160,27 +215,10 @@ public struct InputSimulator {
     /// stationary real pointer can desync — drags are the least reliable synthetic
     /// gesture and should be gated behind explicit user intent.
     public static func drag(from start: CGPoint, to end: CGPoint, duration: TimeInterval = 0.3, pid: pid_t? = nil) {
-        let steps = max(Int(duration * 60), 10) // ~60fps
-
-        // Mouse down at start
-        guard let mouseDown = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: start, mouseButton: .left) else { return }
-        deliver(mouseDown, toPid: pid)
-
-        // Drag
-        for i in 1...steps {
-            let t = CGFloat(i) / CGFloat(steps)
-            let x = start.x + (end.x - start.x) * t
-            let y = start.y + (end.y - start.y) * t
-            let point = CGPoint(x: x, y: y)
-
-            guard let drag = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDragged, mouseCursorPosition: point, mouseButton: .left) else { continue }
-            deliver(drag, toPid: pid)
-            usleep(UInt32(duration / Double(steps) * 1_000_000))
-        }
-
-        // Mouse up at end
-        guard let mouseUp = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: end, mouseButton: .left) else { return }
-        deliver(mouseUp, toPid: pid)
+        let plan = DragPlan(from: start, to: end, duration: duration)
+        press(plan, pid: pid)
+        for chunk in plan.stepChunks { move(plan, steps: chunk, pid: pid) }
+        release(plan, pid: pid)
     }
 
     // MARK: - Key Code Mapping

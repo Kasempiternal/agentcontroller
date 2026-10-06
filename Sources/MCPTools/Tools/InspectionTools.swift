@@ -92,30 +92,35 @@ struct InspectionTools {
                 let pid = try args!.resolvePID()
                 let criteria = AXElementSearchCriteria(from: args, maxResults: args?["maxResults"]?.intValue ?? 20)
 
-                let results = await AXExecutor.app(pid).run {
+                // Result attributes are read inside the lane, in one batched read per
+                // element: outside it they would race the app's other lane work and cost
+                // eight separate AX round-trips per match.
+                let items: [JSONValue] = await AXExecutor.app(pid).run {
                     let root = SearchScope.root(pid: pid, args: args, defaultScope: "app")
-                    return AXElementSearch.find(root: root, criteria: criteria)
-                }
-
-                let items: [JSONValue] = results.map { r in
-                    var fields: [String: JSONValue] = [
-                        "path": .string(r.path),
-                        "depth": .int(r.depth),
-                        "role": .string(r.element.role ?? "unknown"),
-                    ]
-                    if let t = r.element.title, !t.isEmpty { fields["title"] = .string(t) }
-                    if let id = r.element.identifier, !id.isEmpty { fields["identifier"] = .string(id) }
-                    if let v = r.element.stringValue, !v.isEmpty { fields["value"] = .string(v) }
-                    if let d = r.element.label, !d.isEmpty { fields["description"] = .string(d) }
-                    if let pos = r.element.position {
-                        fields["position"] = .object(["x": .double(pos.x), "y": .double(pos.y)])
+                    return AXElementSearch.find(root: root, criteria: criteria).map { r in
+                        let a = r.element.readAttributes([
+                            kAXRoleAttribute, kAXTitleAttribute, kAXIdentifierAttribute, kAXValueAttribute,
+                            kAXDescriptionAttribute, kAXPositionAttribute, kAXSizeAttribute, kAXEnabledAttribute,
+                        ])
+                        var fields: [String: JSONValue] = [
+                            "path": .string(r.path),
+                            "depth": .int(r.depth),
+                            "role": .string((a[kAXRoleAttribute] as? String) ?? "unknown"),
+                        ]
+                        if let t = a[kAXTitleAttribute] as? String, !t.isEmpty { fields["title"] = .string(t) }
+                        if let id = a[kAXIdentifierAttribute] as? String, !id.isEmpty { fields["identifier"] = .string(id) }
+                        if let v = a[kAXValueAttribute] as? String, !v.isEmpty { fields["value"] = .string(v) }
+                        if let d = a[kAXDescriptionAttribute] as? String, !d.isEmpty { fields["description"] = .string(d) }
+                        if let pos = AXValueExtract.point(a[kAXPositionAttribute]) {
+                            fields["position"] = .object(["x": .double(pos.x), "y": .double(pos.y)])
+                        }
+                        if let sz = AXValueExtract.size(a[kAXSizeAttribute]) {
+                            fields["size"] = .object(["width": .double(sz.width), "height": .double(sz.height)])
+                        }
+                        fields["enabled"] = .bool((a[kAXEnabledAttribute] as? Bool) ?? true)
+                        fields["actions"] = .array(r.element.actionNames.map { .string($0) })
+                        return .object(fields)
                     }
-                    if let sz = r.element.size {
-                        fields["size"] = .object(["width": .double(sz.width), "height": .double(sz.height)])
-                    }
-                    fields["enabled"] = .bool(r.element.isEnabled)
-                    fields["actions"] = .array(r.element.actionNames.map { .string($0) })
-                    return .object(fields)
                 }
 
                 return ToolResult.json(.object([
@@ -154,41 +159,48 @@ struct InspectionTools {
                 let pid = try args!.resolvePID()
                 let criteria = AXElementSearchCriteria(from: args, maxResults: 1)
 
-                let result = await AXExecutor.app(pid).run { () -> JSONValue in
+                enum Lookup: Sendable {
+                    case notFound
+                    case unreadable
+                    case attributes(JSONValue)
+                }
+                let result = await AXExecutor.app(pid).run { () -> Lookup in
                     let appElement = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
                     let results = AXElementSearch.find(root: appElement, criteria: criteria)
-                    guard let first = results.first else { return JSONValue.null }
+                    guard let first = results.first else { return .notFound }
 
                     let element = first.element
+                    // One AXUIElementCopyMultipleAttributeValues for the whole element. The
+                    // per-attribute probing this replaces made up to four reads for every
+                    // attribute (String, Bool, Int, then the type tag), each a round-trip
+                    // to the target app.
+                    let names = element.attributeNames
+                    let raw = element.readAttributes(names)
+                    if raw.isEmpty && !names.isEmpty { return .unreadable }
                     var attrs: [String: JSONValue] = [:]
-                    for name in element.attributeNames {
-                        // Prefer the real classified value for AXValue so toggles/sliders
-                        // surface their actual state (CFBoolean/CFNumber), not "(complex value)".
-                        if name == (kAXValueAttribute as String), let jv = element.valueJSON {
-                            attrs[name] = jv
+                    for name in names {
+                        guard let value = raw[name] else {
+                            attrs[name] = .string("[empty]")
                             continue
                         }
-                        if let str: String = element.attribute(name) {
-                            attrs[name] = .string(str)
-                        } else if let b: Bool = element.attribute(name) {
-                            attrs[name] = .bool(b)
-                        } else if let n: Int = element.attribute(name) {
-                            attrs[name] = .int(n)
-                        } else {
-                            // Short type tag instead of an opaque literal. Skip walking large
-                            // relationship/UI-element attrs; just name their shape.
-                            attrs[name] = .string(complexTypeTag(for: element, attribute: name))
-                        }
+                        // Classify scalars by their real CF type so toggles/sliders surface
+                        // their actual state (CFBoolean/CFNumber), not "(complex value)".
+                        // Skip walking large relationship/UI-element attrs; just name their shape.
+                        attrs[name] = AXValueExtract.jsonValue(value) ?? .string(complexTypeTag(of: value))
                     }
                     attrs["_actions"] = .array(element.actionNames.map { .string($0) })
                     attrs["_path"] = .string(first.path)
-                    return JSONValue.object(attrs)
+                    return .attributes(.object(attrs))
                 }
 
-                if result.isNull {
+                switch result {
+                case .notFound:
                     return ToolResult.error("Element not found")
+                case .unreadable:
+                    return ToolResult.error("Element found but none of its attributes could be read — the app may be busy or the element was destroyed. Re-run, or re-snapshot.")
+                case .attributes(let attrs):
+                    return ToolResult.json(attrs)
                 }
-                return ToolResult.json(result)
             }
         ))
 
@@ -253,8 +265,7 @@ struct InspectionTools {
     /// opaque "(complex value)" literal. We read the raw CFTypeRef once and name its shape
     /// (array / AX element / AX point-or-size / class name) — never recursing into it, so a
     /// big relationship attribute (children, related elements) can't explode the payload.
-    static func complexTypeTag(for element: AXElement, attribute name: String) -> String {
-        guard let raw: CFTypeRef = element.attribute(name) else { return "[empty]" }
+    static func complexTypeTag(of raw: CFTypeRef) -> String {
         let typeID = CFGetTypeID(raw)
         if typeID == CFArrayGetTypeID() {
             let count = CFArrayGetCount((raw as! CFArray))

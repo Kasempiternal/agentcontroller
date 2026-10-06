@@ -17,11 +17,14 @@ struct WindowTools {
             handler: { args in
                 // A named-but-unresolvable app must not silently widen to "every window
                 // on the system" — that answers a different question than the one asked.
-                if let requested = args?["app"]?.stringValue, AppManager.resolvePID(from: requested) == nil {
-                    return ToolResult.error("App not found or not running: \(requested)")
+                var pid: pid_t?
+                if let requested = args?["app"]?.stringValue {
+                    guard let resolved = AppManager.resolvePID(from: requested) else {
+                        return ToolResult.error("App not found or not running: \(requested)")
+                    }
+                    pid = resolved
                 }
-                let pid = args?["app"]?.stringValue.flatMap { AppManager.resolvePID(from: $0) }
-                let windows = await MainActor.run { WindowManager.listWindows(pid: pid) }
+                let windows = await WindowManager.listWindows(pid: pid)
                 let items: [JSONValue] = windows.map { w in
                     var fields: [String: JSONValue] = [
                         "title": .string(w.title),
@@ -48,7 +51,7 @@ struct WindowTools {
                     "windows": .array(items),
                 ]
                 if windows.contains(where: { $0.source.index == nil }) {
-                    payload["note"] = .string("Some windows are listed without an `index`: macOS omits windows on an INACTIVE Space (and apps that have never been frontmost) from the accessibility window list, so they were recovered from the focused-window attribute or the window server. They are real — screenshot_window with `windowTitle` reaches them — but windowIndex, set_window_bounds, minimize_window and restore_window cannot. Switching to that app's Space, or activate_app, restores full AX access.")
+                    payload["note"] = .string("Some windows are listed without an `index`: macOS omits windows on an INACTIVE Space (and apps that have never been frontmost) from the accessibility window list, so they were recovered from the focused-window attribute or the window server. They are real — screenshot_window with `windowTitle` reaches them — but windowIndex, set_window_bounds, minimize_window and restore_window cannot. Switching to that app's Space, or activate_app, restores full AX access. An app that did not answer accessibility requests within \(Int(WindowManager.perAppDeadline))s is listed the same way, from the window server alone.")
                 }
                 return ToolResult.json(.object(payload))
             }
@@ -68,7 +71,7 @@ struct WindowTools {
             handler: { args in
                 let pid = try args!.resolvePID()
                 let index = args?["windowIndex"]?.intValue ?? 0
-                let bounds = await MainActor.run { WindowManager.getWindowBounds(pid: pid, windowIndex: index) }
+                let bounds = await AXExecutor.app(pid).run { WindowManager.getWindowBounds(pid: pid, windowIndex: index) }
                 guard let b = bounds else {
                     return ToolResult.error("Window not found")
                 }
@@ -107,11 +110,11 @@ struct WindowTools {
                 if let w = args?["width"]?.doubleValue, let h = args?["height"]?.doubleValue {
                     size = CGSize(width: w, height: h)
                 }
-                // Capture immutable copies before the @Sendable MainActor closure — Swift 6
+                // Capture immutable copies before the @Sendable lane closure — Swift 6
                 // rejects mutable `var` captures crossing the actor boundary.
                 let pos = position
                 let sz = size
-                let success = await MainActor.run {
+                let success = await AXExecutor.app(pid).run {
                     WindowManager.setWindowBounds(pid: pid, windowIndex: index, position: pos, size: sz)
                 }
                 if success { await ShareableContentCache.shared.invalidate() }
@@ -133,7 +136,7 @@ struct WindowTools {
             handler: { args in
                 let pid = try args!.resolvePID()
                 let index = args?["windowIndex"]?.intValue ?? 0
-                let success = await MainActor.run { WindowManager.minimize(pid: pid, windowIndex: index) }
+                let success = await AXExecutor.app(pid).run { WindowManager.minimize(pid: pid, windowIndex: index) }
                 if success { await ShareableContentCache.shared.invalidate() }
                 return ToolResult.action(success: success, method: "accessibility")
             }
@@ -153,7 +156,7 @@ struct WindowTools {
             handler: { args in
                 let pid = try args!.resolvePID()
                 let index = args?["windowIndex"]?.intValue ?? 0
-                let success = await MainActor.run { WindowManager.restore(pid: pid, windowIndex: index) }
+                let success = await AXExecutor.app(pid).run { WindowManager.restore(pid: pid, windowIndex: index) }
                 if success { await ShareableContentCache.shared.invalidate() }
                 return ToolResult.action(success: success, method: "accessibility")
             }

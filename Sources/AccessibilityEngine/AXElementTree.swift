@@ -12,8 +12,80 @@ public enum AXTreeDetail: String {
 }
 
 public struct AXElementTree {
-    public static func buildTree(root: AXElement, maxDepth: Int = 5, detail: AXTreeDetail = .lean) -> JSONValue {
-        nodeToJSON(root, depth: 0, maxDepth: maxDepth, detail: detail)
+    /// Elements one `buildTree` call will read. An app-rooted dump of a browser page or a
+    /// large table is tens of thousands of nodes, each a round-trip into the target app and
+    /// all of it in one JSON result; the walk stopped only at `maxDepth`, which bounds
+    /// depth, not breadth.
+    public static let defaultNodeBudget = 6_000
+
+    /// Breadth-first so that when the budget runs out it is the deepest, least useful
+    /// levels that are cut — a depth-first walk spends the whole budget inside the first
+    /// big subtree (a sidebar, say) and never reaches the content. Unexpanded nodes
+    /// keep their real `childCount` and carry `truncated: true`, the same marker a
+    /// `maxDepth` cut already uses.
+    public static func buildTree(root: AXElement, maxDepth: Int = 5, detail: AXTreeDetail = .lean,
+                                 nodeBudget: Int = defaultNodeBudget) -> JSONValue {
+        assemble(root: root, maxDepth: maxDepth, nodeBudget: nodeBudget) { describe($0, detail: detail) }
+    }
+
+    private struct TreeNode {
+        var fields: [String: JSONValue]
+        var children: [Int] = []
+    }
+
+    /// The budgeted walk itself, generic over the node type so the budget and truncation
+    /// rules are testable without a live app. `read` returns one node's JSON fields and
+    /// its children.
+    static func assemble<Element>(
+        root: Element, maxDepth: Int, nodeBudget: Int,
+        read: (Element) -> (fields: [String: JSONValue], kids: [Element])
+    ) -> JSONValue {
+        var nodes: [TreeNode] = []
+        var queue: [(element: Element, depth: Int, parent: Int?)] = [(root, 0, nil)]
+        var head = 0
+        var enqueued = 1
+        var budgetHit = false
+
+        while head < queue.count {
+            let (element, depth, parent) = queue[head]
+            head += 1
+
+            var (fields, kids) = read(element)
+            let index = nodes.count
+            if !kids.isEmpty {
+                fields["childCount"] = .int(kids.count)
+                if depth < maxDepth {
+                    let take = min(max(0, nodeBudget - enqueued), kids.count)
+                    for kid in kids.prefix(take) { queue.append((kid, depth + 1, index)) }
+                    enqueued += take
+                    if take < kids.count {
+                        fields["truncated"] = .bool(true)
+                        budgetHit = true
+                    }
+                } else {
+                    fields["truncated"] = .bool(true)
+                }
+            }
+            nodes.append(TreeNode(fields: fields))
+            if let parent { nodes[parent].children.append(index) }
+        }
+
+        // Children always have a higher index than their parent, so one reverse pass
+        // assembles the nested value without recursion (this runs on a GCD thread with a
+        // small stack, and a pathological chain could be thousands deep).
+        var built = [JSONValue](repeating: .null, count: nodes.count)
+        for i in stride(from: nodes.count - 1, through: 0, by: -1) {
+            var fields = nodes[i].fields
+            if !nodes[i].children.isEmpty {
+                fields["children"] = .array(nodes[i].children.map { built[$0] })
+            }
+            built[i] = .object(fields)
+        }
+
+        guard budgetHit, case .object(var rootFields) = built[0] else { return built[0] }
+        rootFields["nodeBudgetReached"] = .int(nodeBudget)
+        rootFields["hint"] = .string("Tree cut at \(nodeBudget) elements, deepest levels first (nodes marked truncated have more children than shown). Narrow it: lower maxDepth, or use find_elements / snapshot to target one control.")
+        return .object(rootFields)
     }
 
     private static let leanAttrs: [String] = [
@@ -33,7 +105,8 @@ public struct AXElementTree {
         kAXSizeAttribute as String,
     ]
 
-    private static func nodeToJSON(_ element: AXElement, depth: Int, maxDepth: Int, detail: AXTreeDetail) -> JSONValue {
+    /// One node's JSON fields plus its children, from a single batched read.
+    private static func describe(_ element: AXElement, detail: AXTreeDetail) -> (fields: [String: JSONValue], kids: [AXElement]) {
         let names = detail == .full ? fullAttrs : leanAttrs
         let attrs = element.readAttributes(names)
 
@@ -80,18 +153,6 @@ public struct AXElementTree {
             }
         }
 
-        let kidArray = AXElement.elements(fromCFArray: attrs[kAXChildrenAttribute as String])
-
-        if !kidArray.isEmpty {
-            if depth < maxDepth {
-                fields["children"] = .array(kidArray.map { nodeToJSON($0, depth: depth + 1, maxDepth: maxDepth, detail: detail) })
-                fields["childCount"] = .int(kidArray.count)
-            } else {
-                fields["childCount"] = .int(kidArray.count)
-                fields["truncated"] = .bool(true)
-            }
-        }
-
-        return .object(fields)
+        return (fields, AXElement.elements(fromCFArray: attrs[kAXChildrenAttribute as String]))
     }
 }

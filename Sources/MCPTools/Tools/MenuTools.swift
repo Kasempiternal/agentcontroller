@@ -6,7 +6,7 @@ struct MenuTools {
     static func register(in registry: ToolRegistry) {
         registry.register(.init(
             name: "navigate_menu",
-            description: "Navigate and click a menu item by path (e.g. ['File', 'Save As...']). BACKGROUND-SAFE BY DEFAULT: the menu hierarchy is resolved by READING the AX tree (no menu ever opens on screen) and only the leaf item is pressed — no cursor move, no app activation, nothing visible. Apps that populate submenus lazily fall back to an AX press-descend walk automatically. A DISABLED leaf is reported as an ERROR rather than a false success: macOS returns 'press succeeded' for a greyed-out item, so an action whose precondition is unmet (no document open, nothing selected) and responder-chain items (Copy/Paste/Cut/Select All) in a non-active app used to look like they worked. Set foreground:true only for apps that expose their menu bar in the AX tree solely while frontmost.",
+            description: "Navigate and click a menu item by path (e.g. ['File', 'Save As...']). The last segment must match the item's label exactly (case, whitespace and trailing '...'/'…' are ignored — 'Close Tab' never presses 'Close'); earlier segments may be unambiguous abbreviations. A miss lists the labels that were available at that level. BACKGROUND-SAFE BY DEFAULT: the menu hierarchy is resolved by READING the AX tree (no menu ever opens on screen) and only the leaf item is pressed — no cursor move, no app activation, nothing visible. Apps that populate submenus lazily fall back to an AX press-descend walk automatically. A DISABLED leaf is reported as an ERROR rather than a false success: macOS returns 'press succeeded' for a greyed-out item, so an action whose precondition is unmet (no document open, nothing selected) and responder-chain items (Copy/Paste/Cut/Select All) in a non-active app used to look like they worked. Set foreground:true only for apps that expose their menu bar in the AX tree solely while frontmost.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
@@ -34,18 +34,20 @@ struct MenuTools {
                 // Background-safe: the AX menu walk (AXPress on menu items) works without
                 // the app being frontmost, so do NOT activate by default. foreground:true
                 // activates first for apps that build menus lazily when active.
+                // The walk is pure AX, so a failed activation is not fatal — it is reported
+                // as activated:false rather than guessed at with a fixed sleep.
                 var activated = false
                 if foreground {
-                    activated = await MainActor.run { AppManager.activate(pid: pid) }
-                    await AXExecutor.pause(0.2)
+                    activated = try await ForegroundInput.activateAndVerify(pid: pid)
                 }
-                let outcome = await AXExecutor.app(pid).run {
-                    MenuNavigator.navigateMenu(pid: pid, menuPath: path)
-                }
+                // navigateMenu hops onto the app's lane per step itself: its visible-walk
+                // fallback has to wait for submenus to populate, and a wait inside one
+                // long lane hold would block every other call on that app.
+                let outcome = try await MenuNavigator.navigateMenu(pid: pid, menuPath: path)
                 let readablePath = path.joined(separator: " > ")
                 switch outcome {
-                case .notFound:
-                    return ToolResult.error("Menu path not found: \(readablePath)")
+                case .notFound(let miss):
+                    return ToolResult.error("Menu path not found: \(readablePath). \(miss.message)")
                 case .pressRefused(let label):
                     return ToolResult.error("Menu item '\(label)' is enabled but refused the press (\(readablePath))")
                 case .disabled(let label):

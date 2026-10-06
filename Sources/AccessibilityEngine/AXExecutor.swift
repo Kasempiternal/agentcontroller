@@ -29,23 +29,43 @@ import Foundation
 /// frontmost app, so it shares no resource with a foreground op and has nothing to be
 /// excluded from. Guarding that pair would require a reader/writer gate for no gain.
 ///
+/// Each lane runs on its OWN serial dispatch queue instead of the Swift cooperative pool.
+/// `run` does synchronous AX IPC (up to the 2s messaging timeout per call, `usleep`s
+/// between typed characters), and a plain actor executes that on a cooperative thread.
+/// The pool is about one thread per core, so a handful of parallel snapshots against slow
+/// apps parked every pool thread inside AX calls and the HTTP server's own Tasks (accept,
+/// parse, respond) had no thread left to run on. A blocked dispatch queue costs a GCD
+/// thread, which GCD grows on demand, and leaves the pool free.
+///
 /// Main-thread-only calls (e.g. `NSRunningApplication.activate`) must stay on the
 /// MainActor — perform those in a separate `await MainActor.run { … }` before/after the
 /// `run` block.
 public actor AXExecutor {
+    private let queue: DispatchSerialQueue
+
+    public nonisolated var unownedExecutor: UnownedSerialExecutor {
+        queue.asUnownedSerialExecutor()
+    }
+
     /// Lane for operations that drive system-wide HID (`foreground: true`): they move one
     /// real cursor and change one frontmost app, so they must not overlap each other.
-    public static let globalInput = AXExecutor()
+    /// An actor lane is only exclusive WITHIN one `run` body — it does not stay held across
+    /// `await`s. The activate → verify-frontmost → post sequence spans awaits, so its real
+    /// mutual exclusion is `ForegroundInput`'s FIFO gate; this lane only serializes the
+    /// synchronous posting inside it.
+    public static let globalInput = AXExecutor(label: "agentcontroller.ax.globalInput")
 
     private static let registryLock = NSLock()
     nonisolated(unsafe) private static var lanes: [pid_t: AXExecutor] = [:]
 
-    /// Evict dead-process lanes once the registry grows past this. A lane is ~an object
-    /// header, so the bound is about not leaking unboundedly across a long session that
-    /// drives many short-lived app launches — not about memory pressure.
+    /// Evict dead-process lanes once the registry grows past this. A lane is an object plus
+    /// an idle dispatch queue, so the bound is about not leaking unboundedly across a long
+    /// session that drives many short-lived app launches — not about memory pressure.
     private static let laneEvictionThreshold = 64
 
-    private init() {}
+    private init(label: String) {
+        queue = DispatchSerialQueue(label: label, qos: .userInitiated)
+    }
 
     /// The serial lane for PID-targeted work on `pid`. Work on different apps runs
     /// concurrently; work on the same app stays strictly ordered.
@@ -62,7 +82,7 @@ public actor AXExecutor {
                 lanes.removeValue(forKey: existingPID)
             }
         }
-        let lane = AXExecutor()
+        let lane = AXExecutor(label: "agentcontroller.ax.app.\(pid)")
         lanes[pid] = lane
         return lane
     }
@@ -84,8 +104,16 @@ public actor AXExecutor {
     /// Async pacing that suspends without blocking any lane — use between posted CGEvents
     /// instead of `usleep`. Static because pacing is just elapsed time: it needs no
     /// isolation, and running it on a lane would have been a hold with no work in it.
-    public static func pause(_ seconds: Double) async {
-        try? await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
+    ///
+    /// Throws `CancellationError`. It used to swallow it (`try?`): once the task was
+    /// cancelled every later pause returned instantly, so a poll loop that checked nothing
+    /// else spun a core on AX walks (112,454 iterations/s measured on a cancelled
+    /// wait_for_element) and kept posting real scroll events after the client left.
+    public static func pause(_ seconds: Double) async throws {
+        // Capped because callers pass agent-supplied intervals (`pollInterval`), and the
+        // nanosecond conversion traps on a Double that overflows UInt64.
+        let bounded = min(max(0, seconds), 3_600)
+        try await Task.sleep(nanoseconds: UInt64(bounded * 1_000_000_000))
     }
 
     /// Number of live lanes. Test/diagnostic use only.

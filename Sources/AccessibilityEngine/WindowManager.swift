@@ -59,19 +59,94 @@ public struct WindowInfo: Sendable {
 }
 
 public struct WindowManager {
-    public static func listWindows(pid: pid_t? = nil) -> [WindowInfo] {
+    /// What AppKit knows about a running app. Captured on the MainActor so everything
+    /// after it — the AX reads — can run on the app's own lane.
+    struct AppIdentity: Sendable {
+        let pid: pid_t
+        let name: String
+        let bundleId: String?
+    }
+
+    /// How long one app gets to answer before its entry degrades to window-server data.
+    /// A hung app answers every AX read only after the messaging timeout, and
+    /// `AXElement.attribute` retries `.cannotComplete` — so one unresponsive app costs
+    /// several timeouts per read, and a lane busy with a long snapshot costs its whole
+    /// walk. Neither should hold up the listing of every other app.
+    public static let perAppDeadline: Double = 3.0
+
+    /// List windows for one app, or for every regular app when `pid` is nil.
+    ///
+    /// Each app's AX reads run on that app's lane, fanned out across apps in parallel —
+    /// the old version ran them serially on the MainActor, so one hung app froze the menu
+    /// bar and an N-app listing cost N times the slowest app.
+    public static func listWindows(pid: pid_t? = nil) async -> [WindowInfo] {
         // One window-server enumeration for the whole call. Per-app it would be a
-        // full-system scan repeated once per running app.
+        // full-system scan repeated once per running app. CoreGraphics only — no AppKit.
         let serverWindows = windowServerWindowsByPID()
+        let apps = await MainActor.run { appIdentities(pid: pid) }
+
+        return await withTaskGroup(of: (Int, [WindowInfo]).self) { group in
+            for (order, app) in apps.enumerated() {
+                let server = serverWindows[app.pid] ?? []
+                group.addTask { (order, await windowsWithDeadline(app, serverWindows: server)) }
+            }
+            var byOrder: [Int: [WindowInfo]] = [:]
+            for await (order, windows) in group { byOrder[order] = windows }
+            return apps.indices.flatMap { byOrder[$0] ?? [] }
+        }
+    }
+
+    /// MainActor only: NSRunningApplication/NSWorkspace.
+    @MainActor
+    private static func appIdentities(pid: pid_t?) -> [AppIdentity] {
+        func identity(_ app: NSRunningApplication) -> AppIdentity {
+            AppIdentity(pid: app.processIdentifier, name: app.localizedName ?? "Unknown", bundleId: app.bundleIdentifier)
+        }
         if let pid {
-            return windowsForApp(pid: pid, serverWindows: serverWindows[pid] ?? [])
+            let app = NSRunningApplication(processIdentifier: pid)
+            return [app.map(identity) ?? AppIdentity(pid: pid, name: "Unknown", bundleId: nil)]
         }
-        var allWindows: [WindowInfo] = []
-        for app in NSWorkspace.shared.runningApplications where app.activationPolicy == .regular {
-            let appPID = app.processIdentifier
-            allWindows.append(contentsOf: windowsForApp(pid: appPID, serverWindows: serverWindows[appPID] ?? []))
+        return NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }.map(identity)
+    }
+
+    private static func windowsWithDeadline(_ app: AppIdentity, serverWindows: [ServerWindow]) async -> [WindowInfo] {
+        await withDeadline(perAppDeadline, fallback: serverTier(app, serverWindows: serverWindows, excluding: [])) {
+            await AXExecutor.app(app.pid).run { windowsForApp(app, serverWindows: serverWindows) }
         }
-        return allWindows
+    }
+
+    /// Resolves with `work`'s value, or `fallback` once `seconds` pass — whichever is
+    /// first. Synchronous AX calls cannot be cancelled, so after a timeout the abandoned
+    /// work keeps running on its own lane; that is the hung app's problem, and the point
+    /// is that nobody else waits on it.
+    static func withDeadline<T: Sendable>(_ seconds: Double, fallback: T, _ work: @escaping @Sendable () async -> T) async -> T {
+        await withCheckedContinuation { continuation in
+            let once = ResumeOnce(continuation)
+            let timer = Task {
+                // Cancelled by the work finishing first; only an uninterrupted wait is a timeout.
+                guard (try? await AXExecutor.pause(seconds)) != nil else { return }
+                once.resume(fallback)
+            }
+            Task {
+                once.resume(await work())
+                timer.cancel()
+            }
+        }
+    }
+
+    private final class ResumeOnce<T: Sendable>: @unchecked Sendable {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<T, Never>?
+
+        init(_ continuation: CheckedContinuation<T, Never>) { self.continuation = continuation }
+
+        func resume(_ value: T) {
+            lock.lock()
+            let pending = continuation
+            continuation = nil
+            lock.unlock()
+            pending?.resume(returning: value)
+        }
     }
 
     /// A window as the window server sees it. Same coordinate space as `AXPosition`
@@ -104,7 +179,7 @@ public struct WindowManager {
     }
 
     /// Below this on either side a "window" is a helper surface, not something a QA run
-    /// wants listed. Matches the same floor `WindowCapturer.bestWindow` uses.
+    /// wants listed. Matches the same floor `WindowCandidate.isPlausible` uses for capture.
     private static let minimumWindowSide: CGFloat = 40
 
     /// Two windows are the same window if their frames land on the same point and size.
@@ -119,23 +194,51 @@ public struct WindowManager {
             && abs(a.height - b.height) <= frameMatchTolerance
     }
 
-    private static func windowsForApp(pid: pid_t, serverWindows: [ServerWindow]) -> [WindowInfo] {
-        let appElement = AXElement.application(pid: pid)
-        let app = NSRunningApplication(processIdentifier: pid)
-        let appName = app?.localizedName ?? "Unknown"
-        let bundleId = app?.bundleIdentifier
+    private static let windowAttributes = [
+        kAXTitleAttribute, kAXPositionAttribute, kAXSizeAttribute, kAXMinimizedAttribute, "AXFullScreen",
+    ]
+
+    /// Build a `WindowInfo` from one batched attribute read. Pure so the decoding is
+    /// testable without a live window.
+    static func windowInfo(attributes a: [String: CFTypeRef], app: AppIdentity, source: WindowSource) -> WindowInfo {
+        WindowInfo(
+            title: (a[kAXTitleAttribute] as? String) ?? "Untitled",
+            bounds: CGRect(origin: AXValueExtract.point(a[kAXPositionAttribute]) ?? .zero,
+                           size: AXValueExtract.size(a[kAXSizeAttribute]) ?? .zero),
+            isMinimized: (a[kAXMinimizedAttribute] as? Bool) ?? false,
+            isFullScreen: (a["AXFullScreen"] as? Bool) ?? false,
+            appName: app.name,
+            appBundleId: app.bundleId,
+            pid: app.pid,
+            source: source
+        )
+    }
+
+    /// Window-server-only entries for `app`, skipping any whose frame matches one in
+    /// `excluding` (already listed by a higher tier).
+    private static func serverTier(_ app: AppIdentity, serverWindows: [ServerWindow], excluding known: [WindowInfo]) -> [WindowInfo] {
+        var listed = known
+        for server in serverWindows where !listed.contains(where: { sameWindow($0.bounds, server.frame) }) {
+            listed.append(WindowInfo(
+                title: server.title.isEmpty ? "Untitled" : server.title,
+                bounds: server.frame,
+                isMinimized: false,
+                isFullScreen: false,
+                appName: app.name,
+                appBundleId: app.bundleId,
+                pid: app.pid,
+                source: .windowServer
+            ))
+        }
+        return Array(listed.dropFirst(known.count))
+    }
+
+    /// Runs on the app's lane: AX enumeration, one batched read per window.
+    private static func windowsForApp(_ app: AppIdentity, serverWindows: [ServerWindow]) -> [WindowInfo] {
+        let appElement = AXElement.application(pid: app.pid)
 
         func describe(_ window: AXElement, source: WindowSource) -> WindowInfo {
-            WindowInfo(
-                title: window.title ?? "Untitled",
-                bounds: CGRect(origin: window.position ?? .zero, size: window.size ?? .zero),
-                isMinimized: (window.attribute(kAXMinimizedAttribute) as Bool?) ?? false,
-                isFullScreen: (window.attribute("AXFullScreen") as Bool?) ?? false,
-                appName: appName,
-                appBundleId: bundleId,
-                pid: pid,
-                source: source
-            )
+            windowInfo(attributes: window.readAttributes(windowAttributes), app: app, source: source)
         }
 
         let axWindows = appElement.windows
@@ -149,26 +252,14 @@ public struct WindowManager {
         if let focused = appElement.focusedWindow {
             recovered.append(describe(focused, source: .focusedWindow))
         }
-        for server in serverWindows where !recovered.contains(where: { sameWindow($0.bounds, server.frame) }) {
-            recovered.append(WindowInfo(
-                title: server.title.isEmpty ? "Untitled" : server.title,
-                bounds: server.frame,
-                isMinimized: false,
-                isFullScreen: false,
-                appName: appName,
-                appBundleId: bundleId,
-                pid: pid,
-                source: .windowServer
-            ))
-        }
-        return recovered
+        return recovered + serverTier(app, serverWindows: serverWindows, excluding: recovered)
     }
 
     public static func setWindowBounds(pid: pid_t, windowIndex: Int = 0,
                                        position: CGPoint? = nil, size: CGSize? = nil) -> Bool {
         let appElement = AXElement.application(pid: pid)
         let windows = appElement.windows
-        guard windowIndex < windows.count else { return false }
+        guard windowIndex >= 0, windowIndex < windows.count else { return false }
         let window = windows[windowIndex]
 
         var success = true
@@ -184,14 +275,14 @@ public struct WindowManager {
     public static func minimize(pid: pid_t, windowIndex: Int = 0) -> Bool {
         let appElement = AXElement.application(pid: pid)
         let windows = appElement.windows
-        guard windowIndex < windows.count else { return false }
+        guard windowIndex >= 0, windowIndex < windows.count else { return false }
         return windows[windowIndex].setAttribute(kAXMinimizedAttribute, value: kCFBooleanTrue)
     }
 
     public static func restore(pid: pid_t, windowIndex: Int = 0) -> Bool {
         let appElement = AXElement.application(pid: pid)
         let windows = appElement.windows
-        guard windowIndex < windows.count else { return false }
+        guard windowIndex >= 0, windowIndex < windows.count else { return false }
         let window = windows[windowIndex]
         _ = window.setAttribute(kAXMinimizedAttribute, value: kCFBooleanFalse)
         return window.raise()
@@ -200,7 +291,10 @@ public struct WindowManager {
     public static func getWindowBounds(pid: pid_t, windowIndex: Int = 0) -> CGRect? {
         let appElement = AXElement.application(pid: pid)
         let windows = appElement.windows
-        guard windowIndex < windows.count else { return nil }
-        return windows[windowIndex].frame
+        guard windowIndex >= 0, windowIndex < windows.count else { return nil }
+        let a = windows[windowIndex].readAttributes([kAXPositionAttribute, kAXSizeAttribute])
+        guard let origin = AXValueExtract.point(a[kAXPositionAttribute]),
+              let size = AXValueExtract.size(a[kAXSizeAttribute]) else { return nil }
+        return CGRect(origin: origin, size: size)
     }
 }

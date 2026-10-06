@@ -64,8 +64,8 @@ final class WriteVerificationTests: XCTestCase {
 
     /// No target element means no readback, and no readback means no claim — this must
     /// never collapse into "landed".
-    func testNoElementIsUnverifiableNotSuccess() async {
-        let verdict = await InteractionTools.verifyWrite(
+    func testNoElementIsUnverifiableNotSuccess() async throws {
+        let verdict = try await InteractionTools.verifyWrite(
             pid: ProcessInfo.processInfo.processIdentifier, element: nil, text: "hello", append: false)
         guard case .unverifiable = verdict else {
             return XCTFail("expected .unverifiable, got \(verdict)")
