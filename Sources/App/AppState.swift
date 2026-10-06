@@ -1,5 +1,6 @@
 import AccessibilityEngine
 import Foundation
+import MCPTools
 import SwiftUI
 
 @Observable
@@ -10,6 +11,19 @@ public final class AppState {
     var requestCount = 0
     var lastRequestTime: Date?
     var lastToolName: String?
+    /// When the MCP server last came up — drives the uptime readout.
+    var serverStartedAt: Date?
+    /// Refreshed with the permission poll — the user can change it in System Settings.
+    var defaultBrowserName = BrowserResolver.systemDefault()?.name ?? "—"
+    /// Newest first, capped at `recentCallLimit`; the activity feed in both windows.
+    var recentCalls: [ToolCall] = []
+    static let recentCallLimit = 8
+
+    struct ToolCall: Identifiable, Equatable {
+        let id = UUID()
+        let name: String
+        let at: Date
+    }
     var accessibilityGranted = false
     var screenRecordingGranted = false
     /// UI mirror of `FocusGuard` (the engine-side source of truth read by the
@@ -24,14 +38,20 @@ public final class AppState {
     /// Records an MCP tool call for telemetry rendered in StatusView / MenuBarView.
     /// Called from the (off-main, @Sendable) onToolCall closure by hopping to MainActor.
     func recordToolCall(_ name: String) {
+        let now = Date()
         requestCount += 1
         lastToolName = name
-        lastRequestTime = Date()
+        lastRequestTime = now
+        recentCalls.insert(ToolCall(name: name, at: now), at: 0)
+        if recentCalls.count > Self.recentCallLimit {
+            recentCalls.removeLast(recentCalls.count - Self.recentCallLimit)
+        }
     }
 
     func updatePermissions() {
         accessibilityGranted = PermissionChecker.isAccessibilityGranted
         screenRecordingGranted = PermissionChecker.isScreenRecordingGranted
+        defaultBrowserName = BrowserResolver.systemDefault()?.name ?? "—"
         if accessibilityGranted && screenRecordingGranted {
             stopPermissionPolling()
         } else if didFirstPoll {
