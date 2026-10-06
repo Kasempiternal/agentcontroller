@@ -288,7 +288,7 @@ Read all visible text strings from elements of a given role (default AXStaticTex
 
 ### `click`
 
-Click a UI element (AX press action) or at screen coordinates. PREFER `elementId` from a prior snapshot/describe_screen — it acts on that exact element with no tree search, and it is both faster and more reliable than a selector. Fall back to selectors only for elements you have not snapshotted: role+title/identifier when known, labelContains when you see the text on-screen but don't know which AX attribute carries it (common with SwiftUI buttons that stash labels in AXDescription); a selector matching nothing in a rendered UI fails fast; one that may just not have rendered yet retries until `timeout`. Element searches default to the focused window (scope:'window'); pass scope:'app' to search all windows + menu bar. Issuing several clicks? Send them as one `run_steps` call rather than one call each. BACKGROUND-SAFE BY DEFAULT: the element path uses AXPress and the coordinate path posts to the target PID — neither moves the user's mouse cursor, brings the app forward, nor steals keyboard focus. Set foreground:true ONLY for apps that ignore targeted events (Electron/games) — that activates the app and injects a global click (moves the real cursor). Auto-routes: CDP click for web refs, bpy select for Blender scene ids, idb tap for iOS; you do not pick the backend.
+Click a UI element (AX press action) or at screen coordinates. PREFER `elementId` from a prior snapshot/describe_screen — it acts on that exact element with no tree search, and it is both faster and more reliable than a selector. Fall back to selectors only for elements you have not snapshotted: role+title/identifier when known, labelContains when you see the text on-screen but don't know which AX attribute carries it (common with SwiftUI buttons that stash labels in AXDescription); a selector matching nothing in a rendered UI fails fast; one that may just not have rendered yet retries until `timeout`. Element searches default to the focused window (scope:'window'); pass scope:'app' to search every window of the app. The menu bar is NOT searched even then (closed menu items would match every 'Save'/'Close'): add includeMenus:true, or use an AXMenu* role, or use navigate_menu. Issuing several clicks? Send them as one `run_steps` call rather than one call each. BACKGROUND-SAFE BY DEFAULT: the element path uses AXPress and the coordinate path posts to the target PID — neither moves the user's mouse cursor, brings the app forward, nor steals keyboard focus. Set foreground:true ONLY for apps that ignore targeted events (Electron/games) — that activates the app and injects a global click (moves the real cursor). Auto-routes: CDP click for web refs, bpy select for Blender scene ids, idb tap for iOS; you do not pick the backend.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -301,7 +301,7 @@ Click a UI element (AX press action) or at screen coordinates. PREFER `elementId
 | `index` | integer | no | 0-based index to pick the Nth of several identical matches (default first) |
 | `labelContains` | string | no | Substring across title/description/help/value — use when you see the text but don't know which AX attribute carries it |
 | `role` | string | no | AX role (e.g. 'AXButton', 'AXTextField', 'AXStaticText') |
-| `scope` | string (`window` \| `app`) | no | Search scope: 'window' (focused window, default) or 'app' (all windows + menu bar) |
+| `scope` | string (`window` \| `app`) | no | Search scope: 'window' (focused window, default) or 'app' (all windows; the menu bar only with includeMenus or an AXMenu* role) |
 | `timeout` | number | no | Seconds to keep retrying the element find before reporting a miss (default 4) |
 | `title` | string | no | Exact AXTitle match |
 | `titleContains` | string | no | Partial AXTitle match (case-insensitive) |
@@ -469,7 +469,7 @@ Swipe gesture from one point to another (implemented as a mouse drag). BACKGROUN
 | `endY` | number | yes | End Y coordinate |
 | `startX` | number | yes | Start X coordinate |
 | `startY` | number | yes | Start Y coordinate |
-| `duration` | number | no | Duration in seconds (default 0.3) |
+| `duration` | number | no | Duration in seconds (default 0.3, clamped to 0-5) |
 | `foreground` | boolean | no | Default false (background-safe). When true, activates the app and drags via the global HID stream (moves the real cursor). |
 
 ### `drag_drop`

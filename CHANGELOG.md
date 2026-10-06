@@ -6,6 +6,50 @@ All notable changes to AgentController are documented here. The format follows
 
 ## [Unreleased]
 
+## [2.9.0] - 2026-10-06
+
+### Fixed
+- **"Use Safari" no longer ends up in Chrome.** Three causes, all removed: an explicit
+  `app` now beats `url` (it used to be discarded, turning every web call into a headless
+  Chromium session); `open_url` opens the user's default browser or the one named in
+  `browser` instead of always launching Chromium; and the server instructions no longer
+  tell the agent "URL = headless Chromium" — they state that a named browser is binding
+  and name this Mac's actual default browser.
+- **Snapshots of web pages were unusable.** WebKit puts `AXShowMenu` /
+  `AXScrollToVisible` on every node, so 'interactive' kept ~2,300 elements (262 KB) of a
+  GitHub page. Incidental actions are now ignored, results are capped (`maxElements`,
+  default 500, with `truncated`), and browsers walk to depth 40 so page content appears.
+- `assert_not_visible` could pass without looking (mistyped selector, hung or quit app).
+- `type_text` could clear the user's focused document with Cmd+A / Delete.
+- Esc / `notifications/cancelled` now stops running tools, including `run_steps`.
+- A hung app cost ~6s per attribute read (3 retries of a 2s timeout); now 2s once, then
+  a per-app stall breaker fails the rest of the walk fast.
+- CDP: the page reloaded on nearly every call; one headless Chrome leaked per URL;
+  pages over 1 MiB killed the socket; concurrent calls stole each other's replies;
+  `headless:true` could attach to and navigate the user's own Chrome tab.
+- iOS: every idb call was rejected (`--udid` placement), `booted` never resolved, and
+  screens over ~170 elements always timed out on a full pipe.
+- Timeouts that never fired (Blender socket `timeval` EDOM, uncancellable WebSocket
+  receives), `scroll_until_visible` spinning, menu leaf fuzzy-matching the wrong item,
+  window tools blocking the main thread, error responses without an `id`, NaN frames
+  blanking a whole snapshot, `build.sh` leaving an empty app bundle under App Management.
+
+### Added
+- **Real-browser routing.** `snapshot` / `screenshot_window` / `read_all_text` with
+  `app:"Safari"` (or `browser:`) plus `url` open the page in that browser in the
+  background, wait for it to load, and drive the real window with the user's logins.
+  No browser named → the default browser. `headless:true` with no browser named → the
+  private headless Chromium. The 2.8.0 `safari:<url>` form still works.
+- **Compiled MCP bridge**: `agentcontroller mcp` (~1 ms per call vs ~40 ms for the bash
+  bridge). The bash bridge stays installed as a fallback.
+
+### Changed
+- `run_steps` results are flattened to `{tool, isError, result, notices?}` (~30% smaller).
+- App-scope searches skip the menu bar unless `includeMenus:true` or an `AXMenu*` role.
+- Menu paths need an exact final item; ambiguous or missing items list the candidates.
+- Snapshot does ~5-9x fewer AX calls; screenshots capture at final size; window
+  enumeration is cached for 2.5s.
+
 ## [2.7.0] - 2026-09-15
 
 ### Added
