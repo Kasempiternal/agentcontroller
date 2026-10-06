@@ -12,6 +12,38 @@ public struct CapabilityRecord: Equatable, Sendable {
         case blenderWS = "bpy-ws"
         case iosSim = "ios-sim"
         case hid
+
+        /// What this backend actually implements. `routableTools` is only the set of tools
+        /// the router looks at; claiming a tool here that `BackendRouter` has no case for
+        /// ends in a "not implemented" error after the probe, so this is the single list
+        /// to keep honest.
+        public var supportedTools: Set<String> {
+            switch self {
+            case .cdp:
+                return [
+                    "snapshot", "describe_screen", "click", "double_click", "type_text",
+                    "read_text", "read_all_text",
+                    "assert_visible", "assert_not_visible", "wait_for_element", "find_elements",
+                    "screenshot_window", "screenshot_element", "screenshot_screen",
+                    "open_url", "run_app_code",
+                ]
+            case .blenderLab, .blenderWS:
+                return ["snapshot", "describe_screen", "click", "run_app_code"]
+            case .iosSim:
+                return ["snapshot", "describe_screen", "click", "type_text"]
+            case .ax, .hid:
+                return []
+            }
+        }
+
+        public var targetNoun: String {
+            switch self {
+            case .cdp: return "web"
+            case .blenderLab, .blenderWS: return "Blender"
+            case .iosSim: return "iOS simulator"
+            case .ax, .hid: return "native"
+            }
+        }
     }
 
     public enum Ask: String, Equatable, Sendable {
@@ -64,12 +96,30 @@ public struct CapabilityRecord: Equatable, Sendable {
     public var usesAXFallback: Bool { backend == .ax }
 
     /// Tools the specialized backend can service. Anything else falls through
-    /// to native AX (menus, window chrome, first-run dialogs).
+    /// to native AX (menus, window chrome, first-run dialogs) — or, for a web page or a
+    /// simulator that has no AX fallback, becomes an actionable error.
     public func handles(tool: String) -> Bool {
-        if backend == .ax || backend == .hid { return false }
-        return Self.routableTools.contains(tool)
+        backend.supportedTools.contains(tool)
     }
 
+    /// The simulator the probe resolved. For the "booted" alias this is the one booted
+    /// simulator's real UDID — what idb needs — not the alias the caller typed.
+    public var resolvedUDID: String? { extras["udid"]?.stringValue }
+
+    public static func unsupportedMessage(tool: String, backend: Backend) -> String {
+        let supported = backend.supportedTools.sorted().joined(separator: ", ")
+        let escape: String
+        switch backend {
+        case .cdp: escape = " For anything else, run_app_code runs JavaScript in the page."
+        case .blenderLab, .blenderWS: escape = " For anything else, run_app_code runs Python in Blender."
+        default: escape = ""
+        }
+        return "\(tool) is not supported on \(backend.targetNoun) targets. Supported: \(supported).\(escape)"
+    }
+
+    /// Every tool the router considers routing off the AX path. A tool in here that the
+    /// chosen backend does not support is refused with `unsupportedMessage` for web and
+    /// simulator targets, and left to AX for Blender (whose window chrome AX does serve).
     public static let routableTools: Set<String> = [
         "snapshot", "describe_screen",
         "click", "double_click", "right_click", "type_text",
@@ -77,7 +127,7 @@ public struct CapabilityRecord: Equatable, Sendable {
         "assert_visible", "assert_not_visible", "assert_value",
         "wait_for_element", "find_elements",
         "get_element_tree", "get_element_attributes", "get_focused_element",
-        "screenshot_window", "screenshot_element",
+        "screenshot_window", "screenshot_element", "screenshot_screen",
         "scroll", "scroll_until_visible", "swipe", "drag_drop",
         "send_shortcut", "open_url", "run_app_code",
     ]

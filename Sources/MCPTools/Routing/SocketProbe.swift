@@ -13,6 +13,45 @@ enum SocketProbe {
         (try? roundTrip(host: host, port: port, payload: nil, timeoutMs: timeoutMs)) != nil
     }
 
+    /// Blocking socket I/O belongs on a GCD thread, never on an actor: a Blender that
+    /// accepts and then hangs would otherwise hold the actor for the whole timeout and
+    /// queue every other handshake behind it (21 ports × 250ms serialised).
+    static func connectAsync(host: String = "127.0.0.1", port: UInt16, timeoutMs: Int = 200) async -> Bool {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(returning: connect(host: host, port: port, timeoutMs: timeoutMs))
+            }
+        }
+    }
+
+    static func roundTripAsync(
+        host: String = "127.0.0.1",
+        port: UInt16,
+        payload: Data?,
+        timeoutMs: Int = 300,
+        readUntilNull: Bool = false
+    ) async throws -> Data {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(with: Result {
+                    try roundTrip(host: host, port: port, payload: payload, timeoutMs: timeoutMs, readUntilNull: readUntilNull)
+                })
+            }
+        }
+    }
+
+    /// SO_RCVTIMEO/SO_SNDTIMEO value for `ms`. `tv_usec` must stay below 1_000_000: the
+    /// kernel rejects anything else with EDOM (measured errno 33 for a 1000ms+ timeout
+    /// packed entirely into tv_usec), setsockopt's result went unchecked, and recv was
+    /// left with no timeout at all.
+    static func socketTimeout(ms: Int) -> timeval {
+        let clamped = max(ms, 1)
+        return timeval(
+            tv_sec: __darwin_time_t(clamped / 1000),
+            tv_usec: __darwin_suseconds_t((clamped % 1000) * 1000)
+        )
+    }
+
     static func roundTrip(
         host: String = "127.0.0.1",
         port: UInt16,
@@ -20,6 +59,7 @@ enum SocketProbe {
         timeoutMs: Int = 300,
         readUntilNull: Bool = false
     ) throws -> Data {
+        let started = Date()
         let fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
         guard fd >= 0 else { throw ProbeError.connectFailed }
         defer { close(fd) }
@@ -52,13 +92,20 @@ enum SocketProbe {
         var len = socklen_t(MemoryLayout<Int32>.size)
         getsockopt(fd, SOL_SOCKET, SO_ERROR, &soError, &len)
         guard soError == 0 else { throw ProbeError.connectFailed }
+        // A bare connect probe is done once the handshake completes; reading would only
+        // make every open port cost its full timeout.
+        guard payload != nil else { return Data() }
 
         flags = fcntl(fd, F_GETFL, 0)
         _ = fcntl(fd, F_SETFL, flags & ~O_NONBLOCK)
 
-        var tv = timeval(tv_sec: 0, tv_usec: Int32(timeoutMs) * 1000)
-        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
-        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        // One budget for the whole exchange: connect, send and read share `timeoutMs`
+        // instead of each getting a full one.
+        let remainingMs = max(timeoutMs - Int(Date().timeIntervalSince(started) * 1000), 1)
+        var tv = socketTimeout(ms: remainingMs)
+        guard setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size)) == 0,
+              setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size)) == 0
+        else { throw ProbeError.connectFailed }
 
         if let payload {
             let sent = payload.withUnsafeBytes { raw in
@@ -69,21 +116,27 @@ enum SocketProbe {
 
         var collected = Data()
         var buffer = [UInt8](repeating: 0, count: 16_384)
-        let deadline = Date().addingTimeInterval(Double(timeoutMs) / 1000.0)
+        let deadline = started.addingTimeInterval(Double(timeoutMs) / 1000.0)
+        var complete = false
         while Date() < deadline {
             let n = recv(fd, &buffer, buffer.count, 0)
             if n > 0 {
                 collected.append(contentsOf: buffer[0..<n])
-                if readUntilNull, collected.contains(0) { break }
-                if !readUntilNull { break }
+                if !readUntilNull || collected.contains(0) {
+                    complete = true
+                    break
+                }
             } else if n == 0 {
+                complete = true
                 break
             } else {
-                if errno == EAGAIN || errno == EWOULDBLOCK { continue }
+                if errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR { continue }
                 break
             }
         }
-        if payload != nil && collected.isEmpty { throw ProbeError.timeout }
+        // A half-read reply is a timeout, not a short answer — handing it on made the
+        // caller fail later with a JSON decode error that hid the real cause.
+        if payload != nil && (!complete || collected.isEmpty) { throw ProbeError.timeout }
         return collected
     }
 

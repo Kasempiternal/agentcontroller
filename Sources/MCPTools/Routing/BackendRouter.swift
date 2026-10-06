@@ -1,21 +1,35 @@
 import Foundation
 import MCPServer
 
+/// The caller asked for something this backend cannot do (a tool it lacks, a missing
+/// elementId, consent not yet given). Nothing about the backend itself is in doubt.
+private struct Refusal: Error, LocalizedError {
+    let message: String
+    var errorDescription: String? { message }
+}
+
 /// Dispatch snapshot/click/type/… onto the backend the probe selected.
 /// Returns nil when the AX/UIA/AT-SPI handler should run unchanged.
 public enum BackendRouter {
     public static func dispatch(name: String, arguments: JSONValue) async -> JSONValue? {
         if let handleId = arguments["elementId"]?.stringValue,
            let ref = await RoutedHandleStore.shared.resolve(handleId) {
+            guard ref.backend.supportedTools.contains(name) else {
+                return ToolResult.error(CapabilityRecord.unsupportedMessage(tool: name, backend: ref.backend))
+            }
             do {
                 return try await perform(name: name, arguments: arguments, ref: ref)
             } catch {
+                if backendMayBeGone(error) { await ProbeCache.shared.invalidate(backend: ref.backend) }
                 return ToolResult.error(error.localizedDescription)
             }
         }
 
         guard CapabilityRecord.routableTools.contains(name) else { return nil }
-        guard let identity = TargetIdentity.from(arguments: arguments) else { return nil }
+        // open_url means "open it in a browser the user can see" — the default handler or
+        // the one named. Only an explicit headless:true sends it to the private Chromium.
+        if name == "open_url", arguments["headless"]?.boolValue != true { return nil }
+        guard let identity = identity(from: arguments) else { return nil }
         let capability = await CapabilityProbe.probe(identity)
         if identity.kind == .url, capability.backend != .cdp {
             return ToolResult.error(capability.askDetail ?? capability.reason)
@@ -23,16 +37,38 @@ public enum BackendRouter {
         if identity.kind == .iosSimulator, capability.backend != .iosSim {
             return ToolResult.error(capability.askDetail ?? capability.reason)
         }
-        guard capability.handles(tool: name), capability.backend != .ax else { return nil }
+        guard capability.backend != .ax else { return nil }
+        let owned = identity.kind == .url || identity.kind == .iosSimulator
+        guard capability.handles(tool: name) else {
+            // A web page or simulator has no AX path to fall back to; Blender's window
+            // chrome (menus, dialogs) does.
+            guard owned else { return nil }
+            return ToolResult.error(CapabilityRecord.unsupportedMessage(tool: name, backend: capability.backend))
+        }
 
         do {
             return try await perform(name: name, arguments: arguments, identity: identity, capability: capability)
         } catch {
-            if identity.kind == .url || identity.kind == .iosSimulator {
+            // The verdict may be why it failed (Blender quit, simulator shut down): the next
+            // call re-probes instead of trusting a 30s-old answer.
+            if backendMayBeGone(error) { await ProbeCache.shared.invalidate(backend: capability.backend) }
+            // run_app_code has no AX equivalent, so falling through would only replace the
+            // real error (a Python traceback, the consent request) with "no in-process backend".
+            if owned || name == "run_app_code" {
                 return ToolResult.error(error.localizedDescription)
             }
             return nil
         }
+    }
+
+    /// Who the call names, plus the two things only the arguments know: which page an
+    /// attached Chrome is meant to be on (`_pageURL`, set by `BrowserRouting`), and whether
+    /// the agent asked for the private headless browser.
+    static func identity(from arguments: JSONValue) -> TargetIdentity? {
+        TargetIdentity.from(arguments: arguments)?.routed(
+            pageHint: arguments[BrowserRouting.pageURLKey]?.stringValue.flatMap(TargetIdentity.parseURL),
+            headless: arguments["headless"]?.boolValue == true
+        )
     }
 
     private static func perform(name: String, arguments: JSONValue, ref: RoutedRef) async throws -> JSONValue {
@@ -58,11 +94,26 @@ public enum BackendRouter {
         case .blenderLab, .blenderWS:
             return try await performBlenderTool(name: name, arguments: arguments, capability: capability)
         case .iosSim:
-            return try await performIOSTool(name: name, arguments: arguments, identity: identity)
+            return try await performIOSTool(name: name, arguments: arguments, capability: capability)
         case .ax, .hid:
             return ToolResult.error("Router asked to handle an AX target")
         }
     }
+
+    /// Transport and subprocess failures cast doubt on the cached probe verdict; a caller's
+    /// mistake, a stale element id, or a script that threw do not.
+    private static func backendMayBeGone(_ error: Error) -> Bool {
+        if error is Refusal || error is CDPError { return false }
+        if let tool = error as? ToolError {
+            switch tool {
+            case .missingParameter, .invalidParameter, .notImplemented: return false
+            default: return true
+            }
+        }
+        return true
+    }
+
+    // MARK: - Web (CDP)
 
     private static func performCDP(
         name: String,
@@ -74,22 +125,27 @@ public enum BackendRouter {
         case "snapshot", "describe_screen":
             guard let identity else { throw ToolError.missingParameter("app") }
             let interactive = (arguments["mode"]?.stringValue?.lowercased() ?? "interactive") != "all"
-            let (_, refs) = try await WebCDPBackend.shared.snapshot(identity: identity, interactiveOnly: interactive)
-            let ids = await RoutedHandleStore.shared.replace(refs: refs)
-            let elements = CDPAccessibility.compactElements(ids: ids, refs: refs)
-            return ToolResult.json(.object([
+            let page = try await WebCDPBackend.shared.snapshot(identity: identity, interactiveOnly: interactive)
+            let ids = await RoutedHandleStore.shared.replace(refs: page.refs, scope: .cdp(page.key))
+            let elements = CDPAccessibility.compactElements(ids: ids, refs: page.refs)
+            var fields: [String: JSONValue] = [
                 "backend": .string("cdp"),
                 "mode": .string(interactive ? "interactive" : "all"),
                 "count": .int(elements.count),
                 "elements": .array(elements),
-            ]))
+            ]
+            if let url = page.url { fields["url"] = .string(url) }
+            if !page.loaded {
+                fields["note"] = .string("The page's load event did not fire within \(Int(WebCDPBackend.loadTimeout))s; this is whatever had rendered. Re-snapshot (or wait_for_element) if content looks incomplete.")
+            }
+            return ToolResult.json(.object(fields))
         case "click", "double_click":
-            guard let ref else { throw ToolError.missingParameter("elementId") }
-            try await WebCDPBackend.shared.click(ref: ref)
-            if name == "double_click" { try await WebCDPBackend.shared.click(ref: ref) }
-            return ToolResult.action(success: true, method: "cdp-click")
+            guard let ref else { throw needsElementId(name, noun: "web page") }
+            let double = name == "double_click"
+            try await WebCDPBackend.shared.click(ref: ref, clickCount: double ? 2 : 1)
+            return ToolResult.action(success: true, method: double ? "cdp-double-click" : "cdp-click")
         case "type_text":
-            guard let ref else { throw ToolError.missingParameter("elementId") }
+            guard let ref else { throw needsElementId(name, noun: "web page") }
             guard let text = arguments["text"]?.stringValue else { throw ToolError.missingParameter("text") }
             try await WebCDPBackend.shared.typeText(ref: ref, text: text)
             return ToolResult.action(success: true, method: "cdp-type")
@@ -98,60 +154,111 @@ public enum BackendRouter {
                 let text = try await WebCDPBackend.shared.readText(ref: ref)
                 return ToolResult.json(.object(["text": .string(text), "backend": .string("cdp")]))
             }
-            throw ToolError.missingParameter("elementId")
+            guard name == "read_all_text", let identity else { throw needsElementId(name, noun: "web page") }
+            let text = try await WebCDPBackend.shared.readAllText(identity: identity)
+            return ToolResult.json(.object(["text": .string(text), "backend": .string("cdp")]))
         case "screenshot_window", "screenshot_element", "screenshot_screen":
-            guard let identity else { throw ToolError.missingParameter("app") }
+            guard let identity else {
+                throw Refusal(message: "\(name) by elementId is not supported on web targets; use screenshot_window with the page url.")
+            }
             let data = try await WebCDPBackend.shared.screenshot(identity: identity)
             return ToolResult.image(base64: data.base64EncodedString(), mimeType: "image/jpeg")
         case "open_url":
             guard let identity else { throw ToolError.missingParameter("url") }
-            _ = try await WebCDPBackend.shared.session(for: identity, headless: true)
-            return ToolResult.json(.object(["backend": .string("cdp"), "url": .string(identity.raw)]))
+            let session = try await WebCDPBackend.shared.openURL(identity: identity)
+            var fields: [String: JSONValue] = [
+                "backend": .string("cdp"),
+                "url": .string(identity.raw),
+                "pageURL": .string(session.browserURL),
+                "loaded": .bool(session.loaded),
+            ]
+            if !session.loaded { fields["note"] = .string("Load event not seen within \(Int(WebCDPBackend.loadTimeout))s.") }
+            return ToolResult.json(.object(fields))
         case "run_app_code":
             guard let identity else { throw ToolError.missingParameter("app") }
             guard let code = arguments["code"]?.stringValue else { throw ToolError.missingParameter("code") }
             try requireConsent(backend: "cdp", arguments: arguments, detail: "JavaScript inside the page")
             let result = try await WebCDPBackend.shared.evaluate(identity: identity, expression: code)
             return ToolResult.json(.object(["backend": .string("cdp"), "result": result]))
-        case "assert_visible", "wait_for_element", "find_elements":
-            guard let identity else { throw ToolError.missingParameter("app") }
-            let (_, refs) = try await WebCDPBackend.shared.snapshot(identity: identity, interactiveOnly: false)
-            let ids = await RoutedHandleStore.shared.replace(refs: refs)
-            if let wanted = arguments["labelContains"]?.stringValue ?? arguments["title"]?.stringValue
-                ?? arguments["titleContains"]?.stringValue {
-                let hit = zip(ids, refs).first { _, ref in
-                    if case .cdp(_, _, _, let label) = ref {
-                        return label.localizedCaseInsensitiveContains(wanted)
-                    }
-                    return false
-                }
-                let found = hit != nil
-                if name == "assert_visible" {
-                    return found
-                        ? ToolResult.json(.object(["pass": .bool(true), "backend": .string("cdp")]))
-                        : ToolResult.error("Not visible: \(wanted)")
-                }
-                if let hit {
-                    return ToolResult.json(.object([
-                        "id": .string(hit.0),
-                        "backend": .string("cdp"),
-                    ]))
-                }
-                return ToolResult.error("No element matched \(wanted)")
+        case "assert_visible", "assert_not_visible", "wait_for_element", "find_elements":
+            guard let identity else {
+                throw Refusal(message: "\(name) takes a selector (labelContains, role, identifier …) with app or url, not an elementId.")
             }
-            return ToolResult.json(.object(["count": .int(ids.count), "backend": .string("cdp")]))
+            return try await performCDPQuery(name: name, arguments: arguments, identity: identity)
         default:
-            throw ToolError.notImplemented("CDP routing for \(name)")
+            throw Refusal(message: CapabilityRecord.unsupportedMessage(tool: name, backend: .cdp))
         }
     }
 
-    private static func performBlender(name: String, arguments: JSONValue, ref: RoutedRef) async throws -> JSONValue {
-        guard case .blender(let objectName, _) = ref else {
-            throw ToolError.actionFailed("Not a Blender element")
+    /// Selector tools against a live page. Waiting is the page's problem, not the caller's:
+    /// `wait_for_element` and `assert_*` poll to their timeout the way the AX versions do,
+    /// instead of judging the first snapshot (taken mid-render, so usually empty).
+    private static func performCDPQuery(name: String, arguments: JSONValue, identity: TargetIdentity) async throws -> JSONValue {
+        let selector = try CDPSelector.parse(arguments)
+        if selector.isEmpty && name != "find_elements" {
+            throw ToolError.invalidParameter("\(name) needs a selector: role, identifier, title, titleContains, description, descriptionContains or labelContains")
         }
-        let endpoints = await BlenderBackend.shared.handshake()
-        guard let endpoint = endpoints.first, endpoints.count == 1 else {
-            throw ToolError.actionFailed("Blender socket not uniquely available")
+        let defaultTimeout: Double = name == "wait_for_element" ? 10 : name == "find_elements" ? 0 : 7
+        let timeout = max(arguments["timeout"]?.doubleValue ?? defaultTimeout, 0)
+        let pollInterval = max(arguments["pollInterval"]?.doubleValue ?? 0.5, 0.1)
+        let outcome = try await WebCDPBackend.shared.query(
+            identity: identity,
+            selector: selector,
+            expect: name == "assert_not_visible" ? .absent : .present,
+            timeout: timeout,
+            pollInterval: pollInterval
+        )
+        let backend = JSONValue.string("cdp")
+        let elapsed = JSONValue.double(outcome.elapsed)
+
+        switch name {
+        case "assert_not_visible":
+            guard outcome.satisfied else {
+                return ToolResult.error("assert_not_visible FAILED: element matching \(selector.summary) was still present after \(timeout)s")
+            }
+            return ToolResult.json(.object(["passed": .bool(true), "elapsed": elapsed, "backend": backend]))
+        case "assert_visible", "wait_for_element":
+            guard outcome.satisfied, let first = outcome.matched.first else {
+                if name == "assert_visible" {
+                    return ToolResult.error("assert_visible FAILED: no element matched \(selector.summary) within \(timeout)s")
+                }
+                return ToolResult.json(.object([
+                    "found": .bool(false),
+                    "elapsed": elapsed,
+                    "message": .string("Element not found within \(timeout)s timeout"),
+                    "backend": backend,
+                ]))
+            }
+            let ids = await RoutedHandleStore.shared.replace(refs: outcome.refs, scope: .cdp(outcome.key))
+            var fields: [String: JSONValue] = [
+                name == "assert_visible" ? "passed" : "found": .bool(true),
+                "id": .string(ids[first]),
+                "elapsed": elapsed,
+                "backend": backend,
+            ]
+            if case .cdp(_, _, let role, let label) = outcome.refs[first] {
+                fields["role"] = .string(role)
+                if !label.isEmpty { fields["label"] = .string(label) }
+            }
+            return ToolResult.json(.object(fields))
+        default:
+            let ids = await RoutedHandleStore.shared.replace(refs: outcome.refs, scope: .cdp(outcome.key))
+            let limit = arguments["maxResults"]?.intValue ?? 20
+            let shown = Array(outcome.matched.prefix(limit))
+            let elements = CDPAccessibility.compactElements(ids: shown.map { ids[$0] }, refs: shown.map { outcome.refs[$0] })
+            return ToolResult.json(.object([
+                "backend": backend,
+                "count": .int(outcome.matched.count),
+                "elements": .array(elements),
+            ]))
+        }
+    }
+
+    // MARK: - Blender
+
+    private static func performBlender(name: String, arguments: JSONValue, ref: RoutedRef) async throws -> JSONValue {
+        guard case .blender(let objectName, _, let endpoint) = ref else {
+            throw ToolError.actionFailed("Not a Blender element")
         }
         switch name {
         case "click":
@@ -159,10 +266,10 @@ public enum BackendRouter {
             let code = "import bpy; obj=bpy.data.objects.get('\(escape(objectName))');\n" +
                 "result={'selected': False}\n" +
                 "if obj:\n    bpy.context.view_layer.objects.active=obj; obj.select_set(True); result={'selected': True, 'name': obj.name}"
-            let result = try await BlenderBackend.shared.execute(endpoint: endpoint, code: code)
+            let result = try await BlenderBackend.execute(endpoint: endpoint, code: code)
             return ToolResult.json(.object(["backend": .string(endpoint.kind.rawValue), "result": result, "method": .string("bpy-select")]))
         default:
-            throw ToolError.notImplemented("Blender routing for \(name)")
+            throw Refusal(message: CapabilityRecord.unsupportedMessage(tool: name, backend: endpoint.kind))
         }
     }
 
@@ -171,16 +278,18 @@ public enum BackendRouter {
         arguments: JSONValue,
         capability: CapabilityRecord
     ) async throws -> JSONValue {
-        let endpoints = await BlenderBackend.shared.handshake()
-        guard let endpoint = pickBlender(endpoints, capability: capability) else {
+        // The probe already handshook and cached its answer; use that endpoint rather than
+        // handshaking 21 ports again. A failure invalidates the cache, which is what
+        // triggers the next handshake.
+        guard let endpoint = BlenderEndpoint(record: capability) else {
             throw ToolError.actionFailed(capability.askDetail ?? "Blender socket unavailable")
         }
         switch name {
         case "snapshot", "describe_screen":
-            let refs = try await BlenderBackend.shared.sceneSnapshot(endpoint: endpoint)
-            let ids = await RoutedHandleStore.shared.replace(refs: refs)
+            let refs = try await BlenderBackend.sceneSnapshot(endpoint: endpoint)
+            let ids = await RoutedHandleStore.shared.replace(refs: refs, scope: .blender(endpoint.address))
             let elements: [JSONValue] = zip(ids, refs).map { id, ref in
-                guard case .blender(let objectName, let kind) = ref else {
+                guard case .blender(let objectName, let kind, _) = ref else {
                     return .object(["id": .string(id)])
                 }
                 return .object([
@@ -199,75 +308,80 @@ public enum BackendRouter {
         case "run_app_code":
             guard let code = arguments["code"]?.stringValue else { throw ToolError.missingParameter("code") }
             try requireConsent(backend: "bpy", arguments: arguments, detail: "Python inside Blender")
-            let result = try await BlenderBackend.shared.execute(endpoint: endpoint, code: code)
+            let result = try await BlenderBackend.execute(endpoint: endpoint, code: code)
             return ToolResult.json(.object(["backend": .string(endpoint.kind.rawValue), "result": result]))
+        case "click":
+            throw needsElementId(name, noun: "Blender scene")
         default:
-            throw ToolError.notImplemented("Blender routing for \(name)")
+            throw Refusal(message: CapabilityRecord.unsupportedMessage(tool: name, backend: endpoint.kind))
         }
     }
 
-    private static func pickBlender(
-        _ endpoints: [BlenderBackend.Endpoint],
-        capability: CapabilityRecord
-    ) -> BlenderBackend.Endpoint? {
-        if endpoints.count == 1 { return endpoints[0] }
-        if let portStr = capability.endpoint?.split(separator: ":").last,
-           let port = UInt16(portStr) {
-            return endpoints.first { $0.port == port }
-        }
-        return nil
-    }
+    // MARK: - iOS simulator
 
     private static func performIOS(name: String, arguments: JSONValue, ref: RoutedRef) async throws -> JSONValue {
         switch name {
-        case "click", "double_click":
-            try IOSSimBackend.tap(ref: ref)
+        case "click":
+            try await IOSSimBackend.shared.tap(ref: ref)
             return ToolResult.action(success: true, method: "idb-tap")
         case "type_text":
-            guard case .ios(let udid, _, _, _, _, _) = ref else {
-                throw ToolError.actionFailed("Not an iOS element")
-            }
             guard let text = arguments["text"]?.stringValue else { throw ToolError.missingParameter("text") }
-            try IOSSimBackend.typeText(udid: udid, text: text)
-            return ToolResult.action(success: true, method: "idb-text")
+            try await IOSSimBackend.shared.typeText(ref: ref, text: text)
+            return ToolResult.action(success: true, method: "idb-tap-text")
         default:
-            throw ToolError.notImplemented("iOS routing for \(name)")
+            throw Refusal(message: CapabilityRecord.unsupportedMessage(tool: name, backend: .iosSim))
         }
     }
 
     private static func performIOSTool(
         name: String,
         arguments: JSONValue,
-        identity: TargetIdentity
+        capability: CapabilityRecord
     ) async throws -> JSONValue {
-        let udid = identity.udid ?? identity.raw
+        // The probe's resolved UDID, never the identity's: "booted" is an alias only this
+        // router understands, and idb rejects it.
+        guard let udid = capability.resolvedUDID else {
+            throw ToolError.actionFailed("The simulator UDID was not resolved; call inspect_capabilities.")
+        }
         switch name {
         case "snapshot", "describe_screen":
-            let refs = try IOSSimBackend.snapshot(udid: udid)
-            let ids = await RoutedHandleStore.shared.replace(refs: refs)
+            let refs = try await IOSSimBackend.shared.snapshot(udid: udid)
+            let ids = await RoutedHandleStore.shared.replace(refs: refs, scope: .ios(udid))
             let elements: [JSONValue] = zip(ids, refs).map { id, ref in
-                guard case .ios(_, let uid, let x, let y, let w, let h) = ref else {
+                guard case .ios(_, let identifier, let role, let label, let x, let y, let w, let h) = ref else {
                     return .object(["id": .string(id)])
                 }
-                return .object([
+                var fields: [String: JSONValue] = [
                     "id": .string(id),
-                    "role": .string("element"),
-                    "label": .string(uid),
+                    "role": .string(role),
                     "enabled": .bool(true),
                     "frame": .object([
                         "x": .double(x), "y": .double(y),
                         "w": .double(w), "h": .double(h),
                     ]),
-                ])
+                ]
+                if !label.isEmpty { fields["label"] = .string(label) }
+                if !identifier.isEmpty { fields["identifier"] = .string(identifier) }
+                return .object(fields)
             }
             return ToolResult.json(.object([
                 "backend": .string("ios-sim"),
+                "udid": .string(udid),
                 "count": .int(elements.count),
                 "elements": .array(elements),
             ]))
+        case "click", "type_text":
+            throw needsElementId(name, noun: "simulator screen")
         default:
-            throw ToolError.notImplemented("iOS routing for \(name)")
+            throw Refusal(message: CapabilityRecord.unsupportedMessage(tool: name, backend: .iosSim))
         }
+    }
+
+    // MARK: - Shared
+
+    /// These backends act on handles, not selectors, so a bare click has nothing to aim at.
+    private static func needsElementId(_ tool: String, noun: String) -> Refusal {
+        Refusal(message: "\(tool) on a \(noun) needs an elementId — call snapshot first and pass one of its ids.")
     }
 
     private static func requireConsent(backend: String, arguments: JSONValue, detail: String) throws {
@@ -276,8 +390,8 @@ public enum BackendRouter {
             CodeExecConsent.shared.grant(backend)
             return
         }
-        throw ToolError.actionFailed(
-            "Code execution (\(detail)) requires consent:true once per machine. This runs inside the target app."
+        throw Refusal(
+            message: "Code execution (\(detail)) requires consent:true once per machine. This runs inside the target app."
         )
     }
 

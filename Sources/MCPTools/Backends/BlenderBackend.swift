@@ -35,27 +35,47 @@ enum BlenderProtocol {
     }
 }
 
-actor BlenderBackend {
-    static let shared = BlenderBackend()
+/// A Blender socket that answered the handshake. Public because `RoutedRef.blender`
+/// carries it: an elementId must act on the instance its snapshot came from.
+public struct BlenderEndpoint: Sendable, Equatable {
+    public var host: String
+    public var port: UInt16
+    public var kind: CapabilityRecord.Backend
+    public var pid: Int?
+    public var detail: String
 
-    struct Endpoint: Sendable, Equatable {
-        var host: String
-        var port: UInt16
-        var kind: CapabilityRecord.Backend
-        var pid: Int?
-        var detail: String
+    public init(host: String, port: UInt16, kind: CapabilityRecord.Backend, pid: Int? = nil, detail: String) {
+        self.host = host
+        self.port = port
+        self.kind = kind
+        self.pid = pid
+        self.detail = detail
     }
 
-    private var communityWS: URLSessionWebSocketTask?
+    public var address: String { "\(host):\(port)" }
 
-    func handshake(ports: ClosedRange<UInt16> = BlenderProtocol.defaultPorts) async -> [Endpoint] {
-        await withTaskGroup(of: Endpoint?.self) { group in
+    /// The endpoint a probe already found, rebuilt from its record — so a call after the
+    /// probe does not handshake 21 ports again just to rediscover it.
+    public init?(record: CapabilityRecord) {
+        guard record.backend == .blenderLab || record.backend == .blenderWS,
+              let address = record.endpoint,
+              let colon = address.lastIndex(of: ":"),
+              let port = UInt16(address[address.index(after: colon)...]) else { return nil }
+        self.init(host: String(address[..<colon]), port: port, kind: record.backend, pid: record.pid, detail: record.reason)
+    }
+}
+
+/// Stateless: every call is a socket exchange, and the blocking ones run on GCD threads.
+/// This used to be an actor, which serialised the whole handshake — a Blender that
+/// accepted and then hung held the actor for its full timeout while the other ports
+/// queued behind it.
+enum BlenderBackend {
+    static func handshake(ports: [UInt16] = Array(BlenderProtocol.defaultPorts)) async -> [BlenderEndpoint] {
+        await withTaskGroup(of: BlenderEndpoint?.self) { group in
             for port in ports {
-                group.addTask {
-                    await self.probe(port: port)
-                }
+                group.addTask { await probe(port: port) }
             }
-            var found: [Endpoint] = []
+            var found: [BlenderEndpoint] = []
             for await item in group {
                 if let item { found.append(item) }
             }
@@ -63,11 +83,11 @@ actor BlenderBackend {
         }
     }
 
-    func execute(endpoint: Endpoint, code: String) async throws -> JSONValue {
+    static func execute(endpoint: BlenderEndpoint, code: String) async throws -> JSONValue {
         switch endpoint.kind {
         case .blenderLab:
             let payload = try BlenderProtocol.encodeLab(code: code)
-            let data = try SocketProbe.roundTrip(
+            let data = try await SocketProbe.roundTripAsync(
                 host: endpoint.host,
                 port: endpoint.port,
                 payload: payload,
@@ -82,7 +102,7 @@ actor BlenderBackend {
         }
     }
 
-    func sceneSnapshot(endpoint: Endpoint) async throws -> [RoutedRef] {
+    static func sceneSnapshot(endpoint: BlenderEndpoint) async throws -> [RoutedRef] {
         let code = """
         import bpy
         result = [{'name': o.name, 'type': o.type, 'location': list(o.location)} for o in bpy.data.objects]
@@ -101,20 +121,22 @@ actor BlenderBackend {
             let name = item["name"]?.stringValue ?? item.stringValue
             guard let name, !name.isEmpty else { return nil }
             let kind = item["type"]?.stringValue ?? "OBJECT"
-            return RoutedRef.blender(name: name, kind: kind)
+            return RoutedRef.blender(name: name, kind: kind, endpoint: endpoint)
         }
     }
 
-    private func probe(port: UInt16) async -> Endpoint? {
+    private static func probe(port: UInt16) async -> BlenderEndpoint? {
+        // Most of the 21 ports have nothing behind them; one cheap connect rules those
+        // out before either protocol is attempted.
+        guard await SocketProbe.connectAsync(port: port, timeoutMs: 120) else { return nil }
         // Lab first: a tiny execute. Community sockets will fail to parse this.
-        if let endpoint = probeLab(port: port) { return endpoint }
-        if let endpoint = await probeCommunity(port: port) { return endpoint }
-        return nil
+        if let endpoint = await probeLab(port: port) { return endpoint }
+        return await probeCommunity(port: port)
     }
 
-    private func probeLab(port: UInt16) -> Endpoint? {
+    private static func probeLab(port: UInt16) async -> BlenderEndpoint? {
         guard let payload = try? BlenderProtocol.encodeLab(code: BlenderProtocol.pingCode) else { return nil }
-        guard let data = try? SocketProbe.roundTrip(
+        guard let data = try? await SocketProbe.roundTripAsync(
             host: "127.0.0.1",
             port: port,
             payload: payload,
@@ -124,45 +146,32 @@ actor BlenderBackend {
         guard let decoded = try? BlenderProtocol.decodeLab(data), BlenderProtocol.isLabSuccess(decoded) else {
             return nil
         }
-        return Endpoint(host: "127.0.0.1", port: port, kind: .blenderLab, pid: nil, detail: "Blender Lab MCP (null-terminated JSON)")
+        return BlenderEndpoint(host: "127.0.0.1", port: port, kind: .blenderLab, detail: "Blender Lab MCP (null-terminated JSON)")
     }
 
-    private func probeCommunity(port: UInt16) async -> Endpoint? {
-        guard let url = URL(string: "ws://127.0.0.1:\(port)") else { return nil }
-        let task = URLSession.shared.webSocketTask(with: url)
-        task.resume()
-        let ping = "{\"type\":\"get_scene_info\"}"
-        do {
-            try await task.send(.string(ping))
-            let message = try await withTimeout(ms: 250) {
-                try await task.receive()
+    private static func probeCommunity(port: UInt16) async -> BlenderEndpoint? {
+        guard let url = URL(string: "ws://127.0.0.1:\(port)"),
+              let message = try? await WebSocketIO.roundTrip(url: url, text: "{\"type\":\"get_scene_info\"}", timeoutMs: 250)
+        else { return nil }
+        let detail = "Blender community WebSocket"
+        switch message {
+        case .string(let text):
+            if text.contains("error") && text.lowercased().contains("unknown") { return nil }
+            return BlenderEndpoint(host: "127.0.0.1", port: port, kind: .blenderWS, detail: detail)
+        case .data(let data):
+            if let text = String(data: data, encoding: .utf8), text.contains("{") {
+                return BlenderEndpoint(host: "127.0.0.1", port: port, kind: .blenderWS, detail: detail)
             }
-            task.cancel(with: .goingAway, reason: nil)
-            switch message {
-            case .string(let text):
-                if text.contains("error") && text.lowercased().contains("unknown") { return nil }
-                return Endpoint(host: "127.0.0.1", port: port, kind: .blenderWS, pid: nil, detail: "Blender community WebSocket")
-            case .data(let data):
-                if let text = String(data: data, encoding: .utf8), text.contains("{") {
-                    return Endpoint(host: "127.0.0.1", port: port, kind: .blenderWS, pid: nil, detail: "Blender community WebSocket")
-                }
-            @unknown default:
-                return nil
-            }
-        } catch {
-            task.cancel(with: .goingAway, reason: nil)
+            return nil
+        @unknown default:
             return nil
         }
-        return nil
     }
 
-    private func communityExecute(endpoint: Endpoint, code: String) async throws -> JSONValue {
+    private static func communityExecute(endpoint: BlenderEndpoint, code: String) async throws -> JSONValue {
         guard let url = URL(string: "ws://\(endpoint.host):\(endpoint.port)") else {
             throw ToolError.actionFailed("Invalid Blender WebSocket URL")
         }
-        let task = URLSession.shared.webSocketTask(with: url)
-        task.resume()
-        defer { task.cancel(with: .goingAway, reason: nil) }
         let body = JSONValue.object([
             "type": .string("execute_code"),
             "params": .object(["code": .string(code)]),
@@ -171,8 +180,7 @@ actor BlenderBackend {
         guard let text = String(data: data, encoding: .utf8) else {
             throw ToolError.actionFailed("Failed to encode Blender payload")
         }
-        try await task.send(.string(text))
-        let message = try await withTimeout(ms: 8_000) { try await task.receive() }
+        let message = try await WebSocketIO.roundTrip(url: url, text: text, timeoutMs: 8_000)
         switch message {
         case .string(let s):
             return try JSONDecoder().decode(JSONValue.self, from: Data(s.utf8))
@@ -184,17 +192,58 @@ actor BlenderBackend {
     }
 }
 
-func withTimeout<T: Sendable>(ms: Int, body: @escaping @Sendable () async throws -> T) async throws -> T {
-    try await withThrowingTaskGroup(of: T.self) { group in
-        group.addTask { try await body() }
-        group.addTask {
-            try await Task.sleep(nanoseconds: UInt64(ms) * 1_000_000)
-            throw ToolError.timedOut("backend handshake")
+/// One WebSocket request/reply with a deadline that actually fires.
+///
+/// `URLSessionWebSocketTask.receive()` ignores Swift task cancellation, so racing it
+/// against a sleep in a task group (the old `withTimeout`) only works once `receive`
+/// returns — measured: a 250ms timeout came back after 6.02s. The deadline has to cancel
+/// the socket task itself, which is what makes the pending `receive` throw.
+enum WebSocketIO {
+    private final class Flag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = false
+        func set() { lock.lock(); value = true; lock.unlock() }
+        var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
+    }
+
+    static func roundTrip(
+        url: URL,
+        text: String,
+        timeoutMs: Int,
+        maximumMessageSize: Int = 64 << 20
+    ) async throws -> URLSessionWebSocketTask.Message {
+        let task = URLSession.shared.webSocketTask(with: url)
+        task.maximumMessageSize = maximumMessageSize
+        task.resume()
+        defer { task.cancel(with: .goingAway, reason: nil) }
+        let expired = Flag()
+        return try await withTaskCancellationHandler {
+            try await withThrowingTaskGroup(of: URLSessionWebSocketTask.Message.self) { group in
+                group.addTask {
+                    try await task.send(.string(text))
+                    return try await task.receive()
+                }
+                group.addTask {
+                    try await Task.sleep(nanoseconds: UInt64(timeoutMs) * 1_000_000)
+                    expired.set()
+                    task.cancel(with: .goingAway, reason: nil)
+                    throw ToolError.timedOut("WebSocket reply after \(timeoutMs)ms")
+                }
+                do {
+                    guard let message = try await group.next() else {
+                        throw ToolError.timedOut("WebSocket reply after \(timeoutMs)ms")
+                    }
+                    group.cancelAll()
+                    return message
+                } catch {
+                    group.cancelAll()
+                    task.cancel(with: .goingAway, reason: nil)
+                    if expired.isSet { throw ToolError.timedOut("WebSocket reply after \(timeoutMs)ms") }
+                    throw error
+                }
+            }
+        } onCancel: {
+            task.cancel(with: .goingAway, reason: nil)
         }
-        guard let result = try await group.next() else {
-            throw ToolError.timedOut("backend handshake")
-        }
-        group.cancelAll()
-        return result
     }
 }

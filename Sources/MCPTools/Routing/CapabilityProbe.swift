@@ -51,7 +51,12 @@ public enum CapabilityProbe {
     }
 
     public static func probe(_ identity: TargetIdentity) async -> CapabilityRecord {
-        if let cached = await ProbeCache.shared.get(identity.raw) {
+        if var cached = await ProbeCache.shared.get(identity.raw) {
+            // Blender records live 30s; consent granted since then must not keep showing as owed.
+            if cached.ask == .codeExecConsent, CodeExecConsent.shared.isGranted("bpy") {
+                cached.ask = nil
+                cached.askDetail = nil
+            }
             return cached
         }
         var record = classify(identity)
@@ -61,7 +66,7 @@ public enum CapabilityProbe {
         case .blenderLab, .blenderWS:
             record = await probeBlender(seed: record)
         case .iosSim:
-            record = probeIOS(identity, seed: record)
+            record = await probeIOS(identity, seed: record)
         case .ax, .hid:
             record = enrichAX(identity, seed: record)
         }
@@ -75,7 +80,10 @@ public enum CapabilityProbe {
         if let binary = avail.binary {
             record.extras["chromeBinary"] = .string(binary)
         }
-        if let port = avail.debugPort {
+        // `attached` is a user's Chrome. The headless Chromium this app owns also has a
+        // debug port, but reporting it as "attached" sent app identities like
+        // com.google.Chrome at the private browser instead of the user's.
+        if avail.attached, let port = avail.debugPort {
             record.endpoint = "127.0.0.1:\(port)"
             record.protocolName = "cdp"
             record.headless = false
@@ -94,8 +102,13 @@ public enum CapabilityProbe {
             }
             record.headless = true
             record.protocolName = "cdp"
-            record.reason = "Will launch a dedicated headless Chromium (separate profile) for this URL. Pass a live --remote-debugging-port=9222 Chrome to reuse a logged-in user session."
             record.extras["available"] = .bool(true)
+            if let port = avail.debugPort {
+                record.endpoint = "127.0.0.1:\(port)"
+                record.reason = "Reusing the dedicated headless Chromium already launched for this app (separate profile); each URL gets its own tab."
+            } else {
+                record.reason = "Will launch a dedicated headless Chromium (separate profile) for this URL. Pass a live --remote-debugging-port=9222 Chrome to reuse a logged-in user session."
+            }
             return record
         }
         record.backend = .ax
@@ -106,7 +119,7 @@ public enum CapabilityProbe {
 
     private static func probeBlender(seed: CapabilityRecord) async -> CapabilityRecord {
         var record = seed
-        let endpoints = await BlenderBackend.shared.handshake()
+        let endpoints = await BlenderBackend.handshake()
         if endpoints.isEmpty {
             record.backend = .ax
             record.ask = .missingAddon
@@ -140,13 +153,13 @@ public enum CapabilityProbe {
         return record
     }
 
-    private static func probeIOS(_ identity: TargetIdentity, seed: CapabilityRecord) -> CapabilityRecord {
+    private static func probeIOS(_ identity: TargetIdentity, seed: CapabilityRecord) async -> CapabilityRecord {
         var record = seed
-        let resolved = IOSSimBackend.resolveUDID(identity.udid ?? identity.raw)
+        let resolved = await IOSSimBackend.shared.resolveUDID(identity.udid ?? identity.raw)
         record.extras["udid"] = .string(resolved.udid)
         record.ask = resolved.ask
         record.askDetail = resolved.detail
-        if IOSSimBackend.idbBinary() == nil {
+        if await IOSSimBackend.shared.idbBinary() == nil {
             record.backend = .ax
             record.ask = .missingAddon
             record.askDetail = "No idb binary. Run agentcontroller-ios --setup (or brew install idb-companion) so this MCP can drive the simulator."
@@ -177,13 +190,42 @@ actor ProbeCache {
     static let shared = ProbeCache()
     private var items: [String: (Date, CapabilityRecord)] = [:]
 
-    func get(_ key: String, ttl: TimeInterval = 2) -> CapabilityRecord? {
-        guard let item = items[key], Date().timeIntervalSince(item.0) < ttl else { return nil }
+    /// A verdict is only as stale as the thing it measured can change. A Blender socket or
+    /// a booted simulator is stable for as long as the user leaves it (and callers
+    /// `invalidate` on the first failure), so re-handshaking 21 ports or re-running
+    /// simctl every 2s was pure cost. Fallbacks and web verdicts stay short: they are how
+    /// a just-started Blender or Chrome gets noticed.
+    static func lifetime(for backend: CapabilityRecord.Backend) -> TimeInterval {
+        switch backend {
+        case .blenderLab, .blenderWS, .iosSim: return 30
+        case .cdp, .ax, .hid: return 2
+        }
+    }
+
+    func get(_ key: String, now: Date = Date()) -> CapabilityRecord? {
+        guard let item = items[key], now.timeIntervalSince(item.0) < Self.lifetime(for: item.1.backend) else { return nil }
         return item.1
     }
 
-    func set(_ key: String, _ value: CapabilityRecord) {
-        items[key] = (Date(), value)
+    func set(_ key: String, _ value: CapabilityRecord, at date: Date = Date()) {
+        items[key] = (date, value)
+    }
+
+    func invalidate(_ key: String) {
+        items.removeValue(forKey: key)
+    }
+
+    /// Drop every verdict for one kind of backend — a failure on one Blender or simulator
+    /// call says nothing about which cache key (alias, UDID, name) the next call will use.
+    func invalidate(backend: CapabilityRecord.Backend) {
+        items = items.filter { Self.family($0.value.1.backend) != Self.family(backend) }
+    }
+
+    private static func family(_ backend: CapabilityRecord.Backend) -> String {
+        switch backend {
+        case .blenderLab, .blenderWS: return "blender"
+        default: return backend.rawValue
+        }
     }
 
     func reset() {
