@@ -55,23 +55,29 @@ public struct ImageEncoder {
 
     /// Encode a captured image with the agent-friendly defaults applied: optional
     /// downscale to a max longest side, then JPEG (smaller) or PNG. Returns the encoded
-    /// bytes plus the matching MIME type for `ToolResult.image`.
+    /// bytes plus the matching MIME type for `ToolResult.image`. Captures arrive already
+    /// at their final size, so the downscale is a no-op unless the caller bypassed that.
     public static func encode(
         _ image: CGImage,
         maxLongestSide: Int?,
         format: ImageFormat,
         quality: CGFloat
-    ) -> (data: Data, mimeType: String) {
+    ) throws -> (data: Data, mimeType: String) {
         var img = image
         if let cap = maxLongestSide {
             img = downscaled(img, longestSide: cap)
         }
+        let encoded: (data: Data, mimeType: String)
         switch format {
         case .png:
-            return (pngData(from: img), "image/png")
+            encoded = (pngData(from: img), "image/png")
         case .jpeg:
-            return (jpegData(from: img, quality: quality), "image/jpeg")
+            encoded = (jpegData(from: img, quality: quality), "image/jpeg")
         }
+        // The encoders return empty Data on failure; an empty "image" would reach the
+        // agent as a successful screenshot with nothing in it.
+        guard !encoded.data.isEmpty else { throw CaptureError.encodingFailed }
+        return encoded
     }
 }
 

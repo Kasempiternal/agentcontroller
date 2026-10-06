@@ -15,15 +15,20 @@ struct SystemTools {
             handler: { _ in
                 let ax = PermissionChecker.isAccessibilityGranted
                 let sr = PermissionChecker.isScreenRecordingGranted
+                // Name every missing grant, not just the first: fixing one and re-running
+                // only to be told about the other costs a round trip per permission.
+                var missing: [String] = []
+                if !ax {
+                    missing.append("Grant Accessibility: System Settings > Privacy & Security > Accessibility > Enable AgentController")
+                }
+                if !sr {
+                    missing.append("Grant Screen Recording: System Settings > Privacy & Security > Screen Recording > Enable AgentController, then quit and reopen AgentController (macOS applies a new Screen Recording grant only to processes started afterwards)")
+                }
                 return ToolResult.json(.object([
                     "accessibility": .bool(ax),
                     "screenRecording": .bool(sr),
                     "allGranted": .bool(ax && sr),
-                    "instructions": .string(
-                        !ax ? "Grant Accessibility: System Settings > Privacy & Security > Accessibility > Enable AgentController" :
-                        !sr ? "Grant Screen Recording: System Settings > Privacy & Security > Screen Recording > Enable AgentController" :
-                        "All permissions granted"
-                    ),
+                    "instructions": .string(missing.isEmpty ? "All permissions granted" : missing.joined(separator: " | ")),
                 ]))
             }
         ))

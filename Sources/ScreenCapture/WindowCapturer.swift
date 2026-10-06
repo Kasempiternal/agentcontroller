@@ -2,99 +2,51 @@ import Foundation
 import ScreenCaptureKit
 import AppKit
 
-/// Short-lived cache for SCShareableContent so bursts of screenshots share one
-/// system-wide window enumeration. Enumeration costs 50-200ms; 100ms TTL keeps
-/// staleness bounded. Invalidated on any window-affecting tool (activate, launch,
-/// quit, set/minimize/restore window).
-public actor ShareableContentCache {
-    public static let shared = ShareableContentCache()
-
-    private var entry: (content: SCShareableContent, at: Date)?
-    private var inFlight: Task<SCShareableContent, Error>?
-    private let ttl: TimeInterval = 0.1
-
-    public func current() async throws -> SCShareableContent {
-        if let entry, Date().timeIntervalSince(entry.at) < ttl {
-            return entry.content
-        }
-
-        // Coalesce: if an enumeration is already running, every concurrent awaiter
-        // shares its single result instead of each kicking off its own 50-200ms scan.
-        if let inFlight {
-            return try await inFlight.value
-        }
-
-        let task = Task<SCShareableContent, Error> {
-            try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
-        }
-        inFlight = task
-
-        defer { inFlight = nil }
-        do {
-            let fresh = try await task.value
-            entry = (fresh, Date())
-            return fresh
-        } catch {
-            // Leave the cache empty so the next caller retries a fresh enumeration.
-            throw error
-        }
-    }
-
-    public func invalidate() {
-        entry = nil
-    }
-}
-
 public struct WindowCapturer {
     /// Default agent-friendly cap: a ~1400px longest side keeps base64 small while
     /// staying legible. Callers may override with `maxLongestSide`.
     public static let defaultMaxLongestSide = 1400
 
+    /// `scale` overrides the pixels-per-point factor; nil uses the display's backing
+    /// scale, reduced as needed so the output lands at `maxLongestSide` without a CPU
+    /// resample (see `CaptureSizing`).
     public static func captureWindow(
         pid: pid_t,
         windowTitle: String? = nil,
         windowOrigin: CGPoint? = nil,
-        scale: CGFloat = 2.0,
+        scale: CGFloat? = nil,
         maxLongestSide: Int? = defaultMaxLongestSide,
         format: ImageFormat = .jpeg,
         quality: CGFloat = 0.7
     ) async throws -> (data: Data, mimeType: String) {
-        let content = try await ShareableContentCache.shared.current()
-        let owned = content.windows.filter { $0.owningApplication?.processID == pid }
-        guard !owned.isEmpty else { throw CaptureError.windowNotFound }
-
-        // Title is strict when it is the ONLY disambiguator (a user-supplied title that
-        // matches nothing must error, not silently capture a different window). When an
-        // origin is also provided (windowIndex path: both derived from the same AX
-        // window), a title miss falls through to nearest-origin matching.
-        var picked: SCWindow?
-        if let windowTitle, !windowTitle.isEmpty {
-            picked = owned.first { $0.title == windowTitle }
-            if picked == nil, windowOrigin == nil { throw CaptureError.windowNotFound }
-        }
-        if picked == nil, let windowOrigin {
-            picked = nearestWindow(to: windowOrigin, in: owned)
-        }
-        if picked == nil, windowTitle == nil || windowTitle!.isEmpty {
-            picked = bestWindow(in: owned)
-        }
-        guard let window = picked else { throw CaptureError.windowNotFound }
-
-        let filter = SCContentFilter(desktopIndependentWindow: window)
-        let config = SCStreamConfiguration()
-        config.scalesToFit = false
-        config.width = Int(window.frame.width * scale)
-        config.height = Int(window.frame.height * scale)
-        config.showsCursor = false
-        config.captureResolution = .best
-
-        do {
-            let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
-            return ImageEncoder.encode(image, maxLongestSide: maxLongestSide, format: format, quality: quality)
-        } catch {
-            throw CaptureError.surfaceUnavailable(
-                title: window.title ?? "", onScreen: window.isOnScreen, underlying: error.localizedDescription
+        try await ShareableContentCache.shared.withContent { content, isFresh in
+            let window = try resolveWindow(
+                in: content, isFresh: isFresh, pid: pid, windowTitle: windowTitle, windowOrigin: windowOrigin
             )
+            let filter = SCContentFilter(desktopIndependentWindow: window)
+            let size = CaptureSizing.pixelSize(
+                points: window.frame.size,
+                backingScale: scale ?? CGFloat(filter.pointPixelScale),
+                maxLongestSide: maxLongestSide
+            )
+            let config = SCStreamConfiguration()
+            config.scalesToFit = true
+            config.width = size.width
+            config.height = size.height
+            config.showsCursor = false
+            config.captureResolution = .best
+
+            let image: CGImage
+            do {
+                image = try await capture(filter, config)
+            } catch CaptureError.permissionDenied {
+                throw CaptureError.permissionDenied
+            } catch {
+                throw CaptureError.surfaceUnavailable(
+                    title: window.title ?? "", onScreen: window.isOnScreen, underlying: error.localizedDescription
+                )
+            }
+            return try ImageEncoder.encode(image, maxLongestSide: maxLongestSide, format: format, quality: quality)
         }
     }
 
@@ -109,26 +61,31 @@ public struct WindowCapturer {
 
     public static func captureScreen(
         screenIndex: Int = 0,
-        scale: CGFloat = 1.0,
+        scale: CGFloat? = nil,
         maxLongestSide: Int? = defaultMaxLongestSide,
         format: ImageFormat = .jpeg,
         quality: CGFloat = 0.7
     ) async throws -> (data: Data, mimeType: String) {
-        let content = try await ShareableContentCache.shared.current()
+        try await ShareableContentCache.shared.withContent { content, _ in
+            guard content.displays.indices.contains(screenIndex) else {
+                throw CaptureError.displayNotFound
+            }
 
-        guard screenIndex < content.displays.count else {
-            throw CaptureError.displayNotFound
+            let display = content.displays[screenIndex]
+            let filter = SCContentFilter(display: display, excludingWindows: [])
+            let size = CaptureSizing.pixelSize(
+                points: CGSize(width: display.width, height: display.height),
+                backingScale: scale ?? CGFloat(filter.pointPixelScale),
+                maxLongestSide: maxLongestSide
+            )
+            let config = SCStreamConfiguration()
+            config.width = size.width
+            config.height = size.height
+            config.showsCursor = false
+
+            let image = try await capture(filter, config)
+            return try ImageEncoder.encode(image, maxLongestSide: maxLongestSide, format: format, quality: quality)
         }
-
-        let display = content.displays[screenIndex]
-        let filter = SCContentFilter(display: display, excludingWindows: [])
-        let config = SCStreamConfiguration()
-        config.width = Int(CGFloat(display.width) * scale)
-        config.height = Int(CGFloat(display.height) * scale)
-        config.showsCursor = false
-
-        let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
-        return ImageEncoder.encode(image, maxLongestSide: maxLongestSide, format: format, quality: quality)
     }
 
     /// Captures a sub-rect of a *specific* window. `region` is in that window's local
@@ -139,7 +96,7 @@ public struct WindowCapturer {
     public static func captureRegion(
         pid: pid_t,
         region: CGRect,
-        scale: CGFloat = 2.0,
+        scale: CGFloat? = nil,
         windowID: CGWindowID? = nil,
         windowTitle: String? = nil,
         windowOrigin: CGPoint? = nil,
@@ -147,82 +104,73 @@ public struct WindowCapturer {
         format: ImageFormat = .jpeg,
         quality: CGFloat = 0.7
     ) async throws -> (data: Data, mimeType: String) {
-        let content = try await ShareableContentCache.shared.current()
-        guard let window = resolveWindow(
-            in: content,
-            pid: pid,
-            windowID: windowID,
-            windowTitle: windowTitle,
-            windowOrigin: windowOrigin
-        ) else {
-            throw CaptureError.windowNotFound
+        guard region.width > 0, region.height > 0 else { throw CaptureError.emptyRegion }
+
+        return try await ShareableContentCache.shared.withContent { content, isFresh in
+            let window = try resolveWindow(
+                in: content, isFresh: isFresh, pid: pid,
+                windowID: windowID, windowTitle: windowTitle, windowOrigin: windowOrigin
+            )
+            let filter = SCContentFilter(desktopIndependentWindow: window)
+            let size = CaptureSizing.pixelSize(
+                points: region.size,
+                backingScale: scale ?? CGFloat(filter.pointPixelScale),
+                maxLongestSide: maxLongestSide
+            )
+            let config = SCStreamConfiguration()
+            config.scalesToFit = true
+            config.width = size.width
+            config.height = size.height
+            config.sourceRect = region
+            config.showsCursor = false
+            config.captureResolution = .best
+
+            let image = try await capture(filter, config)
+            return try ImageEncoder.encode(image, maxLongestSide: maxLongestSide, format: format, quality: quality)
         }
-
-        let filter = SCContentFilter(desktopIndependentWindow: window)
-        let config = SCStreamConfiguration()
-        config.scalesToFit = true
-        config.width = Int(region.width * scale)
-        config.height = Int(region.height * scale)
-        config.sourceRect = region
-        config.showsCursor = false
-        config.captureResolution = .best
-
-        let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
-        return ImageEncoder.encode(image, maxLongestSide: maxLongestSide, format: format, quality: quality)
     }
 
-    /// Pick the SCWindow that matches the AX window we measured the element against.
-    /// Priority: exact CGWindowID → title match → closest frame origin → first owned.
-    private static func resolveWindow(
+    /// One place that turns SCK's "user declined" into `.permissionDenied`, so a missing
+    /// Screen Recording grant reads the same from every capture path.
+    private static func capture(_ filter: SCContentFilter, _ config: SCStreamConfiguration) async throws -> CGImage {
+        do {
+            return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+        } catch {
+            throw CaptureError.classify(error)
+        }
+    }
+
+    /// Resolves the SCWindow the hints describe among `pid`'s windows. On a cached
+    /// listing a non-exact pick counts as a miss: the origin AX measured matches no
+    /// listed window, so the window has moved or opened since the listing was taken and
+    /// `withContent` should retry on a fresh one rather than capture the wrong window.
+    static func resolveWindow(
         in content: SCShareableContent,
+        isFresh: Bool,
         pid: pid_t,
-        windowID: CGWindowID?,
+        windowID: CGWindowID? = nil,
         windowTitle: String?,
         windowOrigin: CGPoint?
-    ) -> SCWindow? {
+    ) throws -> SCWindow {
         let owned = content.windows.filter { $0.owningApplication?.processID == pid }
-        guard !owned.isEmpty else { return nil }
-
-        if let windowID, let exact = owned.first(where: { $0.windowID == windowID }) {
-            return exact
-        }
-        if let windowTitle, !windowTitle.isEmpty,
-           let byTitle = owned.first(where: { $0.title == windowTitle }) {
-            return byTitle
-        }
-        if let windowOrigin {
-            return nearestWindow(to: windowOrigin, in: owned)
-        }
-        return bestWindow(in: owned)
-    }
-
-    /// SCWindow.frame is top-left origin in global (screen) points — same space as
-    /// AXPosition — so match the window whose origin is nearest the measured one.
-    static func nearestWindow(to origin: CGPoint, in owned: [SCWindow]) -> SCWindow? {
-        owned.min(by: { lhs, rhs in
-            hypot(lhs.frame.origin.x - origin.x, lhs.frame.origin.y - origin.y) <
-            hypot(rhs.frame.origin.x - origin.x, rhs.frame.origin.y - origin.y)
-        })
-    }
-
-    /// The most plausible "main" window when nothing disambiguates. Enumeration includes
-    /// off-screen windows (tooltips, status-item panels, zero-sized helpers), so raw
-    /// `.first` could pick garbage: restrict to layer-0 windows of real size, prefer
-    /// on-screen, then the largest area.
-    static func bestWindow(in owned: [SCWindow]) -> SCWindow? {
-        let plausible = owned.filter { $0.windowLayer == 0 && $0.frame.width >= 40 && $0.frame.height >= 40 }
-        let pool = plausible.isEmpty ? owned : plausible
-        return pool.max(by: { lhs, rhs in
-            if lhs.isOnScreen != rhs.isOnScreen { return rhs.isOnScreen }
-            return lhs.frame.width * lhs.frame.height < rhs.frame.width * rhs.frame.height
-        })
+        guard let pick = WindowPicker.pick(
+                  from: owned.map(WindowCandidate.init),
+                  windowID: windowID, title: windowTitle, origin: windowOrigin
+              ),
+              isFresh || pick.isExact,
+              let window = owned.first(where: { $0.windowID == pick.window.id })
+        else { throw CaptureError.windowNotFound }
+        return window
     }
 }
 
 public enum CaptureError: Error, LocalizedError {
     case windowNotFound
     case displayNotFound
-    case captureFailure
+    case emptyRegion
+    case encodingFailed
+    /// Screen Recording is not granted. Raised from every capture path, not only the
+    /// window one, so the caller sees the same instruction whichever tool they used.
     case permissionDenied
     /// The window was found but ScreenCaptureKit could not read it. Raw SCKit reports
     /// this as "Failed to start stream due to audio/video capture failure", which reads
@@ -237,8 +185,9 @@ public enum CaptureError: Error, LocalizedError {
         switch self {
         case .windowNotFound: return "Window not found. Is the app running and visible?"
         case .displayNotFound: return "Display not found"
-        case .captureFailure: return "Failed to capture screenshot"
-        case .permissionDenied: return "Screen recording permission not granted. Go to System Settings > Privacy & Security > Screen Recording"
+        case .emptyRegion: return "The region to capture has no area (zero width or height)"
+        case .encodingFailed: return "The screenshot was captured but could not be encoded as an image"
+        case .permissionDenied: return "Screen Recording permission is not granted to AgentController. Open System Settings > Privacy & Security > Screen Recording, enable AgentController, then quit and reopen it (macOS applies a new Screen Recording grant only to processes started afterwards). check_permissions reports the current state."
         case .surfaceUnavailable(let title, let onScreen, let underlying):
             let which = title.isEmpty ? "The window" : "Window '\(title)'"
             let where_ = onScreen
@@ -246,5 +195,18 @@ public enum CaptureError: Error, LocalizedError {
                 : "It is currently OFF SCREEN (another Space, or fully hidden), and some apps drop their window's backing surface in that state, leaving nothing to read. Browsers and GPU-composited apps do it most reliably (confirmed with Safari and Ghostty); TextEdit in the identical state captures fine, so it is per-app behaviour rather than a rule about off-screen windows."
             return "\(which) exists but has no capturable content. \(where_) This is not a permissions problem: check_permissions still reports screenRecording, and screenshot_screen still works. Workarounds: screenshot_screen if the window is visible on the current Space, unhide_app/restore_window if it is hidden or minimized, or read the UI with snapshot/read_all_text instead of pixels. (Underlying: \(underlying))"
         }
+    }
+}
+
+extension CaptureError {
+    /// ScreenCaptureKit reports a missing Screen Recording grant as
+    /// `SCStreamError.userDeclined` (-3801), from `SCShareableContent` and from every
+    /// capture call alike. Anything else passes through untouched.
+    static func classify(_ error: Error) -> Error {
+        let nsError = error as NSError
+        if nsError.domain == SCStreamErrorDomain, nsError.code == SCStreamError.Code.userDeclined.rawValue {
+            return CaptureError.permissionDenied
+        }
+        return error
     }
 }
