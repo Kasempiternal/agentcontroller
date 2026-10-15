@@ -6,6 +6,16 @@ All notable changes to AgentController are documented here. The format follows
 
 ## [Unreleased]
 
+## [3.1.1] - 2026-10-15
+
+### Fixed
+- **The focus-guard hook fails open.** 3.1.0 registered it as `python3 <kit>/focus-guard.py`;
+  a PreToolUse hook that exits 2 blocks the call and Python exits 2 on a missing script, so a
+  deleted kit, or the instant the app swaps it, would have blocked every shell command in every
+  Claude session. It now runs through `/bin/sh … ; exit 0` and still denies through its JSON
+  reply. `install-claude --check` reports the 3.1.0 registration as outdated and
+  `install-claude` replaces it.
+
 ## [3.1.0] - 2026-10-15
 
 A week of real Claude Code sessions showed agents asking the user for things AgentController
