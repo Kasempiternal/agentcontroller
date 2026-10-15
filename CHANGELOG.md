@@ -6,6 +6,15 @@ All notable changes to AgentController are documented here. The format follows
 
 ## [Unreleased]
 
+## [3.1.3] - 2026-10-16
+
+### Security
+- **The router's private arguments cannot come from a client.** 3.1.2's `_cdpPort` pins the CDP
+  backend to the port the router matched to the named browser; a client that sent it itself could
+  pin any local port past that match. `_cdpPort` and `_pageURL` are now dropped from every incoming
+  call, and the backend checks again, where it opens the socket, that a Chromium browser of this
+  user holds a pinned port. A listener of another account was already refused at connect.
+
 ## [3.1.2] - 2026-10-16
 
 ### Fixed
