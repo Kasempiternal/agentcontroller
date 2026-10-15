@@ -50,7 +50,8 @@ if mode == "check":
 if mode == "remove":
     new = pattern.sub("", text)
 else:
-    new = pattern.sub(block, text) if pattern.search(text) else (text.rstrip("\n") + "\n\n" + block if text else block)
+    # A function, not a string: the block text must never be read as a regex replacement.
+    new = pattern.sub(lambda _: block, text) if pattern.search(text) else (text.rstrip("\n") + "\n\n" + block if text else block)
 if new != text:
     os.makedirs(os.path.dirname(target), exist_ok=True)
     open(target, "w").write(new)
