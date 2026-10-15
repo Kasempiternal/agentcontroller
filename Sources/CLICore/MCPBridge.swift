@@ -33,11 +33,11 @@ public final class MCPBridge: @unchecked Sendable {
     private let work = DispatchQueue(label: "agentcontroller.mcp.work", attributes: .concurrent)
     private var signalSources: [DispatchSourceSignal] = []
 
+    private let relaunchWait: TimeInterval
+
     /// Names this process to the server. Every client numbers its JSON-RPC ids from 0, so the
     /// server keys in-flight requests by (client, id); a pid alone is reused across restarts and
     /// a stale cancel could hit the wrong call, so a random suffix rides along.
-    private let relaunchWait: TimeInterval
-
     private let clientID = "cli-\(getpid())-\(UUID().uuidString.lowercased().prefix(8))"
 
     public convenience init() {
@@ -134,21 +134,15 @@ public final class MCPBridge: @unchecked Sendable {
 
     private func forward(_ line: Data, completion: @escaping () -> Void) {
         let endpoint: Endpoint
-        var recovered = false
         do {
             endpoint = try cache.resolve()
         } catch {
             // No files at all. At startup the cache already started the app and waited; later
             // in a session (the app quit and removed its files) this is the first sign of it.
-            guard let fresh = relaunch() else {
-                fail(line, Self.notRunningMessage)
-                completion()
-                return
-            }
-            endpoint = fresh
-            recovered = true
+            relaunchAndResend(line, completion: completion)
+            return
         }
-        send(line, to: endpoint, retried: false, recovered: recovered, completion: completion)
+        send(line, to: endpoint, retried: false, recovered: false, completion: completion)
     }
 
     private func send(_ line: Data, to endpoint: Endpoint, retried: Bool, recovered: Bool, completion: @escaping () -> Void) {
@@ -163,8 +157,8 @@ public final class MCPBridge: @unchecked Sendable {
                 send(line, to: fresh, retried: true, recovered: recovered, completion: completion)
                 return
             }
-            if !recovered, let fresh = relaunch() {
-                send(line, to: fresh, retried: true, recovered: true, completion: completion)
+            if !recovered {
+                relaunchAndResend(line, completion: completion)
                 return
             }
             fail(line, Self.notRunningMessage)
@@ -191,8 +185,8 @@ public final class MCPBridge: @unchecked Sendable {
                         send(line, to: fresh, retried: true, recovered: recovered, completion: completion)
                         return
                     }
-                    if !recovered, let fresh = relaunch() {
-                        send(line, to: fresh, retried: true, recovered: true, completion: completion)
+                    if !recovered {
+                        relaunchAndResend(line, completion: completion)
                         return
                     }
                     fail(line, Self.notRunningMessage)
@@ -235,12 +229,20 @@ public final class MCPBridge: @unchecked Sendable {
         }.resume()
     }
 
-    /// The app is dead (or its files are stale): start it in the background and wait for the
-    /// endpoint it publishes. Blocks the calling worker, which is the point: the request is
-    /// delivered late instead of failing. Returns nil when the app never came up.
-    private func relaunch() -> Endpoint? {
-        launcher.launch()
-        return cache.awaitEndpoint(timeout: relaunchWait) { [listener] in listener.isOurs($0.port) }
+    /// The app is dead (or its files are stale): start it in the background, wait for the
+    /// endpoint it publishes and deliver `line` there — late instead of failed. The wait blocks a
+    /// thread for up to `relaunchWait`, so it runs on the work queue, never on the URLSession
+    /// delegate queue that reported the refused connection (that queue delivers every reply).
+    private func relaunchAndResend(_ line: Data, completion: @escaping () -> Void) {
+        work.async { [self] in
+            launcher.launch()
+            if let fresh = cache.awaitEndpoint(timeout: relaunchWait, accept: { [listener] in listener.isOurs($0.port) }) {
+                send(line, to: fresh, retried: true, recovered: true, completion: completion)
+            } else {
+                fail(line, Self.notRunningMessage)
+                completion()
+            }
+        }
     }
 
     /// Worded for the agent, not the human: the fix is a command it can run itself.
