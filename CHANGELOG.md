@@ -6,6 +6,56 @@ All notable changes to AgentController are documented here. The format follows
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-10-15
+
+A week of real Claude Code sessions showed agents asking the user for things AgentController
+could do, avoiding it, or finding it disconnected. This release fixes the causes.
+
+### Added
+- **Claude Code autonomy pack.** `agentcontroller install-claude` registers both MCP servers and
+  installs a managed `~/.claude/CLAUDE.md` rule (use AgentController first, in the background;
+  ask the user only for 2FA, captchas, payments, missing secrets or irreversible actions), the
+  `agentcontroller` skill with playbooks (dashboard keys, CLI/OAuth logins, forms, desktop apps,
+  devices) and a `PreToolUse` hook that refuses focus-stealing shell commands. `--check` verifies
+  the whole chain; `--uninstall` removes it. Changed files are backed up first.
+- **One pack.** The app bundle carries the CLI (compiled bridge), the Claude Code kit and the iOS
+  MCP server, and installs them under `~/.agentcontroller/` at launch, so a DMG install has
+  everything. `build.sh` runs the Claude Code setup too.
+- **Autonomy in the server instructions.** Both servers now open their MCP instructions with the
+  same mandate, so any client reads it.
+- `run_app_code` documents `headless`.
+
+### Fixed
+- **The bridge starts a dead app itself.** It used to answer "launch the menu bar app first",
+  which agents read as "ask the user", and a session that started while the app was down kept the
+  server failed. Both bridges now start it with `open -g -j` (background, hidden), wait for its
+  endpoint and deliver the request. One launch across all sessions (shared lock), none when it is
+  already running, and the app ignores reopen events for 15 s after launch, so a race never
+  shows its window.
+- **Bare browser calls act on the page you just opened.** After `open_url`/`snapshot {url}`, a
+  call naming only the browser read a different tab (the opened one is claimed by its own
+  session). It now follows the page that session last drove, per Claude session.
+- **Agents no longer pile up tabs in your Chrome.** A page on a site where a tab this server
+  opened is free is loaded into that tab instead of a new one, and at most 6 tabs it opened stay
+  open (least recently used closed first, never one whose page is visible). Your own tabs are
+  never counted or closed.
+- **Single-page apps are read after they render.** A snapshot taken right after a page opens
+  waits briefly (once per page) while the tree is still a near-empty shell.
+- **Idle CPU.** The status dot's pulse ran as a SwiftUI `repeatForever` animation that rebuilt
+  the window's display list every frame, even with the window closed: about 30% of a core,
+  forever. It is now a Core Animation layer animation that costs the app nothing.
+- **Oversized batches.** A `run_steps` reply over 80k characters is trimmed largest step first,
+  with a hint, instead of being refused by the client.
+- **Physical iPhones.** A device UDID (`00008110-…`) given to the desktop server got "Missing
+  required parameter: target"; it now names the iOS server tools to use.
+- **iOS server:** every tool has a deadline (a wedged WebDriverAgent cost one session a 30-minute
+  hang); swipes accept `startX/endX` and `x1/x2`; it no longer tells agents to ask the user which
+  device to use or to open the viewer; a health check can skip the simulator prewarm.
+- Focus Guard and `run_app_code` errors now name the background-safe alternative instead of
+  "stop and ask the user".
+- `docs/TOOLS.md` descriptions for `open_url`, `reset_app_state` and `start_recording` match the
+  source again (the contract check failed on 3.0.0).
+
 ## [3.0.0] - 2026-10-06
 
 ### Changed
