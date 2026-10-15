@@ -1,5 +1,7 @@
 import Foundation
+import ImageIO
 import MCPServer
+import ScreenCapture
 
 /// The caller asked for something this backend cannot do (a tool it lacks, a missing
 /// elementId, consent not yet given). Nothing about the backend itself is in doubt.
@@ -168,7 +170,16 @@ public enum BackendRouter {
                 throw Refusal(message: "\(name) by elementId is not supported on web targets; use screenshot_window with the page url.")
             }
             let data = try await WebCDPBackend.shared.screenshot(identity: identity)
-            return ToolResult.image(base64: data.base64EncodedString(), mimeType: "image/jpeg")
+            // Chrome captures at device pixels (2560 px across for a 1280-pt window). Give the page
+            // the size, format and quality every other screenshot gets.
+            let encoding = CaptureTools.encodingParams(from: arguments)
+            guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+                  let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+                return ToolResult.image(base64: data.base64EncodedString(), mimeType: "image/jpeg")
+            }
+            let encoded = try ImageEncoder.encode(image, maxLongestSide: encoding.maxLongestSide,
+                                                  format: encoding.format, quality: encoding.quality)
+            return ToolResult.image(base64: encoded.data.base64EncodedString(), mimeType: encoded.mimeType)
         case "open_url":
             guard let identity else { throw ToolError.missingParameter("url") }
             let session = try await WebCDPBackend.shared.openURL(identity: identity)

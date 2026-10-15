@@ -29,7 +29,7 @@ struct CaptureTools {
     }
 
     /// Parse the shared encoding params from tool args, applying agent-friendly defaults.
-    private static func encodingParams(from args: JSONValue?) -> (maxLongestSide: Int?, format: ImageFormat, quality: CGFloat) {
+    static func encodingParams(from args: JSONValue?) -> (maxLongestSide: Int?, format: ImageFormat, quality: CGFloat) {
         let cap = args?["maxLongestSide"]?.intValue
             ?? args?["maxWidth"]?.intValue
             ?? WindowCapturer.defaultMaxLongestSide

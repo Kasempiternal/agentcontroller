@@ -1,4 +1,5 @@
 import XCTest
+import ImageIO
 import MCPServer
 #if canImport(Darwin)
 import Darwin
@@ -266,6 +267,13 @@ final class AttachedChromeEndToEndTests: XCTestCase {
         XCTAssertTrue(bare.contains("Create key"), "a bare call read another tab: \(bare)")
         let shot = try await viaRegistry("screenshot_window", ["app": .string("chrome"), "url": .string(page)])
         XCTAssertEqual(shot["content"]?.arrayValue?.first?["type"]?.stringValue, "image", text(shot))
+        if let b64 = shot["content"]?.arrayValue?.first?["data"]?.stringValue, let png = Data(base64Encoded: b64),
+           let source = CGImageSourceCreateWithData(png as CFData, nil),
+           let image = CGImageSourceCreateImageAtIndex(source, 0, nil) {
+            XCTAssertLessThanOrEqual(max(image.width, image.height), 1400, "the page screenshot skipped the size cap")
+        } else {
+            XCTFail("the screenshot is not an image: \(text(shot).prefix(200))")
+        }
 
         let after = try await ChromeLauncher.listPages(port: port)
         XCTAssertEqual(after.count, before.count + 1, "reading one page opened \(after.count - before.count) tabs")
