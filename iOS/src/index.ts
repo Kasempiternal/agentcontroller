@@ -27,5 +27,6 @@ export async function startServer(): Promise<void> {
   // After the transport is up (never before — this must not delay initialize),
   // heat the simulator transports so the first tool call skips the cold
   // starts: idb shell ~2s, ax-scan framework load ~1s, companion attach.
-  prewarmSimulator()
+  // A health check (agentcontroller install-claude --check) only wants initialize answered.
+  if (process.env.AGENTCONTROLLER_IOS_NO_PREWARM !== '1') prewarmSimulator()
 }

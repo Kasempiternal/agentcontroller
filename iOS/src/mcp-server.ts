@@ -1,3 +1,4 @@
+import { withDeadline, DeadlineError } from './deadline.js'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 import { promises as fs, readFileSync } from 'node:fs'
@@ -24,6 +25,24 @@ const tapParamsSchema = z.object({
   y: z.number().describe('Y coordinate to tap'),
   duration: z.number().optional().describe('Tap duration in seconds'),
 })
+
+/**
+ * Agents write swipes as startX/endX or x1/x2 as often as fromX/toX; the strict names used
+ * to fail the whole batch with "expected number, received undefined".
+ */
+const swipeAliases: Record<string, string> = {
+  startX: 'fromX', startY: 'fromY', endX: 'toX', endY: 'toY',
+  x1: 'fromX', y1: 'fromY', x2: 'toX', y2: 'toY',
+}
+function normalizeSwipeParams(params: unknown): unknown {
+  if (!params || typeof params !== 'object' || Array.isArray(params)) return params
+  const out: Record<string, unknown> = { ...(params as Record<string, unknown>) }
+  for (const [alias, name] of Object.entries(swipeAliases)) {
+    if (out[name] === undefined && out[alias] !== undefined) out[name] = out[alias]
+    delete out[alias]
+  }
+  return out
+}
 
 const swipeParamsSchema = z.object({
   fromX: z.number().describe('Starting X coordinate'),
@@ -186,11 +205,67 @@ const packageJson = JSON.parse(
   readFileSync(new URL('../package.json', import.meta.url), 'utf-8'),
 ) as { name: string; version: string }
 
+
+/**
+ * Sent at initialize, so every client reads it while this server is connected. Agents used
+ * to ask the user to look at the phone, pick a device or tap something this server can do.
+ */
+const SERVER_INSTRUCTIONS = [
+  'AUTONOMY: this server drives iOS simulators and the physical iPhones/iPads connected to this Mac. Use it yourself instead of asking the user to tap, read the screen, pick a device or report what the phone shows.',
+  'Start with get_execution_context (or list_devices). A physical device needs setup_device once (WebDriverAgent, 1-3 min); then pass its udid to every call. Simulators run headless: boot_simulator, never open Simulator.app, never take the user\'s focus.',
+  'Loop: scan_ui (or describe_screen) -> tap_element / device_actions in one batch -> get_screenshot to verify. Use wait_for_element instead of sleeping. If a call reports a deadline, check get_screenshot and unlock_screen/setup_device, then retry once.',
+  'Ask the user only for what needs a human: unlocking a phone with a passcode, a Face ID/Touch ID prompt, a system permission sheet a test must not accept, listening to audio, or physically plugging a device in.',
+].join('\n\n')
+
+/**
+ * Every tool gets a ceiling, so a wedged WebDriverAgent or idb companion costs the agent one
+ * error instead of the client's 30-minute MCP timeout. Long operations get long ceilings;
+ * wait_for_element gets its own timeout plus a margin.
+ */
+function deadlineFor(tool: string, args: Record<string, unknown> | undefined): number {
+  switch (tool) {
+    case 'setup_device':
+    case 'install_app':
+      return 600_000
+    case 'boot_simulator':
+    case 'start_recording':
+    case 'stop_recording':
+      return 300_000
+    case 'wait_for_element': {
+      const requested = typeof args?.timeoutMs === 'number' ? args.timeoutMs : 10_000
+      return requested + 30_000
+    }
+    default:
+      return 120_000
+  }
+}
+
+function guardEveryToolWithADeadline(server: McpServer): void {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const register = server.registerTool.bind(server) as (...a: any[]) => any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ;(server as any).registerTool = (name: string, config: unknown, handler: (...a: any[]) => any) =>
+    register(name, config, async (args: Record<string, unknown> | undefined, extra: unknown) => {
+      try {
+        return await withDeadline(Promise.resolve(handler(args, extra)), deadlineFor(name, args), name)
+      } catch (error) {
+        if (error instanceof DeadlineError) {
+          return { content: [{ type: 'text' as const, text: error.message }], isError: true }
+        }
+        throw error
+      }
+    })
+}
+
+/** scan_ui's ceiling: a full scan takes ~1s on a simulator and a few on a phone. */
+const SCAN_DEADLINE_MS = 60_000
+
 export function createMcpServer(viewerPort: number) {
   const server = new McpServer({
     name: packageJson.name,
     version: packageJson.version,
-  })
+  }, { instructions: SERVER_INSTRUCTIONS })
+  guardEveryToolWithADeadline(server)
 
   server.registerTool(
     'describe_screen',
@@ -293,7 +368,7 @@ Use describe_after to see the screen state after the action.`,
             break
           }
           case 'swipe': {
-            const p = swipeParamsSchema.parse(params)
+            const p = swipeParamsSchema.parse(normalizeSwipeParams(params))
             await emitVisualizationForAction({
               action: 'swipe',
               udid: resolvedUdid,
@@ -413,7 +488,7 @@ Use describe_after to see the screen state after all actions complete.`,
               break
             }
             case 'swipe': {
-              const p = swipeParamsSchema.parse(params)
+              const p = swipeParamsSchema.parse(normalizeSwipeParams(params))
               await emitVisualizationForAction({
                 action: 'swipe',
                 udid: resolvedUdid,
@@ -595,10 +670,10 @@ For the complete element tree (all types), use describe_screen instead.`,
         const scan = isPhysicalDeviceUdid(resolvedUdid)
           ? getDeviceClient(resolvedUdid).then(c => wdaScanGrid(c as unknown as WDAClient, region as ScanRegion))
           : AXScanClient.getInstance(resolvedUdid).scan(region as ScanRegion)
-        const [rawElements, frame] = await Promise.all([
+        const [rawElements, frame] = await withDeadline(Promise.all([
           scan,
           resolveReferenceFrame(resolvedUdid).catch(() => DEFAULT_FRAME),
-        ])
+        ]), SCAN_DEADLINE_MS, 'scan_ui')
 
         const { elements, warning } = applyScanUiFilters(rawElements as UIElement[], frame.width, frame.height, query)
 
@@ -650,9 +725,9 @@ For the complete element tree (all types), use describe_screen instead.`,
 
 Call this first to discover available devices. Returns:
 - target: 'simulator' — one simulator booted, use the returned udid
-- target: 'device' — one physical device connected, use the returned udid. Inform user about viewer_url for screen viewing.
-- target: 'ambiguous' — multiple devices found. Ask the user which one to use.
-- target: 'none' — no devices. Tell user to boot a simulator or connect an iPhone.
+- target: 'device' — one physical device connected, use the returned udid. viewer_url is an optional live view; mention it only if the user wants to watch.
+- target: 'ambiguous' — several devices. Pick the one the task names (model, name, simulator vs phone) and carry on; with nothing to tell them apart, drive each one the task needs, or the first physical iPhone. Ask only when the choice would change the result.
+- target: 'none' — nothing booted. Boot a simulator yourself (boot_simulator, headless — never open Simulator.app). Ask the user only when the task needs a physical iPhone and none is connected.
 
 Pass the returned udid to all subsequent tool calls.`,
       inputSchema: {},
@@ -712,7 +787,7 @@ Pass the returned udid to all subsequent tool calls.`,
               type: 'text' as const,
               text: JSON.stringify({
                 target: 'ambiguous',
-                message: 'Multiple devices found. Ask the user which device to target.',
+                message: 'Multiple devices found. Pick the one the task names (model or name below) and continue; ask the user only if the choice would change the result.',
                 simulators: ctx.simulators,
                 physical_devices: ctx.physicalDevices,
               }),
@@ -747,7 +822,7 @@ Prerequisites:
 - Developer Mode enabled on iPhone (Settings > Privacy & Security > Developer Mode)
 - Apple ID signed into Xcode (Xcode > Settings > Accounts)
 
-After setup completes, use the returned udid for all subsequent tool calls. Also inform the user about the viewer_url where they can see the device screen.`,
+After setup completes, use the returned udid for all subsequent tool calls. viewer_url is an optional live view of the device; mention it only if the user wants to watch.`,
       inputSchema: {
         udid: z.string().describe('Physical device UDID from list_devices or get_execution_context'),
       },
@@ -769,7 +844,7 @@ After setup completes, use the returned udid for all subsequent tool calls. Also
             content: [{
               type: 'text' as const,
               text: JSON.stringify({ status: 'connected', udid, viewer_url: viewerUrl, screen_size: screenSize })
-                + `\n\nIMPORTANT: Tell the user to open this URL to see the device screen: ${viewerUrl}`,
+                + `\n\nOptional live view of the device: ${viewerUrl} (mention it only if the user wants to watch).`,
             }],
           }
         } catch (error) {

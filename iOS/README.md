@@ -38,6 +38,16 @@ built and launched once per boot — `setup_device` walks through it, and the
 
 ## Setup
 
+AgentController.app (3.1+) ships this server and installs it at
+`~/.agentcontroller/ios-server`; `agentcontroller install-claude` registers it with Claude Code
+next to the desktop server. Then, once, install the device helpers:
+
+```bash
+node ~/.agentcontroller/ios-server/dist/cli.js --setup   # idb, WebDriverAgent clone, ax-scan
+```
+
+From a checkout instead:
+
 ```bash
 cd iOS
 npm install && npm run build
@@ -45,7 +55,8 @@ node dist/cli.js --setup        # installs helpers, registers with Claude Code
 ```
 
 Or register manually with any MCP client as a stdio server running
-`node <repo>/iOS/dist/cli.js`. Helpers from earlier installs are reused
+`node ~/.agentcontroller/ios-server/dist/cli.js` (or `node <repo>/iOS/dist/cli.js` — a path that
+outlives the checkout: a registration pointing into a deleted clone fails silently at startup). Helpers from earlier installs are reused
 automatically rather than re-downloaded: lookup order is `~/.agentcontroller/ios`,
 then the legacy roots `~/.blitz-iphone-mcp` and `~/.blitz`.
 
