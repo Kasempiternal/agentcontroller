@@ -57,16 +57,12 @@ struct LiveDot: View {
     var color: Color
     var pulsing: Bool
     var size: CGFloat = 8
-    @State private var expanded = false
 
     var body: some View {
         ZStack {
             if pulsing {
-                Circle()
-                    .fill(color.opacity(0.35))
+                PulseRing(color: NSColor(color).withAlphaComponent(0.35), diameter: size * 2.4)
                     .frame(width: size * 2.4, height: size * 2.4)
-                    .scaleEffect(expanded ? 1 : 0.4)
-                    .opacity(expanded ? 0 : 1)
             }
             Circle()
                 .fill(color)
@@ -74,13 +70,94 @@ struct LiveDot: View {
                 .shadow(color: color.opacity(0.6), radius: pulsing ? 3 : 0)
         }
         .frame(width: size * 2.4, height: size * 2.4)
-        .onAppear {
-            guard pulsing else { return }
-            withAnimation(.easeOut(duration: 1.6).repeatForever(autoreverses: false)) {
-                expanded = true
-            }
-        }
         .accessibilityHidden(true)
+    }
+}
+
+/// The expanding ring behind `LiveDot`, as a Core Animation layer animation.
+///
+/// 3.0 drove it with a SwiftUI `repeatForever` animation. That re-ran SwiftUI's display-list
+/// update for the whole window on every frame, rebuilding the shadow filters of every view in
+/// it, and kept doing so while the popover and window were closed: the idle menu-bar app sat
+/// at ~30% of a core for days (measured 15/10/2026, `sample`: main thread in
+/// `DisplayList.ViewUpdater.update` + `GraphicsFilter.makeCAFilter`). A `CABasicAnimation`
+/// runs in the render server: the app does no work per frame, and nothing renders while the
+/// window is off screen. Reduce Motion gets the still ring.
+struct PulseRing: NSViewRepresentable {
+    var color: NSColor
+    var diameter: CGFloat
+
+    func makeNSView(context: Context) -> PulseRingView {
+        let view = PulseRingView()
+        view.configure(color: color, diameter: diameter)
+        return view
+    }
+
+    func updateNSView(_ view: PulseRingView, context: Context) {
+        view.configure(color: color, diameter: diameter)
+    }
+}
+
+final class PulseRingView: NSView {
+    private let ring = CAShapeLayer()
+    private var configuredDiameter: CGFloat?
+    static let animationKey = "agentcontroller.pulse"
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.addSublayer(ring)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    /// Called on every SwiftUI update (every tool call bumps a counter in the same view), so it
+    /// only touches what changed and never restarts a pulse that is already running.
+    func configure(color: NSColor, diameter: CGFloat) {
+        ring.fillColor = color.cgColor
+        guard configuredDiameter != diameter else { return }
+        configuredDiameter = diameter
+        ring.path = CGPath(ellipseIn: CGRect(x: 0, y: 0, width: diameter, height: diameter), transform: nil)
+        ring.bounds = CGRect(x: 0, y: 0, width: diameter, height: diameter)
+        needsLayout = true
+        if ring.animation(forKey: Self.animationKey) == nil { restartAnimation() }
+    }
+
+    override func layout() {
+        super.layout()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        ring.position = CGPoint(x: bounds.midX, y: bounds.midY)
+        CATransaction.commit()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        restartAnimation()
+    }
+
+    private func restartAnimation() {
+        ring.removeAnimation(forKey: Self.animationKey)
+        guard window != nil else { return }
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            ring.opacity = 0.5
+            return
+        }
+        ring.opacity = 0
+        let scale = CABasicAnimation(keyPath: "transform.scale")
+        scale.fromValue = 0.4
+        scale.toValue = 1.0
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 1.0
+        fade.toValue = 0.0
+        let group = CAAnimationGroup()
+        group.animations = [scale, fade]
+        group.duration = 1.6
+        group.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        group.repeatCount = .infinity
+        group.isRemovedOnCompletion = false
+        ring.add(group, forKey: Self.animationKey)
     }
 }
 
