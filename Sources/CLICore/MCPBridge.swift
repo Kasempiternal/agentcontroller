@@ -20,10 +20,13 @@ import Foundation
 public final class MCPBridge: @unchecked Sendable {
     public static let maxInFlight = 8
     public static let requestDeadline: TimeInterval = 180
+    /// How long a request that found the app dead waits for its relaunch to publish an endpoint.
+    static let relaunchWait: TimeInterval = 25
 
     private let session: URLSession
     private let cache: EndpointCache
     private let listener: ListenerCheck
+    private let launcher: AppLaunching
     private let dispatcher = BoundedDispatcher(limit: MCPBridge.maxInFlight)
     private let output: LineOutput
     private let inFlight = DispatchGroup()
@@ -33,17 +36,24 @@ public final class MCPBridge: @unchecked Sendable {
     /// Names this process to the server. Every client numbers its JSON-RPC ids from 0, so the
     /// server keys in-flight requests by (client, id); a pid alone is reused across restarts and
     /// a stale cancel could hit the wrong call, so a random suffix rides along.
+    private let relaunchWait: TimeInterval
+
     private let clientID = "cli-\(getpid())-\(UUID().uuidString.lowercased().prefix(8))"
 
     public convenience init() {
-        self.init(cache: EndpointCache(), output: StdoutWriter())
+        let launcher = ThrottledLauncher(OpenLauncher())
+        self.init(cache: EndpointCache(onMissing: { launcher.launch() }),
+                  output: StdoutWriter(), launcher: launcher, relaunchWait: MCPBridge.relaunchWait)
     }
 
     /// `output` is the stdout writer in production; tests substitute a collector.
-    init(cache: EndpointCache, output: LineOutput, listener: ListenerCheck = ListenerCheck()) {
+    init(cache: EndpointCache, output: LineOutput, listener: ListenerCheck = ListenerCheck(),
+         launcher: AppLaunching = NoLauncher(), relaunchWait: TimeInterval = 0) {
         self.cache = cache
         self.output = output
         self.listener = listener
+        self.launcher = launcher
+        self.relaunchWait = relaunchWait
 
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = Self.requestDeadline
@@ -124,17 +134,24 @@ public final class MCPBridge: @unchecked Sendable {
 
     private func forward(_ line: Data, completion: @escaping () -> Void) {
         let endpoint: Endpoint
+        var recovered = false
         do {
             endpoint = try cache.resolve()
         } catch {
-            fail(line, "AgentController is not running. Launch the AgentController menu bar app first.")
-            completion()
-            return
+            // No files at all. At startup the cache already started the app and waited; later
+            // in a session (the app quit and removed its files) this is the first sign of it.
+            guard let fresh = relaunch() else {
+                fail(line, Self.notRunningMessage)
+                completion()
+                return
+            }
+            endpoint = fresh
+            recovered = true
         }
-        send(line, to: endpoint, retried: false, completion: completion)
+        send(line, to: endpoint, retried: false, recovered: recovered, completion: completion)
     }
 
-    private func send(_ line: Data, to endpoint: Endpoint, retried: Bool, completion: @escaping () -> Void) {
+    private func send(_ line: Data, to endpoint: Endpoint, retried: Bool, recovered: Bool, completion: @escaping () -> Void) {
         // The endpoint is cached, and the port it names is free for any account on the Mac
         // to take once the app restarts or its listener dies. Whatever holds it would get
         // the bearer token and every tool call (typed text, scripts), and could answer in
@@ -143,10 +160,14 @@ public final class MCPBridge: @unchecked Sendable {
             // Nothing was delivered: as with a refused connection, the files may name the
             // app's new endpoint.
             if !retried, let fresh = cache.refresh(replacing: endpoint) {
-                send(line, to: fresh, retried: true, completion: completion)
+                send(line, to: fresh, retried: true, recovered: recovered, completion: completion)
                 return
             }
-            fail(line, "Nothing running as you is listening on AgentController's port \(endpoint.port), so the request was not sent. Is the menu bar app running?")
+            if !recovered, let fresh = relaunch() {
+                send(line, to: fresh, retried: true, recovered: true, completion: completion)
+                return
+            }
+            fail(line, Self.notRunningMessage)
             completion()
             return
         }
@@ -167,10 +188,14 @@ public final class MCPBridge: @unchecked Sendable {
                     // Refused means nothing was delivered, so a retry cannot repeat a click.
                     // The app likely restarted on a new port; the files say.
                     if !retried, let fresh = cache.refresh(replacing: endpoint) {
-                        send(line, to: fresh, retried: true, completion: completion)
+                        send(line, to: fresh, retried: true, recovered: recovered, completion: completion)
                         return
                     }
-                    fail(line, "Cannot connect to AgentController. Is the menu bar app running?")
+                    if !recovered, let fresh = relaunch() {
+                        send(line, to: fresh, retried: true, recovered: true, completion: completion)
+                        return
+                    }
+                    fail(line, Self.notRunningMessage)
                 case .timedOut:
                     fail(line, "AgentController did not respond within \(Int(Self.requestDeadline))s (server busy or hung on the target app).")
                 case .cancelled:
@@ -199,16 +224,30 @@ public final class MCPBridge: @unchecked Sendable {
                 // Stale token: the app restarted and reissued it. The server rejects before
                 // dispatching, so retrying is safe.
                 if !retried, let fresh = cache.refresh(replacing: endpoint) {
-                    send(line, to: fresh, retried: true, completion: completion)
+                    send(line, to: fresh, retried: true, recovered: recovered, completion: completion)
                     return
                 }
-                fail(line, "AgentController rejected the auth token (HTTP 401). Restart the app to reissue one.")
+                fail(line, "AgentController rejected the auth token (HTTP 401). Run `open -g -j /Applications/AgentController.app` after quitting it once to reissue one, or retry: the bridge re-reads the token on every restart.")
             default:
                 fail(line, "AgentController rejected the request (HTTP \(http.statusCode)).")
             }
             completion()
         }.resume()
     }
+
+    /// The app is dead (or its files are stale): start it in the background and wait for the
+    /// endpoint it publishes. Blocks the calling worker, which is the point: the request is
+    /// delivered late instead of failing. Returns nil when the app never came up.
+    private func relaunch() -> Endpoint? {
+        launcher.launch()
+        return cache.awaitEndpoint(timeout: relaunchWait) { [listener] in listener.isOurs($0.port) }
+    }
+
+    /// Worded for the agent, not the human: the fix is a command it can run itself.
+    static let notRunningMessage = "AgentController is not running and the bridge could not start it. "
+        + "Run `open -g -j /Applications/AgentController.app` yourself (background, no focus change), "
+        + "wait a few seconds and retry. Do not ask the user to launch it; if the app is not installed, "
+        + "build it with ./build.sh in the agentcontroller repo."
 
     /// Answers an undeliverable request under its own id. A notification has nobody waiting, so
     /// it gets a line on stderr instead, which MCP clients surface in their server logs.

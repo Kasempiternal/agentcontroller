@@ -106,4 +106,17 @@ public enum LoopbackListener {
         let pad = address.i46a_pad32
         return pad.0 == 0 && pad.1 == 0 && pad.2 == UInt32(0xFFFF).bigEndian
     }
+
+    /// Whether one of this user's processes runs an executable whose path ends in `suffix`
+    /// (`/AgentController.app/Contents/MacOS/AgentController` matches every copy of the app).
+    /// The bridge asks before starting the menu-bar app: `open` on an app that is already
+    /// running sends it a reopen event, and the app answers that by bringing its window forward.
+    public static func userProcessRuns(executablePathSuffix suffix: String) -> Bool {
+        var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
+        for pid in currentUserPIDs() {
+            let length = proc_pidpath(pid, &buffer, UInt32(buffer.count))
+            if length > 0, String(cString: buffer).hasSuffix(suffix) { return true }
+        }
+        return false
+    }
 }

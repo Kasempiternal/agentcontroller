@@ -13,6 +13,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// they still carry it: a second instance overwrites both files, and the first one quitting
     /// afterwards used to delete the live instance's port and token out from under its bridges.
     private var publishedToken: String?
+    private let launchedAt = Date()
+    /// Reopen events this soon after launch are ignored. A bridge (or build.sh) that starts the
+    /// app in the background with `open -g` while another one does the same delivers a reopen
+    /// event to the app that is still starting, and showing the window for it takes the user's
+    /// focus — the one thing the background launch was meant to avoid.
+    static let reopenGrace: TimeInterval = 15
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Bound every AX call this process ever makes — a hung target app must
@@ -49,6 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// fresh launch. Without handling it, "opening" a running AgentController looks like a
     /// no-op. Resurface the main window when nothing is already visible.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        guard Date().timeIntervalSince(launchedAt) > Self.reopenGrace else { return false }
         if !flag { showMainWindow() }
         return true
     }

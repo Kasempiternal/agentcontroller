@@ -11,14 +11,22 @@ public final class EndpointCache: @unchecked Sendable {
     private let discover: () throws -> Endpoint
     private let startupDeadline: Date
     private let pollInterval: TimeInterval
+    private let onMissing: (() -> Void)?
+    private var missingReported = false
 
     /// `startupWait` is how long, from now, a missing endpoint is waited for rather than
     /// reported: an MCP client launches its bridge and the app in no particular order.
+    ///
+    /// `onMissing` runs once, the first time the files are not there: the production wiring
+    /// starts the app in the background, so the wait that follows is for a launch already
+    /// under way instead of for a human to notice.
     public init(startupWait: TimeInterval = 30,
                 pollInterval: TimeInterval = 0.1,
+                onMissing: (() -> Void)? = nil,
                 discover: @escaping () throws -> Endpoint = { try Endpoint.discover() }) {
         self.startupDeadline = Date().addingTimeInterval(startupWait)
         self.pollInterval = pollInterval
+        self.onMissing = onMissing
         self.discover = discover
     }
 
@@ -37,6 +45,7 @@ public final class EndpointCache: @unchecked Sendable {
                 lock.unlock()
                 return found
             } catch {
+                reportMissingOnce()
                 guard Date() < startupDeadline else { throw error }
                 Thread.sleep(forTimeInterval: pollInterval)
             }
@@ -57,5 +66,31 @@ public final class EndpointCache: @unchecked Sendable {
         }
         if current == bad { current = nil }
         return nil
+    }
+
+    /// Polls the files until they name a listener `accept` approves, or `timeout` passes.
+    /// For a request that just found the app dead: the files may still name its old port, so
+    /// the caller's `accept` (is one of this user's processes listening there?) is what tells
+    /// the relaunched app's endpoint from the stale one.
+    public func awaitEndpoint(timeout: TimeInterval, accept: (Endpoint) -> Bool) -> Endpoint? {
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            if let found = try? discover(), accept(found) {
+                lock.lock()
+                current = found
+                lock.unlock()
+                return found
+            }
+            Thread.sleep(forTimeInterval: pollInterval)
+        } while Date() < deadline
+        return nil
+    }
+
+    private func reportMissingOnce() {
+        lock.lock()
+        let first = !missingReported
+        missingReported = true
+        lock.unlock()
+        if first { onMissing?() }
     }
 }

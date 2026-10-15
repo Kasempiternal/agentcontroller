@@ -59,6 +59,46 @@ read_endpoint() {
     esac
 }
 
+# 3.1.0: the bridge starts a dead app itself. 3.0 answered "launch the menu bar app first",
+# which an agent reads as "ask the user", and a client that started before the app marked the
+# whole server failed for the session. `open -g -j` starts it in the background and hidden:
+# the user's frontmost app, cursor and Space do not change.
+NOT_RUNNING_MSG="AgentController is not running and the bridge could not start it. Run \`open -g -j /Applications/AgentController.app\` yourself (background, no focus change), wait a few seconds and retry. Do not ask the user to launch it."
+# One launch across every bridge process (both bridges share this lock): several sessions
+# notice a dead app at once. mkdir is atomic; a lock older than 20s is from a finished launch.
+LAUNCH_LOCK="$HOME/.agentcontroller/.launch.lock"
+launch_app_bg() {
+    [ "${AGENTCONTROLLER_NO_AUTOLAUNCH:-}" = "1" ] && return
+    # Already running: `open` would only send it a reopen event, which the app answers by
+    # showing its window and taking focus.
+    pgrep -f '/AgentController.app/Contents/MacOS/AgentController' >/dev/null 2>&1 && return
+    if ! mkdir "$LAUNCH_LOCK" 2>/dev/null; then
+        local age
+        age=$(( $(date +%s) - $(stat -f %m "$LAUNCH_LOCK" 2>/dev/null || echo 0) ))
+        [ "$age" -lt 20 ] && return
+        rmdir "$LAUNCH_LOCK" 2>/dev/null
+        mkdir "$LAUNCH_LOCK" 2>/dev/null || return
+    fi
+    if [ -d /Applications/AgentController.app ]; then
+        open -g -j /Applications/AgentController.app >/dev/null 2>&1
+    else
+        open -g -j -b izotz.agentcontroller >/dev/null 2>&1
+    fi
+}
+
+# Polls the endpoint files for up to $1 seconds until they name a port other than $2 (the
+# dead one). Leaves PORT/TOKEN set to whatever was read last.
+wait_for_endpoint() {
+    local limit=$(( $1 * 4 )) tries=0
+    while [ "$tries" -lt "$limit" ]; do
+        read_endpoint
+        if [ -n "$PORT" ] && [ -n "$TOKEN" ] && [ "$PORT" != "$2" ]; then return 0; fi
+        sleep 0.25
+        tries=$((tries + 1))
+    done
+    return 1
+}
+
 # First "id" member of the request line — string, number, or null. Empty result
 # means the request is a notification and must never receive a reply at all.
 # Four processes per call, so it runs only on the error paths that need an id to answer
@@ -107,6 +147,18 @@ handle_request() {
     local port="$2"
     local token="$3"
 
+    # No endpoint yet: start the app here, in this request's own worker, so the reader keeps
+    # draining stdin while it comes up.
+    if [ -z "$port" ] || [ -z "$token" ]; then
+        launch_app_bg
+        if ! wait_for_endpoint 25 ""; then
+            emit_error "$line" "$NOT_RUNNING_MSG"
+            return
+        fi
+        port="$PORT"
+        token="$TOKEN"
+    fi
+
     do_request() {
         # Body via stdin (--data-binary @-): immune to ARG_MAX however large a
         # run_steps flow gets. curl's exit status survives as the pipeline status.
@@ -150,7 +202,19 @@ handle_request() {
             body="${response%$'\n'*}"
         fi
         if [ "$http_code" = "000" ]; then
-            emit_error "$line" "Cannot connect to AgentController. Retrying on next request."
+            # Refused twice: nothing was delivered, so starting the app and retrying cannot
+            # repeat an action.
+            launch_app_bg
+            if wait_for_endpoint 25 "$port"; then
+                port="$PORT"
+                token="$TOKEN"
+                response=$(do_request)
+                http_code="${response##*$'\n'}"
+                body="${response%$'\n'*}"
+            fi
+        fi
+        if [ "$http_code" = "000" ]; then
+            emit_error "$line" "$NOT_RUNNING_MSG"
             return
         fi
     fi
@@ -191,8 +255,10 @@ kill_tree() {
     kill "$1" 2>/dev/null
 }
 
-# Wait up to 30s on startup for BOTH the port and token files to appear.
+# Wait up to 30s on startup for BOTH the port and token files to appear, starting the app if
+# they are not there yet.
 waited=0
+{ [ ! -f "$PORT_FILE" ] || [ ! -f "$TOKEN_FILE" ]; } && launch_app_bg
 while { [ ! -f "$PORT_FILE" ] || [ ! -f "$TOKEN_FILE" ]; } && [ "$waited" -lt 30 ]; do
     sleep 1
     waited=$((waited + 1))
@@ -239,11 +305,6 @@ while IFS= read -r line; do
     # here means a server restart self-heals on the very next request instead of after
     # one failed round-trip.
     read_endpoint
-
-    if [ -z "$PORT" ] || [ -z "$TOKEN" ]; then
-        emit_error "$line" "AgentController is not running. Launch the AgentController menu bar app first."
-        continue
-    fi
 
     reap_at_cap
     handle_request "$line" "$PORT" "$TOKEN" &

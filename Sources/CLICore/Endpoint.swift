@@ -33,8 +33,8 @@ public struct Endpoint: Equatable {
                 return """
                 AgentController is not running.
 
-                Start the menu-bar app first:
-                    open -a AgentController
+                Start the menu-bar app in the background (no focus change):
+                    open -g -j -a AgentController
 
                 If it is not installed, build it from a checkout with ./build.sh
                 """

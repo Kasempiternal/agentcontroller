@@ -41,7 +41,7 @@ final class BridgeScriptTests: XCTestCase {
         let bridge = Process()
         bridge.executableURL = URL(fileURLWithPath: "/bin/bash")
         bridge.arguments = [script.path]
-        bridge.environment = ["HOME": home.path, "TMPDIR": home.path, "PATH": "/usr/bin:/bin"]
+        bridge.environment = ["HOME": home.path, "TMPDIR": home.path, "PATH": "/usr/bin:/bin", "AGENTCONTROLLER_NO_AUTOLAUNCH": "1"]
         let stdin = Pipe()
         bridge.standardInput = stdin
         bridge.standardOutput = FileHandle.nullDevice
@@ -107,7 +107,7 @@ final class BridgeScriptTests: XCTestCase {
         let bridge = Process()
         bridge.executableURL = URL(fileURLWithPath: "/bin/bash")
         bridge.arguments = [script.path]
-        bridge.environment = ["HOME": home.path, "TMPDIR": home.path, "PATH": "/usr/bin:/bin"]
+        bridge.environment = ["HOME": home.path, "TMPDIR": home.path, "PATH": "/usr/bin:/bin", "AGENTCONTROLLER_NO_AUTOLAUNCH": "1"]
         let stdin = Pipe()
         bridge.standardInput = stdin
         bridge.standardOutput = FileHandle.nullDevice
