@@ -139,6 +139,51 @@ final class AttachedChromeEndToEndTests: XCTestCase {
         XCTAssertFalse(second.contains("Beta only"), second)
     }
 
+    /// 3.1.0: after a page was opened by url, a call that names only the browser means THAT
+    /// page. It used to get the first unclaimed tab — never the one just opened, because that
+    /// one is claimed by its own session — so `read_all_text {app:"Google Chrome"}` after
+    /// opening App Store Connect's keys page read the user's Business tab instead.
+    func testABareBrowserCallFollowsThePageTheAgentJustDrove() async throws {
+        let beta = try writePage("beta", button: "Beta only")
+        let gamma = try writePage("gamma", button: "Gamma decoy")
+        try await userOpens(beta)
+        try await userOpens(gamma)
+
+        let rewritten = BrowserRouting.browserArguments(
+            .object(["app": .string("chrome"), "url": .string(beta)]),
+            browser: BrowserTarget(bundleId: "com.google.Chrome", name: "Google Chrome", appURL: URL(fileURLWithPath: "/Applications/Google Chrome.app")),
+            page: URL(string: beta)!)
+        let first = text(try await call("snapshot", rewritten.objectValue ?? [:]))
+        XCTAssertTrue(first.contains("Beta only"), first)
+
+        let started = Date()
+        let bare = text(try await call("snapshot", ["app": .string("com.google.Chrome")]))
+        XCTAssertLessThan(Date().timeIntervalSince(started), 0.4, "a settled page is not waited on again")
+        XCTAssertTrue(bare.contains("Beta only"), "a bare browser call read another tab: \(bare)")
+        XCTAssertFalse(bare.contains("Gamma decoy"), bare)
+    }
+
+    /// Every Claude session on the Mac shares one server. A bare browser call follows the page
+    /// THAT session drove, never the page another session drove.
+    func testEachSessionFollowsItsOwnPage() async throws {
+        let alpha = try writePage("alpha", button: "Alpha only")
+        let beta = try writePage("beta", button: "Beta only")
+        try await userOpens(alpha)
+        try await userOpens(beta)
+        let chrome = BrowserTarget(bundleId: "com.google.Chrome", name: "Google Chrome", appURL: URL(fileURLWithPath: "/Applications/Google Chrome.app"))
+        func opened(_ url: String) -> [String: JSONValue] {
+            BrowserRouting.browserArguments(.object(["app": .string("chrome"), "url": .string(url)]),
+                                            browser: chrome, page: URL(string: url)!).objectValue ?? [:]
+        }
+        _ = try await RequestContext.$clientID.withValue("session-a") { try await call("snapshot", opened(alpha)) }
+        _ = try await RequestContext.$clientID.withValue("session-b") { try await call("snapshot", opened(beta)) }
+
+        let a = try await RequestContext.$clientID.withValue("session-a") { text(try await call("snapshot", ["app": .string("com.google.Chrome")])) }
+        let b = try await RequestContext.$clientID.withValue("session-b") { text(try await call("snapshot", ["app": .string("com.google.Chrome")])) }
+        XCTAssertTrue(a.contains("Alpha only") && !a.contains("Beta only"), "session A read: \(a)")
+        XCTAssertTrue(b.contains("Beta only") && !b.contains("Alpha only"), "session B read: \(b)")
+    }
+
     /// With no tab on the page the CDP backend refuses; for an app identity the router then
     /// declines and the call falls through to the AX path — it never reads "the first tab".
     func testAPageWithNoTabIsDeclinedNotAnsweredFromTheFirstTab() async throws {

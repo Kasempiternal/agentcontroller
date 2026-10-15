@@ -26,6 +26,11 @@ actor WebCDPBackend {
         /// False when the last navigation never reported its load event within the wait.
         var loaded: Bool
         var lastUsed: Date
+        /// When this session attached. A snapshot of a page that is seconds old waits for a
+        /// single-page app to render instead of reporting its empty shell.
+        var openedAt = Date()
+        /// The first snapshot already waited for the page to render; later ones never wait.
+        var settled = false
     }
 
     enum Navigation {
@@ -60,12 +65,24 @@ actor WebCDPBackend {
     /// Tabs this app opened. Beyond this many, the least recently used is closed so a
     /// long agent run over many urls doesn't grow Chromium without bound.
     static let maxOwnedSessions = 8
+    /// How long after attaching a sparse snapshot is retried, and what counts as sparse.
+    static let settleWindow: TimeInterval = 6
+    static let settleThreshold = 8
     static let loadTimeout: TimeInterval = 20
 
     private var connections: [String: CDPConnection] = [:]
     private var sessions: [String: Session] = [:]
     private var opening: [String: Task<Session, Error>] = [:]
     private var claimedTargets: Set<String> = []
+    /// Per calling session (`RequestContext.clientID`): the attached-browser page session it
+    /// last drove by url, page hint or element id. A follow-up call from the same session that
+    /// names only the browser ("Google Chrome", no url) means that page.
+    /// It used to get the first UNCLAIMED tab, and the page the agent had just opened is by
+    /// construction claimed by its own session, so `open_url` + `read_all_text {app:"Google
+    /// Chrome"}` read a different tab every time (Readably, 15/10/2026: the App Store Connect
+    /// API-keys page was asked for, the Business tab was read and clicked).
+    private var lastDriven: [String: String] = [:]
+    private static var caller: String { RequestContext.clientID ?? "-" }
     /// Tabs this backend opened in a user's Chrome. Everything else in an attached browser
     /// is the user's.
     private var createdTargets: Set<String> = []
@@ -108,10 +125,11 @@ actor WebCDPBackend {
 
     func session(
         for identity: TargetIdentity,
+        key routed: String? = nil,
         navigation: Navigation = .ifNew,
         reusing targetId: String? = nil
     ) async throws -> Session {
-        let key = Self.key(for: identity)
+        let key = routed ?? Self.key(for: identity)
         var newTab = false
         if let existing = sessions[key], let connection = connections[key], await connection.isOpen {
             var session = existing
@@ -144,6 +162,7 @@ actor WebCDPBackend {
     }
 
     private func forget(_ key: String) {
+        lastDriven = lastDriven.filter { $0.value != key }
         if let connection = connections.removeValue(forKey: key) {
             Task { await connection.close(reason: "dropped") }
         }
@@ -314,13 +333,15 @@ actor WebCDPBackend {
         navigation: Navigation = .ifNew,
         _ body: (CDPConnection, Session) async throws -> T
     ) async throws -> T {
-        let key = Self.key(for: identity)
         var reusing: String?
         for attempt in 0..<2 {
+            let key = await routedKey(for: identity)
             do {
-                let session = try await session(for: identity, navigation: navigation, reusing: reusing)
+                let session = try await session(for: identity, key: key, navigation: navigation, reusing: reusing)
                 guard let connection = connections[key] else { throw CDPError.transport("session was dropped") }
-                return try await body(connection, session)
+                let value = try await body(connection, session)
+                noteDriven(session, specific: identity.url != nil || identity.pageHint != nil || key != Self.key(for: identity))
+                return value
             } catch let error as CDPError where error.isTransport && attempt == 0 {
                 reusing = sessions[key]?.targetId
                 forget(key)
@@ -338,19 +359,54 @@ actor WebCDPBackend {
             throw CDPError.stale
         }
         do {
-            return try await body(connection)
+            let value = try await body(connection)
+            if let session = sessions[key] { noteDriven(session, specific: true) }
+            return value
         } catch let error as CDPError where error.isTransport {
             forget(key)
             throw error
         }
     }
 
+    /// The session key a call should use. Only a bare browser identity on an attached browser
+    /// is redirected, and only to a page session that is still connected.
+    private func routedKey(for identity: TargetIdentity) async -> String {
+        let key = Self.key(for: identity)
+        guard identity.url == nil, identity.pageHint == nil, !identity.headless,
+              let recent = lastDriven[Self.caller], recent != key,
+              let session = sessions[recent], session.attached,
+              let connection = connections[recent], await connection.isOpen else { return key }
+        return recent
+    }
+
+    private func noteDriven(_ session: Session, specific: Bool) {
+        guard session.attached, specific else { return }
+        lastDriven[Self.caller] = session.key
+    }
+
     // MARK: - Snapshot and queries
 
     func snapshot(identity: TargetIdentity, interactiveOnly: Bool) async throws -> PageSnapshot {
         try await perform(identity) { connection, session in
-            let document = try await documentId(connection)
-            let refs = try await axRefs(connection, session: session, document: document, interactiveOnly: interactiveOnly)
+            var document = try await documentId(connection)
+            var refs = try await axRefs(connection, session: session, document: document, interactiveOnly: interactiveOnly)
+            // A page opened seconds ago is often a single-page app's shell (App Store Connect
+            // answered with its three footer links): give it a moment to render rather than
+            // hand the agent a near-empty page it will misread as the real one.
+            // Stops as soon as two reads in a row agree, so a page that is simply small pays
+            // 0.8s once per session, never per call.
+            if !session.settled {
+                let deadline = session.openedAt.addingTimeInterval(Self.settleWindow)
+                var steady = 0
+                while refs.count < Self.settleThreshold, Date() < deadline, steady < 2 {
+                    try await Task.sleep(nanoseconds: 400_000_000)
+                    document = try await documentId(connection)
+                    let again = try await axRefs(connection, session: session, document: document, interactiveOnly: interactiveOnly)
+                    steady = again.count == refs.count ? steady + 1 : 0
+                    refs = again
+                }
+                sessions[session.key]?.settled = true
+            }
             let url = try? await currentURL(connection)
             if let url { sessions[session.key]?.browserURL = url }
             return PageSnapshot(refs: refs, key: session.key, url: url ?? session.browserURL, loaded: session.loaded)

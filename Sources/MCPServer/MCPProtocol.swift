@@ -103,7 +103,9 @@ public struct MCPProtocolHandler: Sendable {
     private func runCancellable(_ request: JSONRPCRequest, id: JSONRPCId, client: String) async -> JSONRPCResponse? {
         let key = InFlightRegistry.Key(client: client, id: id)
         let call = Task { () -> JSONRPCResponse? in
-            let response = await handleToolsCall(request)
+            let response = await RequestContext.$clientID.withValue(client) {
+                await handleToolsCall(request)
+            }
             // Tools that honour cancellation return or throw early; either way the client
             // has abandoned the request and must not be sent a result for it.
             return Task.isCancelled ? nil : response
@@ -271,4 +273,12 @@ public struct MCPProtocolHandler: Sendable {
             return .success(errorResult, id: request.id)
         }
     }
+}
+
+/// Who is calling, for state that must not leak between agents. Every Claude session on the Mac
+/// shares this one server; a tool that remembers "the page you were on" must remember it per
+/// session, or one session's bare `{app:"Google Chrome"}` acts on another session's page.
+/// Bound per `tools/call`; `run_steps` runs its steps in the same task, so they inherit it.
+public enum RequestContext {
+    @TaskLocal public static var clientID: String?
 }
