@@ -205,6 +205,8 @@ struct StatusView: View {
                 HStack(spacing: 8) {
                     CopyButton(text: SetupManager.mcpLaunch.command, label: "Copy command")
                     CopyButton(text: mcpJSONSnippet, label: "Copy .mcp.json")
+                    CopyButton(text: SetupManager.claudeSetupCommand, label: "Copy Claude Code setup")
+                        .help("One command: registers both MCP servers, adds the autonomy rule and the focus-guard hook, installs the skill")
                     Spacer()
                 }
                 .controlSize(.small)

@@ -116,7 +116,7 @@ cd agentcontroller
 ./build.sh --dev
 ```
 
-`build.sh` kills any running instance, builds, signs, installs to `/Applications/AgentController.app`, deploys the bridge script to `~/.agentcontroller/`, and relaunches the app.
+`build.sh` builds, signs, installs to `/Applications/AgentController.app`, installs the CLI, the iOS MCP server and the bridges under `~/.agentcontroller/`, sets up Claude Code (see below; skip with `AGENTCONTROLLER_SKIP_CLAUDE=1`), and relaunches the app in the background. A DMG install gets the same pieces: the app carries them and installs them itself at launch.
 
 ### Windows
 
@@ -173,10 +173,26 @@ macOS TCC keys Accessibility and Screen Recording grants to the signing identity
 - *System Settings → Privacy & Security → Accessibility → AgentController*
 - *System Settings → Privacy & Security → Screen Recording → AgentController*
 
-**2. Register the MCP server with Claude Code.** Either user-scoped (available in all projects):
+**2. Set up Claude Code — one command.**
 
 ```bash
-claude mcp add --scope user agentcontroller -- ~/.agentcontroller/agentcontroller-mcp-bridge.sh
+~/.agentcontroller/bin/agentcontroller install-claude          # install or refresh
+~/.agentcontroller/bin/agentcontroller install-claude --check  # verify, change nothing
+```
+
+It registers both MCP servers (`agentcontroller` on the compiled bridge, `agentcontroller-ios` on the bundled iOS server) at user scope, and installs the **autonomy pack**:
+
+- a managed block in `~/.claude/CLAUDE.md` that makes using AgentController a MUST while it is connected: Claude gets keys, fills forms, finishes CLI/OAuth logins and checks dashboards and devices itself, in the background with your saved logins, and asks you only for 2FA, captchas, payments, missing secrets or irreversible actions;
+- the `agentcontroller` skill (`~/.claude/skills/agentcontroller`) with the playbooks;
+- a `PreToolUse` hook that refuses focus-stealing shell commands (`open` without `-g`, `osascript` activate/keystroke, `open -a Simulator`) and points at the background tool instead — append `# agentcontroller:allow-focus` when you asked to see something in front.
+
+Every file it changes is backed up to `~/.agentcontroller/backups/`; `--uninstall` removes the rule, hook and skill. The servers' own MCP instructions carry the same mandate, so any MCP client is told the same thing.
+
+To register by hand instead, user-scoped:
+
+```bash
+claude mcp add --scope user agentcontroller -- ~/.agentcontroller/bin/agentcontroller mcp
+claude mcp add --scope user agentcontroller-ios -- node ~/.agentcontroller/ios-server/dist/cli.js
 ```
 
 …or per-project, by adding to the project's `.mcp.json`:
@@ -185,7 +201,8 @@ claude mcp add --scope user agentcontroller -- ~/.agentcontroller/agentcontrolle
 {
   "mcpServers": {
     "agentcontroller": {
-      "command": "/Users/<you>/.agentcontroller/agentcontroller-mcp-bridge.sh"
+      "command": "/Users/<you>/.agentcontroller/bin/agentcontroller",
+      "args": ["mcp"]
     }
   }
 }

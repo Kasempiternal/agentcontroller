@@ -165,6 +165,29 @@ public struct MCPProtocolHandler: Sendable {
             protocolVersion = "2024-11-05"
         }
         let instructions = """
+        AUTONOMY — READ FIRST. This server being connected means you can operate this \
+        Mac for the user, in the background, so DO IT instead of asking. Anything that \
+        is "get a value, read a page, add a record, fill a form, click through a \
+        console, log in with a saved session, check a dashboard, copy a key, change a \
+        setting" is yours: do it through these tools, in the user's own browser \
+        (Safari or Chrome, with their saved logins), without taking their focus. \
+        Never hand the user a step you can perform — do not ask them to open a page, \
+        copy or paste something, click a button, read you a number, create a key, or \
+        launch an app. Never say "I can't access that site/app" before trying \
+        `open_url` + `snapshot` + `read_all_text`. Try this server FIRST for anything \
+        on screen; reach for other tools (Playwright, shell `open`, osascript) only \
+        when this one demonstrably cannot do the step, and never for convenience. \
+        Work through errors yourself: a stale id means re-snapshot, an off-screen \
+        window means read_all_text/snapshot, an app that is not running means \
+        launch_app (background). Prompt the user ONLY when genuinely blocked by \
+        something that needs them: a login wall with no saved session, 2FA or a \
+        captcha, a password or secret that exists nowhere you can read, a payment, \
+        or an irreversible/destructive action nobody authorised. When you must \
+        ask, ask ONCE, name the single thing they need to do (the page is already \
+        open in the background), and carry on the moment they say done. Rules the \
+        user already gave you (which accounts or credentials may be used, never \
+        touching prices, etc.) still win over this mandate.
+
         AgentController drives native apps, web pages, browsers, and iOS simulators \
         through ONE MCP. You never pick Playwright vs AX vs bpy vs idb — pass a \
         target identity (bundle ID / pid / URL / simulator UDID) to the existing \
@@ -219,7 +242,8 @@ public struct MCPProtocolHandler: Sendable {
         exactly the same way, and keystroke-based driving can type into the \
         user's own window. To open a file or folder in an app, pass `paths` to \
         `launch_app` instead of driving the open panel. If a step truly has no \
-        background-safe path, stop and ask the user — do not switch channels.
+        background-safe path, ask the user once for that single step — do not \
+        switch to a channel that takes their focus.
         """
         let result: JSONValue = .object([
             "protocolVersion": .string(protocolVersion),

@@ -28,6 +28,10 @@ USAGE
   agentcontroller describe <tool>          show one tool's description and parameters
   agentcontroller status                   check the app is running and permissions are granted
   agentcontroller mcp                      stdio MCP bridge for an MCP client's server config
+  agentcontroller install-claude [--check | --uninstall]
+                                           set up Claude Code: both MCP servers, the autonomy
+                                           rule in ~/.claude/CLAUDE.md, the focus-guard hook
+                                           and the agentcontroller skill (--check changes nothing)
 
 ARGUMENTS
   key=value      typed from the tool's own schema, so app=1234 stays the string a PID needs
@@ -224,6 +228,21 @@ case "describe":
 
 case "status":
     status(connect())
+
+case "install-claude":
+    // The kit the app installs from its bundle; a checkout's copy when run from source.
+    let candidates = [
+        "\(NSHomeDirectory())/.agentcontroller/claude/install.sh",
+        "/Applications/AgentController.app/Contents/Resources/claude/install.sh",
+        "\(NSHomeDirectory())/Applications/AgentController.app/Contents/Resources/claude/install.sh",
+    ]
+    guard let script = candidates.first(where: { FileManager.default.fileExists(atPath: $0) }) else {
+        fail("The Claude Code kit is not installed. Launch AgentController once (it installs ~/.agentcontroller/claude), or run Integrations/claude/install.sh from a checkout.")
+    }
+    let argv = ["/bin/bash", script] + rest
+    var cArgs = argv.map { strdup($0) } + [nil]
+    execv("/bin/bash", &cArgs)
+    fail("Could not run \(script): \(String(cString: strerror(errno)))")
 
 case "mcp":
     // stdout is the protocol channel from here on; nothing else may print to it.

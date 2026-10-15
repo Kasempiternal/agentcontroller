@@ -67,13 +67,47 @@ mkdir -p "$BUILD_DIR/Contents/Resources"
 cp Scripts/agentcontroller-mcp-bridge.sh "$BUILD_DIR/Contents/Resources/"
 cp "$ICON_FILE" "$BUILD_DIR/Contents/Resources/AgentController.icns"
 
+# 3.1: the app carries everything a DMG install needs, and installs it itself at launch
+# (SetupManager): the CLI (compiled MCP bridge + `install-claude`), the Claude Code kit and the
+# iOS MCP server. Helpers/, not MacOS/: on a case-insensitive disk `agentcontroller` IS
+# `AgentController`.
+mkdir -p "$BUILD_DIR/Contents/Helpers"
+cp ".build/release/agentcontroller-cli" "$BUILD_DIR/Contents/Helpers/agentcontroller"
+chmod 755 "$BUILD_DIR/Contents/Helpers/agentcontroller"
+
+KIT_STAGE="$BUILD_DIR/Contents/Resources/claude"
+mkdir -p "$KIT_STAGE/skills/agentcontroller"
+cp Integrations/claude/install.sh Integrations/claude/CLAUDE-block.md "$KIT_STAGE/"
+cp Integrations/claude/hooks/focus-guard.py "$KIT_STAGE/focus-guard.py"
+cp Integrations/claude/skills/agentcontroller/SKILL.md "$KIT_STAGE/skills/agentcontroller/SKILL.md"
+python3 -I "$KIT_STAGE/focus-guard.py" --self-test >/dev/null || die "focus-guard hook self-test failed"
+
+say "Building the iOS MCP server"
+command -v npm >/dev/null || die "npm not found: the iOS server needs Node 18+ to build"
+( cd iOS && npm ci --no-audit --no-fund >/dev/null 2>&1 && npm run build >/dev/null ) || die "iOS server build failed (cd iOS && npm ci && npm run build)"
+IOS_STAGE="$BUILD_DIR/Contents/Resources/ios-server"
+mkdir -p "$IOS_STAGE/src/idb"
+cp -R iOS/dist iOS/proto "$IOS_STAGE/"
+cp iOS/package.json iOS/package-lock.json iOS/LICENSE "$IOS_STAGE/"
+cp -R iOS/src/idb/ax-scan "$IOS_STAGE/src/idb/"   # compiled on the Mac by `--setup` (Xcode tools)
+# Production dependencies only, and no optional native addon: nothing unsigned may ride along.
+( cd "$IOS_STAGE" && npm ci --omit=dev --omit=optional --no-audit --no-fund >/dev/null 2>&1 ) || die "iOS server dependencies failed"
+if find "$IOS_STAGE" -type f -exec file {} + 2>/dev/null | grep -q "Mach-O"; then
+    die "A Mach-O binary is inside the bundled iOS server; it would fail notarization unsigned"
+fi
+printf '%s %s %s\n' "$VERSION" "$(git rev-parse --short HEAD 2>/dev/null || echo src)" "$(date +%s)" > "$IOS_STAGE/.bundle-stamp"
+
 case "$MODE" in
     --dev)
         say "Signing ad-hoc (dev mode — TCC will NOT persist across rebuilds)"
+        codesign --force --sign - "$BUILD_DIR/Contents/Helpers/agentcontroller"
         codesign --force --sign - "$BUILD_DIR"
         ;;
     --skip-notarize|release)
         say "Signing with Developer ID + hardened runtime"
+        # Nested code first, then the app that seals it.
+        codesign --force --options runtime --timestamp --sign "$SIGN_ID" \
+            "$BUILD_DIR/Contents/Helpers/agentcontroller"
         codesign --force --options runtime \
             --entitlements "$ENTITLEMENTS" \
             --sign "$SIGN_ID" \
@@ -178,10 +212,9 @@ mkdir -p ~/.agentcontroller/bin
 # (`agentcontroller mcp`) for every open session; overwriting a running Mach-O in place
 # invalidates its code signature and the kernel SIGKILLs it on the next page-in.
 CLI_STAGED=~/.agentcontroller/bin/.agentcontroller.new
-cp ".build/release/agentcontroller-cli" "$CLI_STAGED"
+# The copy the app bundle carries, already signed with it.
+cp "$BUILD_DIR/Contents/Helpers/agentcontroller" "$CLI_STAGED"
 chmod 755 "$CLI_STAGED"
-codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$CLI_STAGED" 2>/dev/null \
-    || codesign --force --sign - "$CLI_STAGED"
 mv -f "$CLI_STAGED" ~/.agentcontroller/bin/agentcontroller
 
 # The same binary is the compiled MCP stdio bridge (`agentcontroller mcp`), which the app's
@@ -190,10 +223,24 @@ mv -f "$CLI_STAGED" ~/.agentcontroller/bin/agentcontroller
 ~/.agentcontroller/bin/agentcontroller mcp --check >/dev/null \
     || die "Installed CLI does not run \`agentcontroller mcp\` (compiled MCP bridge)"
 
+say "Installing the iOS MCP server to ~/.agentcontroller/ios-server"
+# Swapped by rename: open sessions keep the files they already loaded.
+rm -rf ~/.agentcontroller/.ios-server.new ~/.agentcontroller/.ios-server.old
+ditto "$BUILD_DIR/Contents/Resources/ios-server" ~/.agentcontroller/.ios-server.new
+[ -d ~/.agentcontroller/ios-server ] && mv ~/.agentcontroller/ios-server ~/.agentcontroller/.ios-server.old
+mv ~/.agentcontroller/.ios-server.new ~/.agentcontroller/ios-server
+rm -rf ~/.agentcontroller/.ios-server.old
+
+if [ "${AGENTCONTROLLER_SKIP_CLAUDE:-0}" != "1" ]; then
+    say "Setting up Claude Code (MCP servers, autonomy rule, focus-guard hook, skill)"
+    bash Integrations/claude/install.sh || printf '\033[1;33m== Claude Code setup reported gaps (see above); rerun: agentcontroller install-claude ==\033[0m\n'
+fi
+
 say "Launching"
 # Launch by path, not `open -a AgentController`: LaunchServices hasn't necessarily
 # indexed the just-copied bundle by name yet, which makes `-a` fail on a fresh install.
-open "/Applications/AgentController.app"
+# -g: the user keeps their frontmost app; the app shows its window itself if it needs grants.
+open -g "/Applications/AgentController.app"
 
 sleep 1
 say "Verification"

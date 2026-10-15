@@ -7,6 +7,12 @@ struct SetupManager {
     static let bridgeScript = baseDir.appendingPathComponent("agentcontroller-mcp-bridge.sh")
     /// Where build.sh installs the compiled CLI, which also carries the `mcp` stdio bridge.
     static let cliBinary = baseDir.appendingPathComponent("bin/agentcontroller")
+    /// The Claude Code kit (installer, rule block, focus-guard hook, skill) and the iOS MCP
+    /// server, both installed from the app bundle so a DMG install has everything.
+    static let kitDir = baseDir.appendingPathComponent("claude")
+    static let iosServerDir = baseDir.appendingPathComponent("ios-server")
+    /// What the Connect card copies: one command that wires Claude Code up completely.
+    static var claudeSetupCommand: String { "\(cliBinary.path) install-claude" }
 
     /// What an MCP client runs to reach this app.
     struct MCPLaunch: Equatable {
@@ -52,9 +58,67 @@ struct SetupManager {
     static func setup() {
         createDirectories()
         installBridgeScript()
+        // Before mcpLaunch is resolved: it probes this binary.
+        installBundledCLI()
         // Resolve which bridge to advertise now, off the main thread, so the first look at the
-        // status window does not pay for launching the CLI probe.
-        DispatchQueue.global(qos: .utility).async { _ = mcpLaunch }
+        // status window does not pay for launching the CLI probe. The kit and the iOS server
+        // (35 MB, thousands of files) are copied there too, only when the bundle's differ.
+        DispatchQueue.global(qos: .utility).async {
+            _ = mcpLaunch
+            installBundledKit()
+            installBundledIOSServer()
+        }
+    }
+
+    private static var bundleContents: URL { Bundle.main.bundleURL.appendingPathComponent("Contents") }
+
+    /// The CLI is also the live stdio bridge of every open Claude session, so it is replaced by
+    /// rename, never rewritten in place: a running Mach-O overwritten in place loses its code
+    /// signature and the kernel kills it on the next page-in.
+    private static func installBundledCLI() {
+        let bundled = bundleContents.appendingPathComponent("Helpers/agentcontroller")
+        guard let data = try? Data(contentsOf: bundled) else { return }
+        if (try? Data(contentsOf: cliBinary)) == data { return }
+        let staged = cliBinary.deletingLastPathComponent().appendingPathComponent(".agentcontroller.new")
+        try? FileManager.default.createDirectory(at: cliBinary.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? FileManager.default.removeItem(at: staged)
+        guard (try? FileManager.default.copyItem(at: bundled, to: staged)) != nil else { return }
+        chmod(staged, 0o755)
+        _ = Darwin.rename(staged.path, cliBinary.path)
+    }
+
+    /// Small text files; refreshed whenever any of them differs from the bundle's.
+    private static func installBundledKit() {
+        let bundled = bundleContents.appendingPathComponent("Resources/claude")
+        guard FileManager.default.fileExists(atPath: bundled.path) else { return }
+        replaceDirectory(kitDir, with: bundled, unlessSame: "install.sh", "CLAUDE-block.md", "focus-guard.py", "skills/agentcontroller/SKILL.md")
+    }
+
+    /// Copied only when the build stamp differs: open sessions keep running the old copy's
+    /// files until they restart, and the swap by rename never leaves a half-written tree.
+    private static func installBundledIOSServer() {
+        let bundled = bundleContents.appendingPathComponent("Resources/ios-server")
+        guard FileManager.default.fileExists(atPath: bundled.path) else { return }
+        replaceDirectory(iosServerDir, with: bundled, unlessSame: ".bundle-stamp")
+    }
+
+    private static func replaceDirectory(_ target: URL, with source: URL, unlessSame markers: String...) {
+        let fm = FileManager.default
+        let same = markers.allSatisfy { marker in
+            let a = try? Data(contentsOf: source.appendingPathComponent(marker))
+            let b = try? Data(contentsOf: target.appendingPathComponent(marker))
+            return a != nil && a == b
+        }
+        guard !same else { return }
+        let staged = baseDir.appendingPathComponent(".\(target.lastPathComponent).new")
+        let old = baseDir.appendingPathComponent(".\(target.lastPathComponent).old")
+        try? fm.removeItem(at: staged)
+        try? fm.removeItem(at: old)
+        guard (try? fm.copyItem(at: source, to: staged)) != nil else { return }
+        if fm.fileExists(atPath: target.path) { _ = Darwin.rename(target.path, old.path) }
+        _ = Darwin.rename(staged.path, target.path)
+        try? fm.removeItem(at: old)
+        chmod(target, 0o700)
     }
 
     static func writePort(_ port: UInt16) {
