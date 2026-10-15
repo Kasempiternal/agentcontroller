@@ -75,7 +75,7 @@ _No parameters._
 
 ### `open_url`
 
-Open a URL with the default handler (web link, deep link, or custom scheme like 'myapp://path'). BACKGROUND-SAFE BY DEFAULT: the handler app receives the URL WITHOUT being brought to the front — the user's focus is untouched. Set foreground:true to activate the handler app.
+Open a URL in a REAL browser the user can see (web link, deep link, or custom scheme like 'myapp://path'). Web links go to the browser named in `browser` (or `app`), otherwise the user's DEFAULT browser — never silently a different one. If the user names a browser ("in Safari", "use Firefox"), pass it. headless:true instead opens the page in a private headless Chromium for scripted testing. BACKGROUND-SAFE BY DEFAULT: the browser receives the URL WITHOUT being brought to the front. Then `snapshot` with app=<that browser> reads the page.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -84,7 +84,7 @@ Open a URL with the default handler (web link, deep link, or custom scheme like 
 
 ### `reset_app_state`
 
-Quit an app to reset its in-memory state. When wipeData:true AND the app is sandboxed (a Container exists for its bundle ID), ALSO delete ~/Library/Containers/<bundleId>/Data — this is DESTRUCTIVE and only happens behind the explicit wipeData:true flag. Without the flag, only quits.
+Quit an app to reset its in-memory state, waiting up to 5s for it to actually exit (an error if a 'Save changes?' sheet or similar kept it alive). When wipeData:true AND the app is sandboxed (a Container exists for its bundle ID), ALSO delete ~/Library/Containers/<bundleId>/Data — this is DESTRUCTIVE, only happens behind the explicit wipeData:true flag, and is refused while the app (or another instance of it) is still running. Without the flag, only quits.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -624,7 +624,7 @@ Capture a screenshot of the entire screen. Returns a JPEG by default (downscaled
 
 ### `start_recording`
 
-Start recording a window to a .mov video (H.264, 30fps max) — visual evidence for a QA flow. Works in the background like screenshots (window can be covered; minimized windows won't record). One recording at a time; finish with stop_recording, which returns the file path. Requires macOS 15+.
+Start recording a window to a .mov video (H.264, 30fps max, held to 4096px on the long edge) — visual evidence for a QA flow. Works in the background like screenshots (window can be covered; minimized windows won't record). One recording at a time; finish with stop_recording, which returns the file path. A recording stops by itself after maxSeconds (default 600, at most 3600) or when AgentController quits; stop_recording still returns the finished file. Requires macOS 15+.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -740,6 +740,7 @@ Run a script on the auto-selected backend: Python in Blender (bpy) when the sock
 | `app` | string | no | Bundle ID, app name, PID, URL, or simulator UDID |
 | `target` | string | no | Alias of app |
 | `url` | string | no | Page URL for CDP JavaScript |
+| `headless` | boolean | no | With url: run in a private headless Chromium (no user logins, never visible) instead of the user's Chrome. |
 | `code` | string | yes | Python (Blender) or JavaScript (CDP) to execute |
 | `language` | string | no | Optional hint: python or javascript. Default is the backend's native language. |
 | `consent` | boolean | no | Required the first time per backend; persists after that. |
