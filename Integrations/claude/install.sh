@@ -21,7 +21,10 @@ SETTINGS="$CLAUDE_DIR/settings.json"
 SKILL_DIR="$CLAUDE_DIR/skills/agentcontroller"
 CLI="$AC/bin/agentcontroller"
 IOS_CLI="$AC/ios-server/dist/cli.js"
-HOOK_CMD='python3 "$HOME/.agentcontroller/claude/focus-guard.py"'
+# Fails OPEN: a PreToolUse hook that exits 2 blocks the call, and `python3 <missing file>` exits 2,
+# so a deleted or mid-swap kit would block every Bash call in every session. The hook says
+# "deny" through JSON on stdout, which exit 0 keeps.
+HOOK_CMD='/bin/sh -c '"'"'f="$HOME/.agentcontroller/claude/focus-guard.py"; [ -f "$f" ] && python3 "$f"; exit 0'"'"''
 MODE="${1:-install}"
 
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; }
@@ -69,7 +72,8 @@ def ours(entry):
     return any("focus-guard.py" in (h.get("command") or "") for h in entry.get("hooks", []))
 present = [e for e in pre if ours(e)]
 if mode == "check":
-    sys.exit(0 if present else 1)
+    current = [h.get("command") for e in present for h in e.get("hooks", [])]
+    sys.exit(0 if current == [command] else 1)
 kept = [e for e in pre if not ours(e)]
 if mode == "install":
     kept.append({"matcher": "Bash", "hooks": [{"type": "command", "command": command, "timeout": 10}]})
@@ -186,7 +190,7 @@ case "$MODE" in
     if [ -n "$(desktop_command)" ]; then check_mcp agentcontroller $(desktop_command); else bad "no bridge installed (launch the app once)"; fi
     check_mcp agentcontroller-ios node "$IOS_CLI"
     if block_tool check; then ok "autonomy rule in $CLAUDE_MD"; else bad "autonomy rule missing or outdated in $CLAUDE_MD"; fi
-    if hook_tool check; then ok "focus-guard hook in $SETTINGS"; else bad "focus-guard hook not registered in $SETTINGS"; fi
+    if hook_tool check; then ok "focus-guard hook in $SETTINGS"; else bad "focus-guard hook missing or outdated in $SETTINGS"; fi
     if python3 -I "$(hook_source)" --self-test >/dev/null 2>&1; then ok "focus-guard self-test"; else bad "focus-guard self-test fails"; fi
     if [ -f "$SKILL_DIR/SKILL.md" ] && cmp -s "$SKILL_DIR/SKILL.md" "$SRC/skills/agentcontroller/SKILL.md"; then ok "skill $SKILL_DIR"; else bad "skill missing or outdated at $SKILL_DIR"; fi
     [ "$GAPS" -eq 0 ] && echo "All good." || echo "$GAPS gap(s). Fix with: $CLI install-claude"
