@@ -68,6 +68,8 @@ actor WebCDPBackend {
     /// How long after attaching a sparse snapshot is retried, and what counts as sparse.
     static let settleWindow: TimeInterval = 6
     static let settleThreshold = 8
+    /// How many times a snapshot has waited for a page to render, for tests.
+    private(set) var settleRounds = 0
     static let loadTimeout: TimeInterval = 20
 
     private var connections: [String: CDPConnection] = [:]
@@ -274,12 +276,51 @@ actor WebCDPBackend {
             if !newTab, let match = free.first(where: { CDPNavigation.pageMatches($0.url, requested: url) }) {
                 return Pick(page: match, navigate: false, created: false)
             }
+            // A tab this server opened earlier on the same site, that no session drives any
+            // more: take it to the page instead of opening one more. Single-page apps
+            // (chatgpt.com/ → /c/<id>) never match their old URL again, and every call used to
+            // leave another tab behind in the user's Chrome. Only our own tabs are reused.
+            if let own = free.first(where: { createdTargets.contains($0.id) && CDPNavigation.sameSite($0.url, requested: url) }) {
+                return Pick(page: own, navigate: true, created: false)
+            }
+            await closeSurplusCreatedTabs(port: port, open: pages)
             return Pick(page: try await ChromeLauncher.newBackgroundPage(port: port), navigate: true, created: true)
         }
         if let blank = free.first(where: { $0.url == "about:blank" }) {
             return Pick(page: blank, navigate: true, created: false)
         }
         return Pick(page: try await ChromeLauncher.newPage(port: port), navigate: true, created: false)
+    }
+
+    /// At most this many tabs opened by this server stay open in a user's Chrome; the user's own
+    /// tabs are never counted and never closed.
+    static let maxCreatedTabs = 6
+
+    /// Before opening a tab in a user's Chrome: close the least recently used tabs this server
+    /// opened there, with their sessions, until there is room. Never a tab whose page is
+    /// visible: the user may have started working in a tab an agent opened.
+    private func closeSurplusCreatedTabs(port: UInt16, open pages: [ChromeLauncher.PageTarget]) async {
+        let openIDs = Set(pages.map(\.id))
+        createdTargets.formIntersection(openIDs)  // a tab the user closed is not ours to count
+        let ours = sessions.values
+            .filter { $0.port == port && $0.attached && createdTargets.contains($0.targetId) }
+            .sorted { $0.lastUsed < $1.lastUsed }
+        var count = ours.count
+        for session in ours where count >= Self.maxCreatedTabs {
+            if let connection = connections[session.key], await Self.isVisible(connection) { continue }
+            forget(session.key)
+            createdTargets.remove(session.targetId)
+            await ChromeLauncher.closePage(port: port, id: session.targetId)
+            count -= 1
+        }
+    }
+
+    private static func isVisible(_ connection: CDPConnection) async -> Bool {
+        guard let result = try? await connection.send(
+            method: "Runtime.evaluate",
+            params: .object(["expression": .string("document.visibilityState"), "returnByValue": .bool(true)])
+        ) else { return false }
+        return result["result"]?["value"]?.stringValue == "visible"
     }
 
     private func evictIfNeeded(port: UInt16) async throws {
@@ -399,6 +440,7 @@ actor WebCDPBackend {
                 let deadline = session.openedAt.addingTimeInterval(Self.settleWindow)
                 var steady = 0
                 while refs.count < Self.settleThreshold, Date() < deadline, steady < 2 {
+                    settleRounds += 1
                     try await Task.sleep(nanoseconds: 400_000_000)
                     document = try await documentId(connection)
                     let again = try await axRefs(connection, session: session, document: document, interactiveOnly: interactiveOnly)
@@ -782,6 +824,15 @@ enum CDPNavigation {
     /// The tab a browser identity's page hint points at: the one on exactly that page, else
     /// one at or below it. Nil when none is, which callers report rather than substituting
     /// some other tab.
+    /// Same scheme, host and port: the same site, whatever page of it the tab is on now.
+    static func sameSite(_ pageURL: String, requested: URL) -> Bool {
+        guard let page = URLComponents(string: pageURL),
+              let wanted = URLComponents(url: requested, resolvingAgainstBaseURL: false),
+              let host = page.host?.lowercased(), host == wanted.host?.lowercased(),
+              page.scheme?.lowercased() == wanted.scheme?.lowercased() else { return false }
+        return effectivePort(page) == effectivePort(wanted)
+    }
+
     static func tab(in pages: [ChromeLauncher.PageTarget], for hint: URL) -> ChromeLauncher.PageTarget? {
         pages.first { isCurrent($0.url, requested: hint) } ?? pages.first { pageMatches($0.url, requested: hint) }
     }

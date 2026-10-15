@@ -156,9 +156,10 @@ final class AttachedChromeEndToEndTests: XCTestCase {
         let first = text(try await call("snapshot", rewritten.objectValue ?? [:]))
         XCTAssertTrue(first.contains("Beta only"), first)
 
-        let started = Date()
+        let waitsBefore = await WebCDPBackend.shared.settleRounds
         let bare = text(try await call("snapshot", ["app": .string("com.google.Chrome")]))
-        XCTAssertLessThan(Date().timeIntervalSince(started), 0.4, "a settled page is not waited on again")
+        let waitsAfter = await WebCDPBackend.shared.settleRounds
+        XCTAssertEqual(waitsAfter, waitsBefore, "a settled page is not waited on again")
         XCTAssertTrue(bare.contains("Beta only"), "a bare browser call read another tab: \(bare)")
         XCTAssertFalse(bare.contains("Gamma decoy"), bare)
     }
@@ -182,6 +183,21 @@ final class AttachedChromeEndToEndTests: XCTestCase {
         let b = try await RequestContext.$clientID.withValue("session-b") { text(try await call("snapshot", ["app": .string("com.google.Chrome")])) }
         XCTAssertTrue(a.contains("Alpha only") && !a.contains("Beta only"), "session A read: \(a)")
         XCTAssertTrue(b.contains("Beta only") && !b.contains("Alpha only"), "session B read: \(b)")
+    }
+
+    /// An agent working through many pages used to leave one tab per page in the user's Chrome.
+    /// Tabs it opened are capped; the user's own tab is never closed.
+    func testTabsOpenedByAgentsAreCappedAndTheUsersTabSurvives() async throws {
+        let mine = try await userOpens(try writePage("mine", button: "User work"))
+        for index in 0..<(WebCDPBackend.maxCreatedTabs + 3) {
+            let page = try writePage("page\(index)", button: "Page \(index)")
+            let snapshot = text(try await call("snapshot", ["url": .string(page)]))
+            XCTAssertTrue(snapshot.contains("Page \(index)"), snapshot)
+        }
+        let after = try await ChromeLauncher.listPages(port: port)
+        let opened = after.filter { $0.url.contains("/page") }
+        XCTAssertLessThanOrEqual(opened.count, WebCDPBackend.maxCreatedTabs, "tabs opened by the agent: \(opened.map(\.url))")
+        XCTAssertEqual(after.first { $0.id == mine.id }?.url, mine.url, "the user's tab was touched")
     }
 
     /// With no tab on the page the CDP backend refuses; for an app identity the router then
