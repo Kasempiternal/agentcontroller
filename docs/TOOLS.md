@@ -75,7 +75,7 @@ _No parameters._
 
 ### `open_url`
 
-Open a URL in a REAL browser the user can see (web link, deep link, or custom scheme like 'myapp://path'). Web links go to the browser named in `browser` (or `app`), otherwise the user's DEFAULT browser — never silently a different one. If the user names a browser ("in Safari", "use Firefox"), pass it. headless:true instead opens the page in a private headless Chromium for scripted testing. BACKGROUND-SAFE BY DEFAULT: the browser receives the URL WITHOUT being brought to the front. Then `snapshot` with app=<that browser> reads the page.
+Open a URL in a REAL browser the user can see (web link, deep link, or custom scheme like 'myapp://path'). Web links go to the browser named in `browser` (or `app`), otherwise the user's DEFAULT browser — never silently a different one. If the user names a browser ("in Safari", "use Firefox"), pass it. headless:true instead opens the page in a private headless Chromium for scripted testing. BACKGROUND-SAFE BY DEFAULT: a Chrome that publishes a debug port gets the page as a hidden background tab (the user's window, tab and focus do not change); any other browser receives it without being activated, as a new tab of its front window. Then `snapshot` with app=<that browser> reads the page.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|

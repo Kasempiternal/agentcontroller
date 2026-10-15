@@ -27,8 +27,10 @@ public enum BackendRouter {
 
         guard CapabilityRecord.routableTools.contains(name) else { return nil }
         // open_url means "open it in a browser the user can see" — the default handler or
-        // the one named. Only an explicit headless:true sends it to the private Chromium.
-        if name == "open_url", arguments["headless"]?.boolValue != true { return nil }
+        // the one named. Only an explicit headless:true sends it to the private Chromium, and
+        // only a Chrome that publishes a debug port (`_cdpPort`) gets it as a background tab.
+        if name == "open_url", arguments["headless"]?.boolValue != true,
+           arguments[BrowserRouting.attachedPortKey] == nil { return nil }
         guard let identity = identity(from: arguments) else { return nil }
         if TargetIdentity.isHardwareUDID(identity.raw) {
             return ToolResult.error(TargetIdentity.hardwareDeviceGuidance(identity.raw))
@@ -64,13 +66,14 @@ public enum BackendRouter {
         }
     }
 
-    /// Who the call names, plus the two things only the arguments know: which page an
-    /// attached Chrome is meant to be on (`_pageURL`, set by `BrowserRouting`), and whether
-    /// the agent asked for the private headless browser.
+    /// Who the call names, plus what only the arguments know: which page an attached Chrome is
+    /// meant to be on (`_pageURL`), which of the user's browsers the page was put in (`_cdpPort`),
+    /// both set by `BrowserRouting`, and whether the agent asked for the private headless browser.
     static func identity(from arguments: JSONValue) -> TargetIdentity? {
         TargetIdentity.from(arguments: arguments)?.routed(
             pageHint: arguments[BrowserRouting.pageURLKey]?.stringValue.flatMap(TargetIdentity.parseURL),
-            headless: arguments["headless"]?.boolValue == true
+            headless: arguments["headless"]?.boolValue == true,
+            attachedPort: arguments[BrowserRouting.attachedPortKey]?.intValue.flatMap { UInt16(exactly: $0) }
         )
     }
 
@@ -175,6 +178,10 @@ public enum BackendRouter {
                 "pageURL": .string(session.browserURL),
                 "loaded": .bool(session.loaded),
             ]
+            if identity.attachedPort != nil {
+                fields["tab"] = .string("background")
+                fields["note"] = .string("Opened in a background tab of the user's Chrome: their window, tab and focus did not change. Drive it with app:\"chrome\" (it follows this page) or the same url.")
+            }
             if !session.loaded { fields["note"] = .string("Load event not seen within \(Int(WebCDPBackend.loadTimeout))s.") }
             return ToolResult.json(.object(fields))
         case "run_app_code":

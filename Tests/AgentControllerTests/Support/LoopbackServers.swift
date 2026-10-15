@@ -218,3 +218,44 @@ final class LoopbackHTTPServer: @unchecked Sendable {
         }
     }
 }
+
+/// A static-file HTTP server on a loopback port: `open_url` only treats http(s) as a web page.
+final class LocalHTTPServer: @unchecked Sendable {
+    private let listener: NWListener
+    private let queue = DispatchQueue(label: "test-http-server")
+    private let directory: URL
+    private(set) var port: UInt16 = 0
+
+    init(directory: URL) throws {
+        self.directory = directory
+        let parameters = NWParameters.tcp
+        parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
+        listener = try NWListener(using: parameters)
+        let ready = DispatchSemaphore(value: 0)
+        listener.stateUpdateHandler = { state in
+            if case .ready = state { ready.signal() }
+        }
+        listener.newConnectionHandler = { [weak self] connection in self?.serve(connection) }
+        listener.start(queue: queue)
+        guard ready.wait(timeout: .now() + 5) == .success, let bound = listener.port?.rawValue else {
+            throw NSError(domain: "LocalHTTPServer", code: 1)
+        }
+        port = bound
+    }
+
+    func stop() { listener.cancel() }
+
+    private func serve(_ connection: NWConnection) {
+        connection.start(queue: queue)
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { [directory] data, _, _, _ in
+            let request = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            let path = request.split(separator: " ").dropFirst().first.map(String.init) ?? "/"
+            let file = directory.appendingPathComponent(String(path.drop(while: { $0 == "/" }).prefix { $0 != "?" }))
+            let body = (try? Data(contentsOf: file)) ?? Data("not found".utf8)
+            let status = FileManager.default.fileExists(atPath: file.path) ? "200 OK" : "404 Not Found"
+            var response = Data("HTTP/1.1 \(status)\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n".utf8)
+            response.append(body)
+            connection.send(content: response, completion: .contentProcessed { _ in connection.cancel() })
+        }
+    }
+}

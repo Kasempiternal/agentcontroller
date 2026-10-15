@@ -19,15 +19,19 @@ enum BrowserRouting {
     /// right tab in an attached Chrome; nothing may use it to navigate.
     static let pageURLKey = "_pageURL"
 
+    /// Private argument: the DevTools port of the user's own browser a page went into as a
+    /// background tab (`AttachedChrome`). The CDP backend opens it on that port and no other.
+    static let attachedPortKey = "_cdpPort"
+
     /// Tools where "app + url" means "show me that page": navigate first, then act.
     static let navigatingTools: Set<String> = [
         "snapshot", "describe_screen", "screenshot_window", "read_all_text",
     ]
 
     static func prepare(name: String, arguments: JSONValue) async throws -> Prepared {
-        // open_url resolves its own browser (it's a launch, not a drive), and elementId
-        // calls already know exactly which element and backend they target.
-        if name == "open_url" || arguments["elementId"]?.stringValue != nil { return .unchanged }
+        // elementId calls already know exactly which element and backend they target.
+        if arguments["elementId"]?.stringValue != nil { return .unchanged }
+        if name == "open_url" { return await prepareOpenURL(arguments) }
         guard let page = TargetIdentity.pageURL(arguments: arguments) else { return .unchanged }
 
         let appArg = arguments["app"]?.stringValue ?? arguments["target"]?.stringValue
@@ -58,6 +62,12 @@ enum BrowserRouting {
             return .rewritten(headlessArguments(arguments, page: page), notice: nil)
 
         case .browser(let browser):
+            // That browser publishes a debug port: the page goes in as a background tab over CDP,
+            // never through LaunchServices (Chrome comes to the front on every hand-off). Calls
+            // that act (click, type) keep naming the app + page below, so they never open a tab.
+            if navigatingTools.contains(name), let port = await AttachedChrome.port(for: browser) {
+                return .rewritten(attachedArguments(arguments, page: page, port: port), notice: nil)
+            }
             let args = browserArguments(arguments, browser: browser, page: page)
             guard navigatingTools.contains(name) else {
                 return .rewritten(args, notice: nil)
@@ -71,6 +81,33 @@ enum BrowserRouting {
                 return .failed(ToolResult.error(error.localizedDescription))
             }
         }
+    }
+
+    /// `open_url` resolves its own browser in AppTools: it is a launch, not a drive. The one case
+    /// taken over here is a web page for a Chrome that publishes a debug port, which goes in as a
+    /// background tab instead of through LaunchServices. `foreground:true` keeps the old path,
+    /// because there the agent wants the browser in front.
+    static func prepareOpenURL(_ arguments: JSONValue) async -> Prepared {
+        guard arguments["headless"]?.boolValue != true, arguments["foreground"]?.boolValue != true,
+              let raw = arguments["url"]?.stringValue, let page = URL(string: raw),
+              ["http", "https"].contains(page.scheme?.lowercased() ?? "") else { return .unchanged }
+        let named = arguments["browser"]?.stringValue
+            ?? arguments["app"]?.stringValue.flatMap { BrowserResolver.isBrowserName($0) ? $0 : nil }
+        guard let browser = named.map(BrowserResolver.named) ?? BrowserResolver.systemDefault(),
+              let port = await AttachedChrome.port(for: browser) else { return .unchanged }
+        return .rewritten(attachedArguments(arguments, page: page, port: port), notice: nil)
+    }
+
+    /// A page for the user's own Chrome, put in by the CDP backend on `port`.
+    static func attachedArguments(_ arguments: JSONValue, page: URL, port: UInt16) -> JSONValue {
+        var args = arguments.objectValue ?? [:]
+        args.removeValue(forKey: "app")
+        args.removeValue(forKey: "target")
+        args.removeValue(forKey: "browser")
+        args["url"] = .string(page.absoluteString)
+        args["headless"] = .bool(false)
+        args[attachedPortKey] = .int(Int(port))
+        return .object(args)
     }
 
     /// Hand the existing CDP path a pure URL identity.
@@ -100,6 +137,10 @@ enum BrowserRouting {
     }
 
     static func navigationNotice(page: URL, browser: String, outcome: BrowserNavigator.Outcome) -> String {
+        if outcome.reused {
+            let notice = "\(page.absoluteString) is already the front tab in \(browser); used as it is, no new tab."
+            return outcome.wasFrontmost ? notice + " " + frontmostNotice(browser: browser) : notice
+        }
         let state = outcome.loaded
             ? "loaded in \(outcome.waitedMs)ms"
             : "NOT confirmed loaded after \(outcome.waitedMs)ms (page reports \(outcome.pageURL ?? "no URL")) — re-snapshot if content looks stale"

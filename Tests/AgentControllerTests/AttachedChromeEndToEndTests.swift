@@ -4,6 +4,7 @@ import MCPServer
 import Darwin
 #endif
 @testable import MCPTools
+import PortOwnership
 
 /// A stand-in for the USER'S Chrome: a separate headless Chromium with its own profile and a
 /// debug port the backend is pointed at, so every call attaches instead of using the browser
@@ -18,6 +19,8 @@ final class AttachedChromeEndToEndTests: XCTestCase {
     override func setUpWithError() throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["AGENTCONTROLLER_E2E"] == "1",
                           "set AGENTCONTROLLER_E2E=1 to launch a real Chromium")
+        // A page that misses the test Chrome must fail, never land in this Mac's real browsers.
+        MainActor.assumeIsolated { BrowserNavigator.refuseLaunchServices = true }
         let binary = try XCTUnwrap(ChromeLauncher.findBinary(), "no Chromium browser installed")
 
         workDir = FileManager.default.temporaryDirectory.appendingPathComponent("ac-attached-\(UUID().uuidString)")
@@ -58,6 +61,7 @@ final class AttachedChromeEndToEndTests: XCTestCase {
     }
 
     override func tearDown() {
+        MainActor.assumeIsolated { BrowserNavigator.refuseLaunchServices = false }
         let done = DispatchSemaphore(value: 0)
         Task {
             await WebCDPBackend.shared.shutdown()
@@ -230,6 +234,94 @@ final class AttachedChromeEndToEndTests: XCTestCase {
 
     /// `headless:true` is a promise to stay out of the user's browser: the page must open in
     /// the private Chromium this app owns, whatever debug port is open.
+    // MARK: - 3.1.2: through the registry, the path every agent takes
+
+    /// The tests above call `BackendRouter.dispatch` directly and so skip `BrowserRouting`, which
+    /// in 3.1.1 handed every `app:"chrome"` page to LaunchServices first. These enter where the
+    /// MCP handler does.
+    private func viaRegistry(_ name: String, _ args: [String: JSONValue]) async throws -> JSONValue {
+        await ProbeCache.shared.reset()
+        return try await ToolRegistry().callTool(name: name, arguments: .object(args))
+    }
+
+    private func isError(_ result: JSONValue) -> Bool { result["isError"]?.boolValue == true }
+
+    private func launchServicesOpens() async -> Int { await MainActor.run { BrowserNavigator.launchServicesOpens } }
+
+    /// Measured on the release Chrome, 15/10/2026: three snapshots by name, three new tabs and
+    /// Chrome in front each time.
+    func testChromeByNameNeverGoesThroughLaunchServicesAndReadsReuseOneTab() async throws {
+        let mine = try await userOpens(try writePage("mine", button: "User work"))
+        let page = try writePage("keys", button: "Create key")
+        let before = try await ChromeLauncher.listPages(port: port)
+        let opens = await launchServicesOpens()
+
+        let first = try await viaRegistry("snapshot", ["app": .string("chrome"), "url": .string(page)])
+        XCTAssertTrue(text(first).contains("Create key"), text(first))
+        let again = try await viaRegistry("snapshot", ["app": .string("chrome"), "url": .string(page)])
+        XCTAssertFalse(isError(again), text(again))
+        let read = text(try await viaRegistry("read_all_text", ["app": .string("chrome"), "url": .string(page)]))
+        XCTAssertTrue(read.contains("Create key"), read)
+        let bare = text(try await viaRegistry("read_all_text", ["app": .string("Google Chrome")]))
+        XCTAssertTrue(bare.contains("Create key"), "a bare call read another tab: \(bare)")
+        let shot = try await viaRegistry("screenshot_window", ["app": .string("chrome"), "url": .string(page)])
+        XCTAssertEqual(shot["content"]?.arrayValue?.first?["type"]?.stringValue, "image", text(shot))
+
+        let after = try await ChromeLauncher.listPages(port: port)
+        XCTAssertEqual(after.count, before.count + 1, "reading one page opened \(after.count - before.count) tabs")
+        XCTAssertEqual(after.first { $0.id == mine.id }?.url, mine.url, "the user's tab was touched")
+        let opensAfter = await launchServicesOpens()
+        XCTAssertEqual(opensAfter, opens, "a page went through LaunchServices")
+    }
+
+    func testManyChromePagesThroughTheRegistryStayCapped() async throws {
+        let mine = try await userOpens(try writePage("mine", button: "User work"))
+        for index in 0..<(WebCDPBackend.maxCreatedTabs + 3) {
+            let page = try writePage("many\(index)", button: "Page \(index)")
+            let snapshot = text(try await viaRegistry("snapshot", ["app": .string("chrome"), "url": .string(page)]))
+            XCTAssertTrue(snapshot.contains("Page \(index)"), snapshot)
+        }
+        let after = try await ChromeLauncher.listPages(port: port)
+        let opened = after.filter { URL(string: $0.url)?.lastPathComponent.hasPrefix("many") == true }
+        XCTAssertLessThanOrEqual(opened.count, WebCDPBackend.maxCreatedTabs, "tabs opened by the agent: \(opened.map(\.url))")
+        XCTAssertEqual(after.first { $0.id == mine.id }?.url, mine.url, "the user's tab was touched")
+    }
+
+    /// A selector call that names the page acts on the tab the snapshot opened, without a tab of
+    /// its own (that tab is claimed by the snapshot's session, so a search for a free one failed).
+    func testASelectorCallNamingThePageUsesTheTabTheSnapshotOpened() async throws {
+        let page = try writePage("form", button: "Press me")
+        let snapshot = try await viaRegistry("snapshot", ["app": .string("chrome"), "url": .string(page)])
+        XCTAssertTrue(text(snapshot).contains("Press me"), "snapshot: \(text(snapshot))")
+        let before = try await ChromeLauncher.listPages(port: port)
+        let found = try await viaRegistry("find_elements", ["app": .string("chrome"), "url": .string(page), "labelContains": .string("Press me")])
+        XCTAssertFalse(isError(found), text(found))
+        XCTAssertTrue(text(found).contains("Press me"), "find: \(text(found)) tabs: \(before.map(\.url))")
+        let after = try await ChromeLauncher.listPages(port: port)
+        XCTAssertEqual(after.count, before.count, "a selector call opened a tab")
+    }
+
+    func testOpenURLInChromeIsABackgroundTabNotALaunchServicesOpen() async throws {
+        let server = try LocalHTTPServer(directory: workDir)
+        defer { server.stop() }
+        _ = try writePage("served", button: "Served page")
+        let url = "http://127.0.0.1:\(server.port)/served.html"
+        let before = try await ChromeLauncher.listPages(port: port)
+        let opens = await launchServicesOpens()
+
+        let opened = try await viaRegistry("open_url", ["browser": .string("chrome"), "url": .string(url)])
+        XCTAssertFalse(isError(opened), text(opened))
+        XCTAssertTrue(text(opened).contains("cdp") && text(opened).contains("background"), text(opened))
+        let read = text(try await viaRegistry("read_all_text", ["app": .string("chrome")]))
+        XCTAssertTrue(read.contains("Served page"), "the bare follow-up read another tab: \(read)")
+        _ = try await viaRegistry("open_url", ["browser": .string("chrome"), "url": .string(url)])
+
+        let after = try await ChromeLauncher.listPages(port: port)
+        XCTAssertEqual(after.count, before.count + 1, "open_url twice on one page opened \(after.count - before.count) tabs")
+        let opensAfter = await launchServicesOpens()
+        XCTAssertEqual(opensAfter, opens, "open_url went through LaunchServices")
+    }
+
     func testHeadlessTrueLeavesTheUsersChromeAlone() async throws {
         let mine = try await userOpens(try writePage("mine", button: "User work"))
         let target = try writePage("private", button: "Private browser page")

@@ -107,6 +107,20 @@ public enum LoopbackListener {
         return pad.0 == 0 && pad.1 == 0 && pad.2 == UInt32(0xFFFF).bigEndian
     }
 
+    /// Every process of this user listening on `port`, for a caller that needs a particular one:
+    /// `owner` stops at the first, and a second listener (one bound to all interfaces, say)
+    /// can come first.
+    public static func owners(port: UInt16) -> [pid_t] {
+        currentUserPIDs().filter { isListening(pid: $0, port: port) }
+    }
+
+    /// The executable `pid` runs; nil once it has exited (or for another user's process).
+    public static func executablePath(pid: pid_t) -> String? {
+        var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
+        let length = proc_pidpath(pid, &buffer, UInt32(buffer.count))
+        return length > 0 ? String(cString: buffer) : nil
+    }
+
     /// Whether one of this user's processes runs an executable whose path ends in `suffix`
     /// (`/AgentController.app/Contents/MacOS/AgentController` matches every copy of the app).
     /// The bridge asks before starting the menu-bar app: `open` on an app that is already

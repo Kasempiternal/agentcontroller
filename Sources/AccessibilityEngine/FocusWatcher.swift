@@ -59,6 +59,7 @@ public final class FocusWatcher: @unchecked Sendable {
     private var lastDispatchAt: Date?
     private var lastUserPID: pid_t?
     private var pendingIncident: String?
+    private var handoffs: [String: Date] = [:]
     private var observer: NSObjectProtocol?
 
     /// Pure attribution rule, extracted so it is testable headless (no AX, no
@@ -74,11 +75,16 @@ public final class FocusWatcher: @unchecked Sendable {
         expected: Bool,
         guardEnabled: Bool,
         secondsSinceLastDispatch: TimeInterval?,
-        secondsSinceUserInput: TimeInterval? = nil
+        secondsSinceUserInput: TimeInterval? = nil,
+        handedOff: Bool = false
     ) -> Bool {
         guard guardEnabled else { return false }
-        guard drivenPIDs.contains(activatedPID) else { return false }
         guard !expected else { return false }
+        // This server handed the browser a page a moment ago and it came forward: that is the
+        // hand-off, not the user, even when they were typing at the time (their keys would
+        // otherwise go to the browser), and even if the browser was never driven before.
+        if handedOff { return true }
+        guard drivenPIDs.contains(activatedPID) else { return false }
         if let sinceInput = secondsSinceUserInput, sinceInput < userInputGrace { return false }
         guard let elapsed = secondsSinceLastDispatch else { return false }
         return elapsed >= 0 && elapsed <= attributionWindow
@@ -103,6 +109,26 @@ public final class FocusWatcher: @unchecked Sendable {
         "PID-targeted; launch_app takes `paths` to open files without the open panel; open_url opens " +
         "a page in the background). If a step truly has no background-safe path, ask the user once " +
         "for that single step — never take focus to get past it."
+    }
+
+    /// An activation this soon after this server handed the app a page is the hand-off's doing.
+    public static let handoffWindow: TimeInterval = 3
+
+    /// The warning when the browser this server handed a page to came forward by itself.
+    /// The agent did nothing wrong, and must not read it as a reason to hand the step over.
+    public static func handoffMessage(appName: String) -> String {
+        "⚠️ Focus Guard: '\(appName)' brought itself to the front when this server handed it a page " +
+        "(it ignores background opens); the user's previous app was re-activated. Nothing to undo " +
+        "and nothing to ask the user. To avoid it: headless:true for pages that need no login, or " +
+        "a copy of the browser started with --remote-debugging-port, whose pages open as hidden tabs."
+    }
+
+    /// A page was just handed to this browser through LaunchServices (`BrowserNavigator`).
+    public func noteURLHandoff(bundleId: String) {
+        lock.lock()
+        handoffs[bundleId] = Date()
+        lock.unlock()
+        startIfNeeded()
     }
 
     /// Record that a tool call touched this app. Installs the workspace
@@ -166,13 +192,17 @@ public final class FocusWatcher: @unchecked Sendable {
         lock.lock()
         let expected = expectedActivations.remove(pid) != nil
         let elapsed = lastDispatchAt.map { Date().timeIntervalSince($0) }
+        let handedOff = app.bundleIdentifier
+            .flatMap { handoffs[$0] }
+            .map { Date().timeIntervalSince($0) <= Self.handoffWindow } ?? false
         let stolen = Self.isStolenFocus(
             activatedPID: pid,
             drivenPIDs: drivenPIDs,
             expected: expected,
             guardEnabled: FocusGuard.isEnabled,
             secondsSinceLastDispatch: elapsed,
-            secondsSinceUserInput: Self.secondsSinceUserInput()
+            secondsSinceUserInput: Self.secondsSinceUserInput(),
+            handedOff: handedOff
         )
         if !stolen, !drivenPIDs.contains(pid) {
             // A non-driven app coming forward is the user (or the system) — that
@@ -181,7 +211,8 @@ public final class FocusWatcher: @unchecked Sendable {
         }
         let restoreTo = lastUserPID
         if stolen {
-            pendingIncident = Self.incidentMessage(appName: app.localizedName ?? "pid \(pid)")
+            let name = app.localizedName ?? "pid \(pid)"
+            pendingIncident = handedOff ? Self.handoffMessage(appName: name) : Self.incidentMessage(appName: name)
         }
         lock.unlock()
 

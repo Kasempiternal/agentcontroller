@@ -175,7 +175,7 @@ actor WebCDPBackend {
 
     private func open(identity: TargetIdentity, reusing targetId: String?, newTab: Bool) async throws -> Session {
         let key = Self.key(for: identity)
-        let (port, attached) = try await endpoint(isolated: identity.headless)
+        let (port, attached) = try await endpoint(for: identity)
         let pages = try await ChromeLauncher.listPages(port: port)
         let pick = try await pickTarget(
             pages, port: port, identity: identity, attached: attached, reusing: targetId, newTab: newTab
@@ -209,6 +209,17 @@ actor WebCDPBackend {
         if let current = try? await currentURL(connection) { session.browserURL = current }
         sessions[key] = session
         return session
+    }
+
+    /// A page `BrowserRouting` put in the user's own Chrome stays there: if its debug port is
+    /// gone the call fails, rather than quietly opening in the private headless Chromium, which
+    /// has none of the user's logins.
+    private func endpoint(for identity: TargetIdentity) async throws -> (port: UInt16, attached: Bool) {
+        guard let pinned = identity.attachedPort else { return try await endpoint(isolated: identity.headless) }
+        guard await SocketProbe.connectAsync(port: pinned, timeoutMs: 300) else {
+            throw ToolError.actionFailed("Chrome's debug port \(pinned) stopped answering, so nothing was opened. Retry the call; if Chrome was restarted without its debug port, the page will open through Chrome normally.")
+        }
+        return (pinned, true)
     }
 
     /// `isolated` is an explicit `headless:true`: the page must not be loaded into whatever
@@ -413,6 +424,15 @@ actor WebCDPBackend {
     /// is redirected, and only to a page session that is still connected.
     private func routedKey(for identity: TargetIdentity) async -> String {
         let key = Self.key(for: identity)
+        // `click {app:"chrome", url, …}` names a page a navigating call opened as a url session
+        // (BrowserRouting, 3.1.2). Act on that tab: a search for a free tab on the page finds it
+        // claimed by that very session and fails.
+        if identity.url == nil, let hint = identity.pageHint, !identity.headless {
+            let pageKey = Self.key(for: TargetIdentity(raw: hint.absoluteString))
+            guard pageKey != key, let session = sessions[pageKey], session.attached,
+                  let connection = connections[pageKey], await connection.isOpen else { return key }
+            return pageKey
+        }
         guard identity.url == nil, identity.pageHint == nil, !identity.headless,
               let recent = lastDriven[Self.caller], recent != key,
               let session = sessions[recent], session.attached,

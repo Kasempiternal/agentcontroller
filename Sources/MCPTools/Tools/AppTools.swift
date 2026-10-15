@@ -197,7 +197,7 @@ struct AppTools {
 
         registry.register(.init(
             name: "open_url",
-            description: "Open a URL in a REAL browser the user can see (web link, deep link, or custom scheme like 'myapp://path'). Web links go to the browser named in `browser` (or `app`), otherwise the user's DEFAULT browser — never silently a different one. If the user names a browser (\"in Safari\", \"use Firefox\"), pass it. headless:true instead opens the page in a private headless Chromium for scripted testing. BACKGROUND-SAFE BY DEFAULT: the browser receives the URL WITHOUT being brought to the front. Then `snapshot` with app=<that browser> reads the page.",
+            description: "Open a URL in a REAL browser the user can see (web link, deep link, or custom scheme like 'myapp://path'). Web links go to the browser named in `browser` (or `app`), otherwise the user's DEFAULT browser — never silently a different one. If the user names a browser (\"in Safari\", \"use Firefox\"), pass it. headless:true instead opens the page in a private headless Chromium for scripted testing. BACKGROUND-SAFE BY DEFAULT: a Chrome that publishes a debug port gets the page as a hidden background tab (the user's window, tab and focus do not change); any other browser receives it without being activated, as a new tab of its front window. Then `snapshot` with app=<that browser> reads the page.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
@@ -224,12 +224,14 @@ struct AppTools {
                 let isWeb = ["http", "https"].contains(url.scheme?.lowercased() ?? "")
                 let named = args?["browser"]?.stringValue
                     ?? args?["app"]?.stringValue.flatMap { BrowserResolver.isBrowserName($0) ? $0 : nil }
-                if isWeb, let named {
-                    guard let browser = BrowserResolver.named(named) else {
-                        return ToolResult.error("Browser '\(named)' is not installed. Installed default: \(BrowserResolver.systemDefault()?.name ?? "unknown"). Not falling back to another browser.")
-                    }
+                if isWeb, let named, BrowserResolver.named(named) == nil {
+                    return ToolResult.error("Browser '\(named)' is not installed. Installed default: \(BrowserResolver.systemDefault()?.name ?? "unknown"). Not falling back to another browser.")
+                }
+                // The default browser too goes through BrowserNavigator, so a browser that comes to
+                // the front anyway is undone by Focus Guard and attributed to this server.
+                if isWeb, let browser = named.flatMap(BrowserResolver.named) ?? BrowserResolver.systemDefault() {
                     do {
-                        let app = try await NSWorkspace.shared.open([url], withApplicationAt: browser.appURL, configuration: config)
+                        let app = try await BrowserNavigator.open(url, in: browser, activates: foreground)
                         return ToolResult.action(success: true, method: "workspace", extra: [
                             "url": .string(urlStr),
                             "handler": .string(app.bundleIdentifier ?? browser.bundleId),

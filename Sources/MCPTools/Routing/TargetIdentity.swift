@@ -26,6 +26,10 @@ public struct TargetIdentity: Equatable, Sendable {
     /// The agent passed `headless:true`: the page belongs in the private headless Chromium,
     /// whatever Chrome the user has open with a debug port.
     public private(set) var headless = false
+    /// The DevTools port of the user's own browser that `BrowserRouting` put this page in
+    /// (`AttachedChrome`). Pinned: when that port goes away the call fails instead of moving the
+    /// page to the private headless Chromium, which has none of the user's logins.
+    public private(set) var attachedPort: UInt16?
 
     public init(raw: String) {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -85,10 +89,11 @@ public struct TargetIdentity: Equatable, Sendable {
     }
 
     /// A copy that carries the routing hints read from the call's arguments.
-    public func routed(pageHint: URL?, headless: Bool) -> TargetIdentity {
+    public func routed(pageHint: URL?, headless: Bool, attachedPort: UInt16? = nil) -> TargetIdentity {
         var copy = self
         copy.pageHint = pageHint
         copy.headless = headless
+        copy.attachedPort = attachedPort
         return copy
     }
 
