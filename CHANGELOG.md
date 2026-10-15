@@ -6,6 +6,35 @@ All notable changes to AgentController are documented here. The format follows
 
 ## [Unreleased]
 
+## [3.1.2] - 2026-10-16
+
+### Fixed
+- **Chrome pages no longer go through LaunchServices.** `snapshot`, `read_all_text`,
+  `describe_screen` and `screenshot_window` with `app:"chrome"` + `url`, and `open_url` in Chrome,
+  handed the page to `NSWorkspace.open` even when that Chrome publishes a debug port. Chrome
+  ignores background opens: it came to the front on every call (Focus Guard pulled it back) and
+  every call left one more tab that the 6-tab cap never counted, because only tabs opened over CDP
+  are known to be the agent's. Measured on a real Chrome: three snapshots, three new tabs, three
+  focus steals. When the named (or default) browser's own process holds a DevTools port, the page
+  now goes in over CDP as a hidden background tab: no LaunchServices, no activation, the agent's
+  tabs reused and capped, pinned to that port (never moved to the private headless Chromium,
+  which has none of the user's logins). The port is matched by the owner's bundle id, so a Chrome
+  running from its code-sign clone counts. The 3.1.0 end-to-end tests called the backend directly
+  and skipped this path; the new ones enter through the tool registry, as the MCP handler does,
+  and fail if a page reaches LaunchServices.
+- **Safari: a page already in the front tab is not opened again.** Every navigating call with a
+  url added a tab to the user's window (`snapshot` then `read_all_text` on one page left two).
+  Only the same document is reused (fragment and trailing slash aside), never another page.
+- **Focus Guard names the right culprit.** A browser that comes forward right after this server
+  handed it a page is undone even while the user is typing, and the warning says the server's
+  hand-off did it. It said "a channel outside this server", which reads as the agent's fault.
+- **Selector calls that name a Chrome page** (`find_elements`, `wait_for_element`, `assert_*`
+  with `app:"chrome"` + `url`) act on the tab the snapshot opened instead of finding it claimed
+  and failing.
+
+### Changed
+- `open_url` into a background Chrome tab answers `"backend": "cdp"`, `"tab": "background"`.
+
 ## [3.1.1] - 2026-10-15
 
 ### Fixed
