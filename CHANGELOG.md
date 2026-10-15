@@ -6,6 +6,16 @@ All notable changes to AgentController are documented here. The format follows
 
 ## [Unreleased]
 
+## [3.1.5] - 2026-10-16
+
+### Fixed
+- **Switching to Safari right after an agent opened a page there is the user's choice again.**
+  3.1.2 counted any browser coming forward within 3 s of a hand-off as the hand-off's doing,
+  ahead of the check for the user's own click or key, so Focus Guard pulled a user who went to
+  look at the page back to their previous app. Only Chromium browsers, which come forward by
+  themselves when handed a page, now override that check, and only for the one activation that
+  follows the hand-off.
+
 ## [3.1.4] - 2026-10-16
 
 ### Security
