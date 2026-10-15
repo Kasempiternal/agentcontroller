@@ -22,6 +22,10 @@ Devices: add `mcp__agentcontroller-ios__get_execution_context,scan_ui,tap_elemen
 
 1. `open_url {url, browser:"Safari"|"chrome"}` — or `snapshot {app:"Safari", url}`. Opens in the
    background, waits for the load, uses the user's logins. No browser named → their default (Safari).
+   Where it lands: a Chrome started with a debug port takes it as a hidden tab (`"tab":"background"`),
+   so nothing the user sees changes — prefer it for pages you open for yourself when it has the
+   login. Safari shows it as a new tab of the user's front window (one already in front is reused);
+   a "was frontmost" notice means they are looking at it.
 2. ONE `snapshot` → element ids. ONE `run_steps` with the whole sequence (`click`, `type_text`,
    `wait_for_element`, `read_all_text`, `screenshot_window`) against those ids.
 3. Re-snapshot only when the screen changes shape. A stale id → re-snapshot. `screenshot_window`
