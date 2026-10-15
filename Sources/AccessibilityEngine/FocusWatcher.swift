@@ -59,7 +59,7 @@ public final class FocusWatcher: @unchecked Sendable {
     private var lastDispatchAt: Date?
     private var lastUserPID: pid_t?
     private var pendingIncident: String?
-    private var handoffs: [String: Date] = [:]
+    private var handoffs: [String: (at: Date, selfActivates: Bool)] = [:]
     private var observer: NSObjectProtocol?
 
     /// Pure attribution rule, extracted so it is testable headless (no AX, no
@@ -76,16 +76,21 @@ public final class FocusWatcher: @unchecked Sendable {
         guardEnabled: Bool,
         secondsSinceLastDispatch: TimeInterval?,
         secondsSinceUserInput: TimeInterval? = nil,
-        handedOff: Bool = false
+        handedOff: Bool = false,
+        handOffOverridesInput: Bool = false
     ) -> Bool {
         guard guardEnabled else { return false }
         guard !expected else { return false }
-        // This server handed the browser a page a moment ago and it came forward: that is the
-        // hand-off, not the user, even when they were typing at the time (their keys would
-        // otherwise go to the browser), and even if the browser was never driven before.
+        // A browser that brings itself forward when handed a page (Chromium ignores the
+        // background flag) did it, not the user, even while they were typing: their next keys
+        // would go to the browser.
+        if handedOff && handOffOverridesInput { return true }
+        if let sinceInput = secondsSinceUserInput, sinceInput < userInputGrace { return false }
+        // Any other browser honours the background flag, so coming forward right after a
+        // hand-off with no input from the user is still the hand-off; with input it is the user
+        // going to look at the page, and they keep it.
         if handedOff { return true }
         guard drivenPIDs.contains(activatedPID) else { return false }
-        if let sinceInput = secondsSinceUserInput, sinceInput < userInputGrace { return false }
         guard let elapsed = secondsSinceLastDispatch else { return false }
         return elapsed >= 0 && elapsed <= attributionWindow
     }
@@ -124,9 +129,11 @@ public final class FocusWatcher: @unchecked Sendable {
     }
 
     /// A page was just handed to this browser through LaunchServices (`BrowserNavigator`).
-    public func noteURLHandoff(bundleId: String) {
+    /// `selfActivates`: the browser comes forward by itself on a hand-off (Chromium), so its next
+    /// activation is the hand-off's even while the user is typing.
+    public func noteURLHandoff(bundleId: String, selfActivates: Bool) {
         lock.lock()
-        handoffs[bundleId] = Date()
+        handoffs[bundleId] = (Date(), selfActivates)
         lock.unlock()
         startIfNeeded()
     }
@@ -192,9 +199,10 @@ public final class FocusWatcher: @unchecked Sendable {
         lock.lock()
         let expected = expectedActivations.remove(pid) != nil
         let elapsed = lastDispatchAt.map { Date().timeIntervalSince($0) }
-        let handedOff = app.bundleIdentifier
-            .flatMap { handoffs[$0] }
-            .map { Date().timeIntervalSince($0) <= Self.handoffWindow } ?? false
+        // Used by the one activation that follows the hand-off; a later click on the browser is
+        // the user's.
+        let handoff = app.bundleIdentifier.flatMap { handoffs.removeValue(forKey: $0) }
+        let handedOff = handoff.map { Date().timeIntervalSince($0.at) <= Self.handoffWindow } ?? false
         let stolen = Self.isStolenFocus(
             activatedPID: pid,
             drivenPIDs: drivenPIDs,
@@ -202,7 +210,8 @@ public final class FocusWatcher: @unchecked Sendable {
             guardEnabled: FocusGuard.isEnabled,
             secondsSinceLastDispatch: elapsed,
             secondsSinceUserInput: Self.secondsSinceUserInput(),
-            handedOff: handedOff
+            handedOff: handedOff,
+            handOffOverridesInput: handedOff && (handoff?.selfActivates ?? false)
         )
         if !stolen, !drivenPIDs.contains(pid) {
             // A non-driven app coming forward is the user (or the system) — that

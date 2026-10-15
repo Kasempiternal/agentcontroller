@@ -38,7 +38,10 @@ enum BrowserNavigator {
         if refuseLaunchServices {
             throw ToolError.actionFailed("LaunchServices is off in tests: \(url.absoluteString) was not handed to \(browser.name)")
         }
-        if !activates { FocusWatcher.shared.noteURLHandoff(bundleId: browser.bundleId) }
+        if !activates {
+            FocusWatcher.shared.noteURLHandoff(
+                bundleId: browser.bundleId, selfActivates: AppCatalog.chromiumCDPBundles.contains(browser.bundleId))
+        }
         let config = NSWorkspace.OpenConfiguration()
         config.activates = activates
         config.addsToRecentItems = false

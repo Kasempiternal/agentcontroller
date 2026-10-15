@@ -148,18 +148,28 @@ final class AttachedChromeRoutingTests: XCTestCase {
         XCTAssertFalse(BrowserNavigator.sameDocument("https://example.com/inbox", root), "the site root is not every page on it")
     }
 
-    /// A browser that comes forward right after this server handed it a page is undone, even while
-    /// the user is typing and even if it was never driven, and the agent is told it was not its doing.
+    /// A browser that comes forward right after this server handed it a page is undone. Chromium
+    /// brings itself forward even while the user types; Safari honours the background flag, so a
+    /// Safari activation right after the user's own click or key is them going to look, and stays.
     func testAHandOffActivationIsUndoneAndAttributedToTheServer() {
         XCTAssertTrue(FocusWatcher.isStolenFocus(
             activatedPID: 42, drivenPIDs: [], expected: false, guardEnabled: true,
-            secondsSinceLastDispatch: 0.2, secondsSinceUserInput: 0.1, handedOff: true))
+            secondsSinceLastDispatch: 0.2, secondsSinceUserInput: 0.1, handedOff: true, handOffOverridesInput: true),
+            "Chrome jumped forward while the user typed")
+        XCTAssertFalse(FocusWatcher.isStolenFocus(
+            activatedPID: 42, drivenPIDs: [42], expected: false, guardEnabled: true,
+            secondsSinceLastDispatch: 0.2, secondsSinceUserInput: 0.1, handedOff: true, handOffOverridesInput: false),
+            "the user clicked Safari to look at the page")
+        XCTAssertTrue(FocusWatcher.isStolenFocus(
+            activatedPID: 42, drivenPIDs: [], expected: false, guardEnabled: true,
+            secondsSinceLastDispatch: 0.2, secondsSinceUserInput: 10, handedOff: true, handOffOverridesInput: false),
+            "Safari came forward by itself after the hand-off")
         XCTAssertFalse(FocusWatcher.isStolenFocus(
             activatedPID: 42, drivenPIDs: [], expected: false, guardEnabled: false,
-            secondsSinceLastDispatch: 0.2, handedOff: true), "Focus Guard off")
+            secondsSinceLastDispatch: 0.2, handedOff: true, handOffOverridesInput: true), "Focus Guard off")
         XCTAssertFalse(FocusWatcher.isStolenFocus(
             activatedPID: 42, drivenPIDs: [], expected: true, guardEnabled: true,
-            secondsSinceLastDispatch: 0.2, handedOff: true), "foreground:true asked for it")
+            secondsSinceLastDispatch: 0.2, handedOff: true, handOffOverridesInput: true), "foreground:true asked for it")
         let message = FocusWatcher.handoffMessage(appName: "Google Chrome")
         XCTAssertTrue(message.contains("this server handed it a page"))
         XCTAssertFalse(message.contains("outside this server"))
