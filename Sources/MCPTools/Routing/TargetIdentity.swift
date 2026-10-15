@@ -66,7 +66,7 @@ public struct TargetIdentity: Equatable, Sendable {
     /// turned every such call into a headless-Chromium session, which is how "use
     /// Safari" kept ending up in Chrome.
     public static func from(arguments: JSONValue?) -> TargetIdentity? {
-        if let udid = arguments?["udid"]?.stringValue, parseUDID(udid) != nil {
+        if let udid = arguments?["udid"]?.stringValue, parseUDID(udid) != nil || isHardwareUDID(udid) {
             return TargetIdentity(raw: udid)
         }
         for key in ["app", "target", "bundleId"] {
@@ -127,6 +127,25 @@ public struct TargetIdentity: Equatable, Sendable {
             return URL(string: raw)
         }
         return nil
+    }
+
+    /// A physical iPhone/iPad identifier (`00008110-000A1B2C3D4E5F60`: 8 hex, a dash, 16 hex).
+    /// Simulator UDIDs are UUIDs and devices of the A12 era and older are 40 hex, so neither
+    /// of those shapes ever matched this one, and a call naming a current iPhone fell through
+    /// to "Missing required parameter: target" — a dead end that sent agents to other tools.
+    public static func isHardwareUDID(_ raw: String) -> Bool {
+        let parts = raw.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "-", omittingEmptySubsequences: false)
+        guard parts.count == 2, parts[0].count == 8, parts[1].count == 16 else { return false }
+        return parts.allSatisfy { $0.unicodeScalars.allSatisfy { CharacterSet(charactersIn: "0123456789abcdefABCDEF").contains($0) } }
+    }
+
+    /// What to tell an agent that named a physical device on the macOS server: the device
+    /// transport lives in the iOS server, so the answer is a tool name, not an apology.
+    public static func hardwareDeviceGuidance(_ udid: String) -> String {
+        "'\(udid)' is a physical iPhone/iPad. The macOS server drives simulators and Mac apps; physical devices go through the iOS server: "
+            + "mcp__agentcontroller-ios__scan_ui / tap_element / device_action(s) / get_screenshot with udid:\"\(udid)\". "
+            + "If that server is not connected, build it (`cd <agentcontroller>/iOS && npm ci && npm run build`, or run Scripts/install-claude-autonomy.sh) "
+            + "and say that it needs a session restart; do not ask the user to drive the phone."
     }
 
     public static func parseUDID(_ raw: String) -> String? {

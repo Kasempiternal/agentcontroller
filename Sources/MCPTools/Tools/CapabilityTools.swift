@@ -31,6 +31,9 @@ struct CapabilityTools {
                 guard let identity = TargetIdentity.from(arguments: args) else {
                     throw ToolError.missingParameter("target")
                 }
+                if TargetIdentity.isHardwareUDID(identity.raw) {
+                    return ToolResult.error(TargetIdentity.hardwareDeviceGuidance(identity.raw))
+                }
                 let record = await CapabilityProbe.probe(identity)
                 return ToolResult.json(record.jsonValue())
             }
@@ -54,6 +57,10 @@ struct CapabilityTools {
                         "type": .string("string"),
                         "description": .string("Page URL for CDP JavaScript"),
                     ]),
+                    "headless": .object([
+                        "type": .string("boolean"),
+                        "description": .string("With url: run in a private headless Chromium (no user logins, never visible) instead of the user's Chrome."),
+                    ]),
                     "code": .object([
                         "type": .string("string"),
                         "description": .string("Python (Blender) or JavaScript (CDP) to execute"),
@@ -76,11 +83,23 @@ struct CapabilityTools {
                 guard args?["code"]?.stringValue != nil else {
                     throw ToolError.missingParameter("code")
                 }
+                if TargetIdentity.isHardwareUDID(identity.raw) {
+                    return ToolResult.error(TargetIdentity.hardwareDeviceGuidance(identity.raw))
+                }
                 let capability = await CapabilityProbe.probe(identity)
-                return ToolResult.error(
-                    "No in-process backend for '\(identity.raw)' (probe backend=\(capability.backend.rawValue)). Use snapshot → elementId → run_steps for native UI."
-                )
+                return ToolResult.error(Self.noInProcessBackendMessage(identity: identity, backend: capability.backend.rawValue))
             }
         ))
+    }
+
+    /// `run_app_code` only has in-process backends for Blender (bpy) and a CDP page. For a
+    /// browser app it used to stop at "use snapshot", which read as a refusal; the real
+    /// alternatives for page content are a URL target or the AX tools.
+    static func noInProcessBackendMessage(identity: TargetIdentity, backend: String) -> String {
+        var message = "No in-process backend for '\(identity.raw)' (probe backend=\(backend))."
+        message += " For native UI use snapshot → elementId → run_steps (read_all_text reads page text, click/type_text fill forms)."
+        message += " To script a web page, pass a URL and use run_app_code with JavaScript on the CDP backend (headless:true for a private browser),"
+        message += " or drive the user's Chrome (debug port) — Safari has no script channel, so read and click it through AX."
+        return message
     }
 }

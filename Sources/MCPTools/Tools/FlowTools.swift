@@ -241,10 +241,36 @@ struct FlowTools {
 
         var summary: [String: JSONValue] = [
             "ran": .int(results.count),
-            "results": .array(results),
+            "results": .array(Self.withinBudget(results)),
         ]
         if let failedAt { summary["failedAt"] = .int(failedAt) }
         return ToolResult.json(.object(summary))
+    }
+
+    /// What one `run_steps` reply may weigh. A batch that reads a whole Slack or dashboard page
+    /// returned 235k characters, which the client refuses outright ("exceeds maximum allowed
+    /// tokens"), so the agent got nothing for a call that had worked. Past the budget the
+    /// largest step payloads are replaced by a descriptor and a hint, largest first, until the
+    /// reply fits; images are already descriptors by then.
+    static let replyBudgetChars = 80_000
+
+    static func withinBudget(_ results: [JSONValue], budget: Int = replyBudgetChars) -> [JSONValue] {
+        let encoder = JSONEncoder()
+        func size(_ value: JSONValue) -> Int { (try? encoder.encode(value))?.count ?? 0 }
+        var sizes = results.map(size)
+        guard sizes.reduce(0, +) > budget else { return results }
+        var trimmed = results
+        while sizes.reduce(0, +) > budget, let index = sizes.indices.max(by: { sizes[$0] < sizes[$1] }), sizes[index] > 2_000 {
+            guard case .object(var entry) = trimmed[index] else { break }
+            entry["result"] = .object([
+                "truncated": .bool(true),
+                "approxChars": .int(sizes[index]),
+                "hint": .string("This step's output was too large to return in one batch. Re-run it alone with a narrower scope (a selector, scope:'window', a smaller maxResults) or read_text on the element you need."),
+            ])
+            trimmed[index] = .object(entry)
+            sizes[index] = size(trimmed[index])
+        }
+        return trimmed
     }
 
     private static func stepEntry(tool: JSONValue, result: JSONValue, includeNestedMedia: Bool) -> JSONValue {

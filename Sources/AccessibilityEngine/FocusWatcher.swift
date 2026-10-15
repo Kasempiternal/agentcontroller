@@ -100,8 +100,9 @@ public final class FocusWatcher: @unchecked Sendable {
         "server (e.g. osascript 'activate'/'set frontmost'/System Events keystroke via a shell tool, " +
         "or 'open' without -g). The user's previous app was re-activated. Never take focus by any " +
         "means: use the background-safe tools (click/type_text/send_shortcut/screenshot_window are " +
-        "PID-targeted; launch_app takes `paths` to open files without the open panel). If a step has " +
-        "no background-safe path, stop and ask the user."
+        "PID-targeted; launch_app takes `paths` to open files without the open panel; open_url opens " +
+        "a page in the background). If a step truly has no background-safe path, ask the user once " +
+        "for that single step — never take focus to get past it."
     }
 
     /// Record that a tool call touched this app. Installs the workspace

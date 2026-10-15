@@ -30,6 +30,9 @@ public enum BackendRouter {
         // the one named. Only an explicit headless:true sends it to the private Chromium.
         if name == "open_url", arguments["headless"]?.boolValue != true { return nil }
         guard let identity = identity(from: arguments) else { return nil }
+        if TargetIdentity.isHardwareUDID(identity.raw) {
+            return ToolResult.error(TargetIdentity.hardwareDeviceGuidance(identity.raw))
+        }
         let capability = await CapabilityProbe.probe(identity)
         if identity.kind == .url, capability.backend != .cdp {
             return ToolResult.error(capability.askDetail ?? capability.reason)
