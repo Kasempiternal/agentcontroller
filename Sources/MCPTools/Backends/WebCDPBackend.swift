@@ -1,6 +1,7 @@
 import Foundation
 import MCPServer
 import AccessibilityEngine
+import PortOwnership
 
 /// Chrome DevTools Protocol backend. One session = one page target, keyed by the URL the
 /// agent named. Every session lives in the single headless Chromium this app owns (as its
@@ -218,6 +219,12 @@ actor WebCDPBackend {
         guard let pinned = identity.attachedPort else { return try await endpoint(isolated: identity.headless) }
         guard await SocketProbe.connectAsync(port: pinned, timeoutMs: 300) else {
             throw ToolError.actionFailed("Chrome's debug port \(pinned) stopped answering, so nothing was opened. Retry the call; if Chrome was restarted without its debug port, the page will open through Chrome normally.")
+        }
+        // Checked again where the socket is opened: a Chromium browser of this user holds the port.
+        guard LoopbackListener.owners(port: pinned).contains(where: {
+            AppCatalog.chromiumCDPBundles.contains(AttachedChrome.bundleIdentifier(of: $0) ?? "")
+        }) else {
+            throw ToolError.actionFailed("Port \(pinned) is not held by one of this user's Chromium browsers, so nothing was opened.")
         }
         return (pinned, true)
     }

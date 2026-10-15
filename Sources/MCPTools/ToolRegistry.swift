@@ -73,7 +73,7 @@ public final class ToolRegistry: MCPToolProvider, @unchecked Sendable {
         // Second normalization choke point (MCPProtocolHandler is the first):
         // handlers may force-unwrap `args`, so direct callers (flows, tests)
         // must never deliver nil either.
-        var arguments = arguments ?? .object([:])
+        var arguments = BrowserRouting.strippingPrivateKeys(arguments ?? .object([:]))
         guard let tool = tools[name] else {
             return ToolResult.error("Unknown tool: \(name)")
         }

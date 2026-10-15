@@ -23,6 +23,17 @@ enum BrowserRouting {
     /// background tab (`AttachedChrome`). The CDP backend opens it on that port and no other.
     static let attachedPortKey = "_cdpPort"
 
+    /// Keys only this router sets. A client that sends them has them dropped (`ToolRegistry`):
+    /// `_cdpPort` would pin the CDP backend to any local port, past the check that the port is the
+    /// named browser's.
+    static let privateKeys: Set<String> = [pageURLKey, attachedPortKey]
+
+    static func strippingPrivateKeys(_ arguments: JSONValue) -> JSONValue {
+        guard var object = arguments.objectValue, privateKeys.contains(where: { object[$0] != nil }) else { return arguments }
+        for key in privateKeys { object.removeValue(forKey: key) }
+        return .object(object)
+    }
+
     /// Tools where "app + url" means "show me that page": navigate first, then act.
     static let navigatingTools: Set<String> = [
         "snapshot", "describe_screen", "screenshot_window", "read_all_text",

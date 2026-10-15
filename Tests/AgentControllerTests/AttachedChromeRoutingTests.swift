@@ -102,6 +102,21 @@ final class AttachedChromeRoutingTests: XCTestCase {
         guard case .unchanged = prepared else { return XCTFail("rewritten without a debug port: \(prepared)") }
     }
 
+    /// The router's private keys never come from a client: `_cdpPort` would pin the CDP backend to
+    /// any local port.
+    func testPrivateKeysFromAClientAreDropped() {
+        let sent: JSONValue = .object([
+            "url": .string("https://example.com/"), BrowserRouting.attachedPortKey: .int(1234),
+            BrowserRouting.pageURLKey: .string("https://example.com/other"),
+        ])
+        let kept = BrowserRouting.strippingPrivateKeys(sent)
+        XCTAssertNil(kept[BrowserRouting.attachedPortKey])
+        XCTAssertNil(kept[BrowserRouting.pageURLKey])
+        XCTAssertEqual(kept["url"]?.stringValue, "https://example.com/")
+        let plain: JSONValue = .object(["app": .string("Safari")])
+        XCTAssertEqual(BrowserRouting.strippingPrivateKeys(plain), plain)
+    }
+
     /// The port must belong to the browser the call named (Edge on 9222 is not Chrome), and a
     /// Chrome running from its code-sign clone is still Chrome.
     func testThePortMustBelongToTheNamedBrowsersBundle() throws {
