@@ -6,6 +6,16 @@ All notable changes to AgentController are documented here. The format follows
 
 ## [Unreleased]
 
+## [3.1.4] - 2026-10-16
+
+### Security
+- **The bundled iOS server's dependencies are patched.** GitHub reported 20 advisories against
+  `iOS/package-lock.json`, all in runtime dependencies that ship inside the app: `proxy-addr`
+  (critical: IP spoofing through an IPv4-mapped IPv6 trust subnet, under the viewer's Express
+  server), `fast-uri`, `@modelcontextprotocol/sdk`, `@grpc/grpc-js`, `hono`, `ip-address` and `qs`.
+  `npm audit fix` moved each to its patched release within the declared ranges (lockfile only);
+  `npm audit --omit=dev` reports none. The server's tools and behaviour are unchanged.
+
 ## [3.1.3] - 2026-10-16
 
 ### Security

@@ -1,6 +1,6 @@
 {
   "name": "agentcontroller-ios",
-  "version": "3.1.3",
+  "version": "3.1.4",
   "description": "AgentController iOS backend — MCP server for controlling iOS simulators and physical iPhones. Derived from an MIT-licensed upstream; see NOTICE and iOS/LICENSE.",
   "type": "module",
   "private": true,
