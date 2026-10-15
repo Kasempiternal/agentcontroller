@@ -18,7 +18,7 @@
   "dependencies": {
     "@grpc/grpc-js": "^1.14.4",
     "@grpc/proto-loader": "^0.8.1",
-    "@modelcontextprotocol/sdk": "^1.12.1",
+    "@modelcontextprotocol/sdk": "^1.31.0",
     "express": "^5.1.0",
     "ws": "^8.18.3",
     "zod": "^3.23.0"
