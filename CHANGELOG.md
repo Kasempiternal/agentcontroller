@@ -6,6 +6,15 @@ All notable changes to AgentController are documented here. The format follows
 
 ## [Unreleased]
 
+## [3.1.6] - 2026-10-16
+
+### Fixed
+- **The iOS server lists only the iPhones and iPads it can reach.** devicectl reports every
+  device ever paired with the Mac, and the ones with no connection were listed as USB, so a Mac
+  with two phones on a cable reported eight devices (a Watch and colleagues' phones among them),
+  `get_execution_context` was always ambiguous and an agent could pick a phone that isn't
+  there. Devices on a cable now come first, then the ones on the network.
+
 ## [3.1.5] - 2026-10-16
 
 ### Fixed
