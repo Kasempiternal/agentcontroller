@@ -6,6 +6,22 @@ All notable changes to AgentController are documented here. The format follows
 
 ## [Unreleased]
 
+## [3.2.1] - 2026-11-16
+
+### Fixed
+- **3.2.0's fresh Safari window broke `snapshot` and `read_all_text` with `url` while the user was in a
+  full-screen Space.** Measured on a real Safari whose windows were on another desktop Space, with the
+  user in a full-screen Space: a scripted `make new document` takes no focus and does not change the
+  Space, but the new window lands on Safari's own desktop Space, off screen, so it can no more be
+  captured than the user's. 3.2.0 then closed it and returned an error, where 3.1.6 had read the page
+  through accessibility. Now a fresh window that lands off screen is closed, the page goes in the usual
+  way (a tab of the user's window, readable through accessibility), the result says why, and no new
+  window is tried for a minute so a window is not opened and closed per call. A missing Automation
+  grant or a slow Safari fall back the same way. Pixels and a width for such a page need
+  `headless:true` until the user is on the Space Safari's windows are on.
+- The fail-fast messages of the capture and resize tools now say that a new window only lands on the
+  Space the user is looking at.
+
 ## [3.2.0] - 2026-11-16
 
 ### Added
