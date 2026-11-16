@@ -6,6 +6,23 @@ All notable changes to AgentController are documented here. The format follows
 
 ## [Unreleased]
 
+## [3.3.1] - 2026-11-16
+
+### Security
+- **A page could make the WebKit view load `file:`, `data:` or custom-scheme URLs it could not open
+  itself.** `window.open` and `target=_blank` were turned into an app-initiated load of whatever URL the
+  page gave, which skips the checks WebKit applies to a page's own navigation: with the persistent
+  store that was a way to read local files into the agent's context. Now a popup opens only `http(s)`,
+  and every navigation the page starts (links, `location`, redirects, subframes) passes a policy:
+  main frames stay on `http(s)` or `about:blank`, `file:`, `data:`, `blob:` and custom schemes are
+  cancelled and listed as `blocked` in the next result, subframes may not load `file:` unless the agent
+  opened a file page. The only way onto a `file:` or `data:` URL is the tool caller's own call with the
+  new `allowFile:true`; `open_url` refuses them otherwise (and any other scheme, and any `about:` URL
+  other than `about:blank`), and a `file:` page reads only its own folder.
+- Downloads are refused (attachments and responses the view cannot show), camera and microphone
+  requests are denied, Web Inspector is off unless `AGENTCONTROLLER_WEBKIT_INSPECTABLE=1`, and the
+  view answers no authentication or TLS challenge itself (certificates are checked).
+
 ## [3.3.0] - 2026-11-16
 
 ### Added
