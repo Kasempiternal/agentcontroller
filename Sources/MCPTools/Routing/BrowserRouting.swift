@@ -148,6 +148,11 @@ enum BrowserRouting {
     }
 
     static func navigationNotice(page: URL, browser: String, outcome: BrowserNavigator.Outcome) -> String {
+        let notice = pageNotice(page: page, browser: browser, outcome: outcome)
+        return outcome.fallbackNote.map { notice + " " + $0 } ?? notice
+    }
+
+    private static func pageNotice(page: URL, browser: String, outcome: BrowserNavigator.Outcome) -> String {
         if let agent = outcome.agentWindow {
             let state = outcome.loaded
                 ? "loaded in \(outcome.waitedMs)ms"

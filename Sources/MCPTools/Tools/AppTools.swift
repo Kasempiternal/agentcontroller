@@ -197,7 +197,7 @@ struct AppTools {
 
         registry.register(.init(
             name: "open_url",
-            description: "Open a URL in a REAL browser the user can see (web link, deep link, or custom scheme like 'myapp://path'). Web links go to the browser named in `browser` (or `app`), otherwise the user's DEFAULT browser — never silently a different one. If the user names a browser (\"in Safari\", \"use Firefox\"), pass it. headless:true instead opens the page in a private headless Chromium for scripted testing. BACKGROUND-SAFE BY DEFAULT: a Chrome that publishes a debug port gets the page as a hidden background tab (the user's window, tab and focus do not change); Safari receives it without being activated, as a new tab of its front window, unless that window is full screen or on another Space (it can be neither captured nor resized there): then a fresh normal window opens in the background, is reused by later calls, and the result names its `window` id; any other browser receives it without being activated, as a new tab of its front window. Then `snapshot` with app=<that browser> reads the page.",
+            description: "Open a URL in a REAL browser the user can see (web link, deep link, or custom scheme like 'myapp://path'). Web links go to the browser named in `browser` (or `app`), otherwise the user's DEFAULT browser — never silently a different one. If the user names a browser (\"in Safari\", \"use Firefox\"), pass it. headless:true instead opens the page in a private headless Chromium for scripted testing. BACKGROUND-SAFE BY DEFAULT: a Chrome that publishes a debug port gets the page as a hidden background tab (the user's window, tab and focus do not change); Safari receives it without being activated, as a new tab of its front window, unless that window is full screen or on another Space (it can be neither captured nor resized there): then a fresh normal window is tried in the background, reused by later calls, and the result names its `window` id (if it cannot land on the Space the user is looking at, the result says so and the page goes in as a tab); any other browser receives it without being activated, as a new tab of its front window. Then `snapshot` with app=<that browser> reads the page.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
@@ -233,8 +233,10 @@ struct AppTools {
                     do {
                         // A Safari window that is full screen or on another Space cannot take the page
                         // as a tab and still be captured: it goes into a normal window of its own.
-                        if !foreground, let inWindow = try await SafariWindows.navigate(url, in: browser, timeout: 0, waitForLoad: false),
-                           let agent = inWindow.agentWindow {
+                        var fallbackNote: String?
+                        switch foreground ? .notApplicable : try await SafariWindows.navigate(url, in: browser, timeout: 0, waitForLoad: false) {
+                        case .handled(let inWindow):
+                            guard let agent = inWindow.agentWindow else { break }
                             return ToolResult.action(success: true, method: "safari-window", extra: [
                                 "url": .string(urlStr),
                                 "handler": .string(browser.bundleId),
@@ -246,14 +248,20 @@ struct AppTools {
                                 "note": .string(SafariWindowPolicy.freshNotice(
                                     page: url, browser: browser.name, id: agent.id, because: agent.because, created: agent.created)),
                             ])
+                        case .fellBack(let note):
+                            fallbackNote = note
+                        case .notApplicable:
+                            break
                         }
                         let app = try await BrowserNavigator.open(url, in: browser, activates: foreground)
-                        return ToolResult.action(success: true, method: "workspace", extra: [
+                        var extra: [String: JSONValue] = [
                             "url": .string(urlStr),
                             "handler": .string(app.bundleIdentifier ?? browser.bundleId),
                             "browser": .string(browser.name),
                             "activated": .bool(foreground),
-                        ])
+                        ]
+                        if let fallbackNote { extra["note"] = .string(fallbackNote) }
+                        return ToolResult.action(success: true, method: "workspace", extra: extra)
                     } catch let error as SafariWindowError {
                         return ToolResult.error(error.message)
                     } catch {

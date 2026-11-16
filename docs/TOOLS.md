@@ -75,7 +75,7 @@ _No parameters._
 
 ### `open_url`
 
-Open a URL in a REAL browser the user can see (web link, deep link, or custom scheme like 'myapp://path'). Web links go to the browser named in `browser` (or `app`), otherwise the user's DEFAULT browser — never silently a different one. If the user names a browser ("in Safari", "use Firefox"), pass it. headless:true instead opens the page in a private headless Chromium for scripted testing. BACKGROUND-SAFE BY DEFAULT: a Chrome that publishes a debug port gets the page as a hidden background tab (the user's window, tab and focus do not change); Safari receives it without being activated, as a new tab of its front window, unless that window is full screen or on another Space (it can be neither captured nor resized there): then a fresh normal window opens in the background, is reused by later calls, and the result names its `window` id; any other browser receives it without being activated, as a new tab of its front window. Then `snapshot` with app=<that browser> reads the page.
+Open a URL in a REAL browser the user can see (web link, deep link, or custom scheme like 'myapp://path'). Web links go to the browser named in `browser` (or `app`), otherwise the user's DEFAULT browser — never silently a different one. If the user names a browser ("in Safari", "use Firefox"), pass it. headless:true instead opens the page in a private headless Chromium for scripted testing. BACKGROUND-SAFE BY DEFAULT: a Chrome that publishes a debug port gets the page as a hidden background tab (the user's window, tab and focus do not change); Safari receives it without being activated, as a new tab of its front window, unless that window is full screen or on another Space (it can be neither captured nor resized there): then a fresh normal window is tried in the background, reused by later calls, and the result names its `window` id (if it cannot land on the Space the user is looking at, the result says so and the page goes in as a tab); any other browser receives it without being activated, as a new tab of its front window. Then `snapshot` with app=<that browser> reads the page.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -533,7 +533,7 @@ Get the position and size of an app window
 
 ### `set_window_bounds`
 
-Set the position and/or size of an app window. A full-screen Safari window, or one on another Space, is refused with the reason: open_url (or url on a snapshot) gives a normal window that can be resized.
+Set the position and/or size of an app window. A full-screen Safari window, or one on another Space, is refused with the reason: open_url (or url on a snapshot) tries a normal window that can be resized.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -566,7 +566,7 @@ Restore a minimized window from the Dock
 
 ### `screenshot_window`
 
-Capture a screenshot of a specific app window. Works in the background — the window does NOT need to be frontmost and can be fully covered by other windows (capture reads the window's own backing store). Minimized windows cannot be captured (call restore_window first). Default window is the app's focused window; pick another with windowTitle (windows sharing a title resolve to the focused one if it has that title, else the largest on-screen one) or windowIndex (index into list_windows order, exact even for duplicate titles). A full-screen or other-Space Safari window cannot be captured: the call fails at once and says what to do, and with `url` the server opens a fresh normal window in the background and captures that. Returns a JPEG by default (downscaled to keep payloads small); pass format/maxLongestSide/quality to override.
+Capture a screenshot of a specific app window. Works in the background — the window does NOT need to be frontmost and can be fully covered by other windows (capture reads the window's own backing store). Minimized windows cannot be captured (call restore_window first). Default window is the app's focused window; pick another with windowTitle (windows sharing a title resolve to the focused one if it has that title, else the largest on-screen one) or windowIndex (index into list_windows order, exact even for duplicate titles). A full-screen or other-Space Safari window cannot be captured: the call fails at once and says what to do, and with `url` the server tries a fresh normal window in the background and captures that. Returns a JPEG by default (downscaled to keep payloads small); pass format/maxLongestSide/quality to override.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|

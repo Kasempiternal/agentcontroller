@@ -22,6 +22,8 @@ enum BrowserNavigator {
         /// The page is in a window this server opened, because the user's was full screen or on
         /// another Space (`SafariWindows`).
         var agentWindow: AgentWindowNote?
+        /// Why a window of its own was wanted for this page and not used (`SafariWindows`).
+        var fallbackNote: String?
     }
 
     struct AgentWindowNote: Equatable, Sendable {
@@ -68,7 +70,19 @@ enum BrowserNavigator {
     static func navigate(_ url: URL, in browser: BrowserTarget, timeout: TimeInterval = 10) async throws -> Outcome {
         // Before anything reads the focused window: a Safari window that cannot be captured must
         // not be taken for "the page is already showing".
-        if let inAgentWindow = try await SafariWindows.navigate(url, in: browser, timeout: timeout) { return inAgentWindow }
+        switch try await SafariWindows.navigate(url, in: browser, timeout: timeout) {
+        case .handled(let inAgentWindow):
+            return inAgentWindow
+        case .notApplicable:
+            return try await navigateAsTab(url, in: browser, timeout: timeout)
+        case .fellBack(let note):
+            var outcome = try await navigateAsTab(url, in: browser, timeout: timeout)
+            outcome.fallbackNote = note
+            return outcome
+        }
+    }
+
+    private static func navigateAsTab(_ url: URL, in browser: BrowserTarget, timeout: TimeInterval) async throws -> Outcome {
         let wasFrontmost = await MainActor.run {
             NSWorkspace.shared.frontmostApplication?.bundleIdentifier == browser.bundleId
         }

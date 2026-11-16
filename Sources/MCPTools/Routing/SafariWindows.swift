@@ -59,6 +59,8 @@ struct SafariSurvey: Equatable, Sendable {
     var agent: AgentWindow?
     /// Safari is the user's frontmost app right now.
     var safariIsFrontmost: Bool
+    /// A window opened for the agent a moment ago landed where it could not be used either.
+    var freshWindowFailedRecently = false
 
     struct AgentWindow: Equatable, Sendable {
         var id: Int
@@ -80,6 +82,9 @@ enum SafariRoute: Equatable, Sendable {
     /// The user is looking at their full-screen Safari. A window opened for the agent while
     /// Safari is the active app may pull them to another Space, so none is opened.
     case holdOff
+    /// The last window opened for the agent landed off the active Space, and nothing says the next
+    /// would not: the page goes in the usual way instead of opening and closing a window per call.
+    case skipFreshWindow
 }
 
 /// The one place the decision is made. Pure, so the tests can walk every state.
@@ -98,6 +103,7 @@ enum SafariWindowPolicy {
         if survey.safariIsFrontmost, front.facts.isFullScreen, front.facts.inActiveSpace {
             return .holdOff
         }
+        if survey.freshWindowFailedRecently { return .skipFreshWindow }
         return .openFreshWindow(because: why)
     }
 
@@ -120,9 +126,27 @@ enum SafariWindowPolicy {
 
     /// For the tools that need pixels or a resize when the window they would use cannot give them.
     static func blockedMessage(browser: String, because: SafariWindowUse) -> String {
-        "The \(browser) window is \(because.phrase), so it cannot be captured or resized. Nothing was changed. "
-            + "Call open_url {url, browser:\"\(browser)\"} (or pass `url` to this tool): the server opens a fresh normal window in the "
-            + "background and every Safari tool then uses it. Do not ask the user to leave full screen or switch Space."
+        "The \(browser) window is \(because.phrase), so macOS gives it no capturable surface and it cannot be resized. Nothing was changed. "
+            + "Call open_url {url, browser:\"\(browser)\"} (or pass `url` to this tool): the server tries a fresh normal window in the "
+            + "background. A new window can only be captured when it lands on the Space the user is looking at; while they are in "
+            + "another full-screen Space it cannot, and then headless:true is the way to get pixels or a width. "
+            + "Do not ask the user to leave full screen or switch Space."
+    }
+
+    /// The fresh window could not be used, so the page went the usual way.
+    static func fellBackNotice(_ reason: String, browser: String) -> String {
+        "No window of its own was used for this page: \(reason) The page went in the usual way, as a tab of the user's \(browser) "
+            + "window, which cannot be captured or resized from here. Read it with snapshot or read_all_text; use headless:true when you "
+            + "need pixels or a width."
+    }
+
+    static func landedElsewhereReason(browser: String) -> String {
+        "the window opened for it landed on another Space as well (the user is probably in another full-screen Space, where no new "
+            + "\(browser) window can appear), so it could not be captured or resized, and it was closed."
+    }
+
+    static func skippedReason() -> String {
+        "an earlier fresh window landed off the user's Space too, so none is tried again for a minute."
     }
 
     static func notAllowedMessage(browser: String) -> String {
@@ -151,6 +175,23 @@ final class SafariAgentWindows: @unchecked Sendable {
 
     private let lock = NSLock()
     private var byPID: [pid_t: Entry] = [:]
+    private var failedAt: [pid_t: Date] = [:]
+
+    /// A window opened for the agent landed where it could not be used.
+    func noteLandingFailure(pid: pid_t) {
+        lock.lock(); defer { lock.unlock() }
+        failedAt[pid] = Date()
+    }
+
+    func landingFailed(pid: pid_t, within seconds: TimeInterval) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return failedAt[pid].map { Date().timeIntervalSince($0) < seconds } ?? false
+    }
+
+    func clearLandingFailure(pid: pid_t) {
+        lock.lock(); defer { lock.unlock() }
+        failedAt.removeValue(forKey: pid)
+    }
 
     func entry(forPID pid: pid_t) -> Entry? {
         lock.lock(); defer { lock.unlock() }
@@ -170,6 +211,7 @@ final class SafariAgentWindows: @unchecked Sendable {
     func removeAll() {
         lock.lock(); defer { lock.unlock() }
         byPID.removeAll()
+        failedAt.removeAll()
     }
 }
 

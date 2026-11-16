@@ -93,7 +93,7 @@ struct WindowTools {
 
         registry.register(.init(
             name: "set_window_bounds",
-            description: "Set the position and/or size of an app window. A full-screen Safari window, or one on another Space, is refused with the reason: open_url (or url on a snapshot) gives a normal window that can be resized.",
+            description: "Set the position and/or size of an app window. A full-screen Safari window, or one on another Space, is refused with the reason: open_url (or url on a snapshot) tries a normal window that can be resized.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([

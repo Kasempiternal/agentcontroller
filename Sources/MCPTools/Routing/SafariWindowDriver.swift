@@ -8,6 +8,8 @@ import ScreenCapture
 /// A failure the agent should read as the answer, not as a broken tool.
 struct SafariWindowError: LocalizedError {
     let message: String
+    /// The call is refused outright instead of falling back to the usual path.
+    var isRefusal = false
     var errorDescription: String? { message }
 }
 
@@ -84,58 +86,76 @@ enum SafariWindows {
 
     // MARK: - Opening
 
-    /// nil: the front window can take the page, so the caller goes the usual way (a tab through
-    /// LaunchServices). Otherwise the page is in a normal window of its own and the outcome says so.
-    /// `waitForLoad: false` (open_url) returns as soon as the window is confirmed usable.
+    enum Navigation {
+        /// Not a Safari web page, no Safari running, or the front window can take the page: go the usual way.
+        case notApplicable
+        /// The page is in a normal window of this server's own.
+        case handled(BrowserNavigator.Outcome)
+        /// A window of its own was wanted and could not be used: go the usual way and say why.
+        case fellBack(String)
+    }
+
+    /// How long after a fresh window landed off the user's Space the next one is not tried.
+    nonisolated(unsafe) static var landingRetryAfter: TimeInterval = 60
+
+    /// `waitForLoad: false` (open_url) returns as soon as the window is confirmed usable. Throws only
+    /// to refuse (the user is looking at their full-screen Safari); every other failure falls back.
     static func navigate(_ url: URL, in browser: BrowserTarget, timeout: TimeInterval, waitForLoad: Bool = true)
-        async throws -> BrowserNavigator.Outcome? {
+        async throws -> Navigation {
         guard isSafariFamily(browser.bundleId),
               ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
-              let pid = await system.pid(bundleId: browser.bundleId) else { return nil }
+              let pid = await system.pid(bundleId: browser.bundleId) else { return .notApplicable }
         await gate.acquire()
         defer { gate.release() }
 
         let registry = SafariAgentWindows.shared
-        let survey = await system.survey(pid: pid, entry: registry.entry(forPID: pid))
+        var survey = await system.survey(pid: pid, entry: registry.entry(forPID: pid))
         if survey.agent == nil { registry.forget(pid: pid) }
+        survey.freshWindowFailedRecently = registry.landingFailed(pid: pid, within: landingRetryAfter)
 
         let started = Date()
         let windowID: Int
         let because: SafariWindowUse
         let created: Bool
-        switch SafariWindowPolicy.route(survey) {
-        case .defaultPath:
-            return nil
-        case .holdOff:
-            throw SafariWindowError(message: SafariWindowPolicy.holdOffMessage(browser: browser.name))
-        case .reuseAgentWindow(let id, let why):
-            windowID = id
-            because = why
-            created = false
-            if !BrowserNavigator.sameDocument(survey.agent?.state.pageURL, url) {
-                try await perform(browser) { try await system.navigate(bundleId: browser.bundleId, windowID: id, to: url) }
+        do {
+            switch SafariWindowPolicy.route(survey) {
+            case .defaultPath:
+                return .notApplicable
+            case .holdOff:
+                throw SafariWindowError(message: SafariWindowPolicy.holdOffMessage(browser: browser.name), isRefusal: true)
+            case .skipFreshWindow:
+                return .fellBack(SafariWindowPolicy.fellBackNotice(SafariWindowPolicy.skippedReason(), browser: browser.name))
+            case .reuseAgentWindow(let id, let why):
+                windowID = id
+                because = why
+                created = false
+                if !BrowserNavigator.sameDocument(survey.agent?.state.pageURL, url) {
+                    try await perform(browser) { try await system.navigate(bundleId: browser.bundleId, windowID: id, to: url) }
+                }
+            case .openFreshWindow(let why):
+                because = why
+                created = true
+                windowID = try await perform(browser) { try await system.openWindow(bundleId: browser.bundleId, url: url) }
+                registry.set(.init(id: windowID, because: why), forPID: pid)
             }
-        case .openFreshWindow(let why):
-            because = why
-            created = true
-            windowID = try await perform(browser) { try await system.openWindow(bundleId: browser.bundleId, url: url) }
-            registry.set(.init(id: windowID, because: why), forPID: pid)
-        }
 
-        let page = try await settle(pid: pid, windowID: windowID, url: url, browser: browser, started: started,
-                                    timeout: waitForLoad ? timeout : 0, created: created)
-        return BrowserNavigator.Outcome(
-            pid: pid, loaded: page.loaded, pageURL: page.url, waitedMs: Int(Date().timeIntervalSince(started) * 1000),
-            wasFrontmost: survey.safariIsFrontmost, reused: false,
-            agentWindow: .init(id: windowID, created: created, because: because))
+            let page = try await settle(pid: pid, windowID: windowID, browser: browser, url: url, started: started,
+                                        timeout: waitForLoad ? timeout : 0)
+            registry.clearLandingFailure(pid: pid)
+            return .handled(BrowserNavigator.Outcome(
+                pid: pid, loaded: page.loaded, pageURL: page.url, waitedMs: Int(Date().timeIntervalSince(started) * 1000),
+                wasFrontmost: survey.safariIsFrontmost, reused: false,
+                agentWindow: .init(id: windowID, created: created, because: because)))
+        } catch let failure as SafariWindowError where !failure.isRefusal {
+            return .fellBack(SafariWindowPolicy.fellBackNotice(failure.message, browser: browser.name))
+        }
     }
 
     /// Waits until the agent window is listed and usable, then (when asked) until its page has loaded.
     /// A window that never becomes usable is one this server opened and cannot use: it is closed
-    /// (it is the only kind of window this code ever closes) and the agent is told, not given a
-    /// second window.
-    private static func settle(pid: pid_t, windowID: Int, url: URL, browser: BrowserTarget, started: Date,
-                               timeout: TimeInterval, created: Bool) async throws -> SafariPage {
+    /// (the only kind of window this code ever closes), and a new one is not tried for a while.
+    private static func settle(pid: pid_t, windowID: Int, browser: BrowserTarget, url: URL, started: Date,
+                               timeout: TimeInterval) async throws -> SafariPage {
         let grace = started.addingTimeInterval(appearanceGrace)
         let deadline = started.addingTimeInterval(max(timeout, appearanceGrace))
         var latest: SafariPage?
@@ -155,10 +175,8 @@ enum SafariWindows {
 
         await system.closeWindow(bundleId: browser.bundleId, windowID: windowID)
         SafariAgentWindows.shared.forget(pid: pid)
-        let why = latest?.use ?? .otherSpace
-        throw SafariWindowError(message: "The window opened for \(url.absoluteString) is \(why.phrase) as well, so it still cannot be "
-            + "captured or resized. It was closed and no further window was opened. This happens when the Space the user is on "
-            + "cannot hold a normal \(browser.name) window; use another browser, or headless:true for a page that needs no login.")
+        SafariAgentWindows.shared.noteLandingFailure(pid: pid)
+        throw SafariWindowError(message: SafariWindowPolicy.landedElsewhereReason(browser: browser.name))
     }
 
     /// Apple Events go through here so that every failure reaches the agent in words.

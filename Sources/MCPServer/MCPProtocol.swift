@@ -209,10 +209,12 @@ public struct MCPProtocolHandler: Sendable {
         headless:true only for scripted web testing that should not touch a \
         visible browser (private headless Chromium via CDP, no user logins). A \
         Safari window that is full screen or on another Space is never used for \
-        work that needs pixels or a resize: the server opens a fresh normal window \
+        work that needs pixels or a resize: the server tries a fresh normal window \
         in the background (no focus or Space change), names its window id in the \
-        result, and every Safari tool then acts on it. Use that window; never ask \
-        the user to leave full screen.
+        result, and every Safari tool then acts on it. A new window only lands on \
+        the Space the user is looking at; if they are in another full-screen Space \
+        the result says so, the page goes in as a tab, and headless:true is the way \
+        to pixels. Never ask the user to leave full screen.
 
         BATCH YOUR STEPS. `snapshot` returns stable element ids, and every interaction \
         tool takes an `elementId` that acts on that exact element with no search. So the \

@@ -215,8 +215,9 @@ final class SafariFreshWindowTests: XCTestCase {
         async let second = SafariWindows.navigate(URL(string: "https://example.com/b")!, in: browser, timeout: 2)
         let (a, b) = try await (first, second)
 
-        XCTAssertEqual(a?.agentWindow?.id, 1001)
-        XCTAssertEqual(b?.agentWindow?.id, 1001)
+        guard case .handled(let one) = a, case .handled(let two) = b else { return XCTFail("\(a) \(b)") }
+        XCTAssertEqual(one.agentWindow?.id, 1001)
+        XCTAssertEqual(two.agentWindow?.id, 1001)
         let opens = fake.calls.filter { if case .open = $0 { return true } else { return false } }
         XCTAssertEqual(opens.count, 1, "two windows were opened: \(fake.calls)")
     }
@@ -235,7 +236,7 @@ final class SafariFreshWindowTests: XCTestCase {
     func testAUsableFrontWindowIsNotOursToOpenAWindowFor() async throws {
         fake.front = state(.usable)
         let outcome = try await SafariWindows.navigate(page, in: Self.safari, timeout: 2)
-        XCTAssertNil(outcome)
+        guard case .notApplicable = outcome else { return XCTFail("\(outcome)") }
         XCTAssertTrue(fake.calls.isEmpty)
     }
 
@@ -243,9 +244,9 @@ final class SafariFreshWindowTests: XCTestCase {
         fake.front = state(.fullScreen)
         let chrome = BrowserTarget(bundleId: "com.google.Chrome", name: "Google Chrome", appURL: URL(fileURLWithPath: "/Applications/Google Chrome.app"))
         let chromeOutcome = try await SafariWindows.navigate(page, in: chrome, timeout: 2)
-        XCTAssertNil(chromeOutcome)
+        guard case .notApplicable = chromeOutcome else { return XCTFail("\(chromeOutcome)") }
         let fileOutcome = try await SafariWindows.navigate(URL(string: "file:///tmp/x.html")!, in: Self.safari, timeout: 2)
-        XCTAssertNil(fileOutcome)
+        guard case .notApplicable = fileOutcome else { return XCTFail("\(fileOutcome)") }
         XCTAssertTrue(fake.calls.isEmpty)
     }
 
@@ -262,29 +263,55 @@ final class SafariFreshWindowTests: XCTestCase {
         XCTAssertTrue(fake.calls.isEmpty)
     }
 
-    func testAWindowThatNeverBecomesUsableIsClosedAndNotRetried() async throws {
-        fake.front = state(.fullScreen)
+    /// Measured on the owner's Mac: with the user in a full-screen Space, a new Safari window lands on
+    /// Safari's own desktop Space, off screen. It is closed, the page goes the usual way, and the next
+    /// calls do not open and close a window each.
+    func testAWindowThatLandsOffScreenIsClosedAndTheCallFallsBack() async throws {
+        fake.front = state(.otherSpace)
         fake.landsIn = .otherSpace
-        do {
-            _ = try await SafariWindows.navigate(page, in: Self.safari, timeout: 2)
-            XCTFail("an unusable window was reported as usable")
-        } catch let error as SafariWindowError {
-            XCTAssertTrue(error.message.contains("closed"), error.message)
-        }
+
+        let first = try await SafariWindows.navigate(page, in: Self.safari, timeout: 2)
+        guard case .fellBack(let note) = first else { return XCTFail("\(first)") }
+        XCTAssertTrue(note.contains("landed on another Space as well"), note)
+        XCTAssertTrue(note.contains("headless:true"), note)
         XCTAssertEqual(fake.calls, [.open("https://example.com/a"), .close(1001)])
+        XCTAssertNil(SafariAgentWindows.shared.entry(forPID: fake.pid))
+
+        let second = try await SafariWindows.navigate(page, in: Self.safari, timeout: 2)
+        guard case .fellBack(let again) = second else { return XCTFail("\(second)") }
+        XCTAssertTrue(again.contains("none is tried again"), again)
+        XCTAssertEqual(fake.calls.count, 2, "a window was opened and closed again for every call")
+    }
+
+    func testAFreshWindowIsTriedAgainAfterTheRetryDelayAndAWorkingOneClearsTheMemo() async throws {
+        let saved = SafariWindows.landingRetryAfter
+        defer { SafariWindows.landingRetryAfter = saved }
+        SafariWindows.landingRetryAfter = 0.2
+        fake.front = state(.otherSpace)
+        fake.landsIn = .otherSpace
+        _ = try await SafariWindows.navigate(page, in: Self.safari, timeout: 2)
+
+        try await Task.sleep(nanoseconds: 300_000_000)
+        fake.landsIn = .usable
+        let retried = try await XCTUnwrapAsync(await SafariWindows.navigate(page, in: Self.safari, timeout: 2))
+        XCTAssertEqual(retried.agentWindow?.created, true)
+        XCTAssertFalse(SafariAgentWindows.shared.landingFailed(pid: fake.pid, within: 60))
+    }
+
+    func testDeniedAutomationFallsBackAndSaysWhereToAllowIt() async throws {
+        fake.front = state(.fullScreen)
+        fake.openFailure = .notAllowed
+        let result = try await SafariWindows.navigate(page, in: Self.safari, timeout: 2)
+        guard case .fellBack(let note) = result else { return XCTFail("\(result)") }
+        XCTAssertTrue(note.contains("System Settings > Privacy & Security > Automation"), note)
         XCTAssertNil(SafariAgentWindows.shared.entry(forPID: fake.pid))
     }
 
-    func testDeniedAutomationSaysWhereToAllowIt() async throws {
-        fake.front = state(.fullScreen)
-        fake.openFailure = .notAllowed
-        do {
-            _ = try await SafariWindows.navigate(page, in: Self.safari, timeout: 2)
-            XCTFail("expected a refusal")
-        } catch let error as SafariWindowError {
-            XCTAssertTrue(error.message.contains("System Settings > Privacy & Security > Automation"), error.message)
-        }
-        XCTAssertNil(SafariAgentWindows.shared.entry(forPID: fake.pid))
+    func testTheFallbackIsPartOfTheNoticeTheAgentReads() {
+        let outcome = BrowserNavigator.Outcome(
+            pid: 1, loaded: true, pageURL: "https://example.com/a", waitedMs: 120, wasFrontmost: false, fallbackNote: "No window of its own was used.")
+        let notice = BrowserRouting.navigationNotice(page: page, browser: "Safari", outcome: outcome)
+        XCTAssertEqual(notice, "Opened https://example.com/a in Safari (background, loaded in 120ms). No window of its own was used.")
     }
 
     // MARK: - Through the tools
@@ -328,9 +355,15 @@ final class SafariFreshWindowTests: XCTestCase {
     }
 }
 
-private func XCTUnwrapAsync<T>(_ value: @autoclosure () async throws -> T?, file: StaticString = #filePath, line: UInt = #line) async throws -> T {
+/// The outcome of a call that must have been handled in a window of the server's own.
+private func XCTUnwrapAsync(_ value: @autoclosure () async throws -> SafariWindows.Navigation,
+                            file: StaticString = #filePath, line: UInt = #line) async throws -> BrowserNavigator.Outcome {
     let result = try await value()
-    return try XCTUnwrap(result, file: file, line: line)
+    guard case .handled(let outcome) = result else {
+        XCTFail("expected a window of the server's own, got \(result)", file: file, line: line)
+        throw CancellationError()
+    }
+    return outcome
 }
 
 /// A Safari that records what it is asked and answers from one small state.
@@ -371,6 +404,13 @@ final class FakeSafariSystem: SafariSystem, @unchecked Sendable {
         nextID = 1001
     }
 
+    private func takeNextID() -> Int {
+        lock.lock(); defer { lock.unlock() }
+        let id = nextID
+        nextID += 1
+        return id
+    }
+
     private func record(_ call: Call) {
         lock.lock(); defer { lock.unlock() }
         _calls.append(call)
@@ -396,10 +436,7 @@ final class FakeSafariSystem: SafariSystem, @unchecked Sendable {
         record(.open(url.absoluteString))
         if openDelay > 0 { try await Task.sleep(nanoseconds: UInt64(openDelay * 1_000_000_000)) }
         if let openFailure { throw SafariScriptFailure(failure: openFailure) }
-        lock.lock()
-        let id = nextID
-        nextID += 1
-        lock.unlock()
+        let id = takeNextID()
         agentID = id
         agentUse = landsIn
         agentURL = url.absoluteString

@@ -26,14 +26,16 @@ Devices: add `mcp__agentcontroller-ios__get_execution_context,scan_ui,tap_elemen
    so nothing the user sees changes — prefer it for pages you open for yourself when it has the
    login. Safari shows it as a new tab of the user's front window (one already in front is reused);
    a "was frontmost" notice means they are looking at it. If that Safari window is full screen or on
-   another Space it cannot be captured or resized, so the server opens a fresh normal window in the
+   another Space it cannot be captured or resized, so the server tries a fresh normal window in the
    background (no focus or Space change), returns its window id (`"window":N`) and reuses it for later
-   pages; every Safari tool then acts on that window. Never ask the user to leave full screen.
+   pages; every Safari tool then acts on that window. A new window only lands on the Space the user is
+   looking at: while they are in another full-screen Space the result says so, the page goes in as a tab,
+   and `headless:true` is the way to pixels or a width. Never ask the user to leave full screen.
 2. ONE `snapshot` → element ids. ONE `run_steps` with the whole sequence (`click`, `type_text`,
    `wait_for_element`, `read_all_text`, `screenshot_window`) against those ids.
 3. Re-snapshot only when the screen changes shape. A stale id → re-snapshot. `screenshot_window`
    works on background windows, but not on a full-screen or off-Space Safari window: `open_url` (or `url`
-   on the call) gets you the fresh window instead of reading around it.
+   on the call) tries a fresh window; if the result says it could not land, use `headless:true`.
 4. After `open_url`, a call that names only the browser (`{app:"Google Chrome"}`) acts on the page
    you just opened.
 
