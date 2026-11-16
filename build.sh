@@ -36,6 +36,10 @@ fi
 
 say "Swift build (release, arm64)"
 swift build -c release --arch arm64
+# Where the products went depends on the toolchain (`.build/arm64-apple-macosx/release` before,
+# `.build/out/Products/Release` since Xcode 27): ask SwiftPM instead of copying a stale path.
+BIN_DIR="$(swift build -c release --arch arm64 --show-bin-path)"
+[ -x "$BIN_DIR/AgentController" ] || die "swift build did not produce $BIN_DIR/AgentController"
 
 say "Generating macOS app icon"
 ICON_SOURCE="Resources/AgentControllerIcon.png"
@@ -59,7 +63,7 @@ rm -rf "$ICONSET"
 say "Assembling .app bundle"
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR/Contents/MacOS"
-cp .build/arm64-apple-macosx/release/AgentController "$BUILD_DIR/Contents/MacOS/"
+cp "$BIN_DIR/AgentController" "$BUILD_DIR/Contents/MacOS/"
 cp Resources/Info.plist "$BUILD_DIR/Contents/"
 # Bundle the canonical bridge script (sealed by the signature below) so the app
 # itself can install/refresh ~/.agentcontroller/ — DMG installs never run this script.
@@ -72,7 +76,7 @@ cp "$ICON_FILE" "$BUILD_DIR/Contents/Resources/AgentController.icns"
 # iOS MCP server. Helpers/, not MacOS/: on a case-insensitive disk `agentcontroller` IS
 # `AgentController`.
 mkdir -p "$BUILD_DIR/Contents/Helpers"
-cp ".build/release/agentcontroller-cli" "$BUILD_DIR/Contents/Helpers/agentcontroller"
+cp "$BIN_DIR/agentcontroller-cli" "$BUILD_DIR/Contents/Helpers/agentcontroller"
 chmod 755 "$BUILD_DIR/Contents/Helpers/agentcontroller"
 
 KIT_STAGE="$BUILD_DIR/Contents/Resources/claude"
