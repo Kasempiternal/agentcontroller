@@ -16,6 +16,8 @@ struct WebKitTarget: Equatable, Sendable {
     var options = WebKitBackend.Options()
     /// An argument the call got wrong, reported before any page is touched.
     var problem: String?
+    /// `allowFile:true`: the caller may start a file: or data: URL (a web page never can).
+    var allowFile = false
 
     var key: String { WebKitBackend.key(profile: profile, name: page) }
 
@@ -30,6 +32,7 @@ struct WebKitTarget: Equatable, Sendable {
             "height": .object(["type": .string("number"), "description": .string("WebKit only: viewport height in CSS pixels (1-8000). Kept until changed.")]),
             "colorScheme": .object(["type": .string("string"), "enum": .array([.string("light"), .string("dark"), .string("system")]), "description": .string("WebKit only: prefers-color-scheme (default light). Kept until changed.")]),
             "deviceScaleFactor": .object(["type": .string("number"), "description": .string("WebKit only: device pixel ratio, 0.5-5 (default 2). Kept until changed.")]),
+            "allowFile": .object(["type": .string("boolean"), "description": .string("WebKit only: let this call load a file: or data: URL. Default false: only http(s) and about:blank load, and a page's own links, popups and redirects never leave http(s). A file: page can read the files in its folder.")]),
         ]
     }
 
@@ -55,7 +58,11 @@ struct WebKitTarget: Equatable, Sendable {
         guard named else { return nil }
         if target.url == nil, let raw = arguments["url"]?.stringValue {
             target.url = TargetIdentity.parseURL(raw)
-            if target.url == nil, !raw.isEmpty { target.problem = "url must be http(s), file, about or data: \(raw)" }
+            if target.url == nil, !raw.isEmpty { target.problem = "url must be an http(s) URL or about:blank (file: and data: need allowFile:true): \(raw)" }
+        }
+        target.allowFile = arguments["allowFile"]?.boolValue == true
+        if target.problem == nil, let url = target.url, let refusal = WebKitURLPolicy.refusal(forAgentLoad: url, allowFile: target.allowFile) {
+            target.problem = refusal
         }
         if let profile = arguments["profile"]?.stringValue, !profile.isEmpty { target.profile = sanitized(profile) }
         if let page = arguments["page"]?.stringValue, !page.isEmpty { target.page = sanitized(page) }
@@ -163,7 +170,7 @@ enum WebKitRouter {
         if navigates, let url = target.url {
             let reload = arguments["reload"]?.boolValue == true
             if reload || !page.isShowing(url) {
-                let outcome = reload ? await page.reload() : await page.load(url)
+                let outcome = reload ? await page.reload() : await page.load(url, allowFile: target.allowFile)
                 if let error = outcome.error { throw WebKitBackend.Failure(message: "Could not load \(url.absoluteString): \(error)") }
                 if outcome.timedOut {
                     note = "The load event did not fire within \(Int(WebKitBackend.loadTimeout))s; this is whatever had rendered. Re-snapshot (or wait_for_element) if content looks incomplete."
@@ -484,6 +491,11 @@ enum WebKitRouter {
         if !page.scaleSPI { notes.append("deviceScaleFactor is not available on this macOS; the display's scale is used.") }
         let dialogs = page.takeDialogs()
         if !dialogs.isEmpty { fields["dialogs"] = .array(dialogs.map { .string($0) }) }
+        let blocked = page.takeBlocked()
+        if !blocked.isEmpty {
+            fields["blocked"] = .array(blocked.map { .string($0) })
+            notes.append("This view refused what the page asked for (see blocked): it only follows http(s) links and popups and never downloads.")
+        }
         notes.append("Pages close after \(Int(WebKitBackend.idleLimit / 60)) minutes without a call.")
         fields["note"] = .string(notes.joined(separator: " "))
         return fields
@@ -491,9 +503,12 @@ enum WebKitRouter {
 
     @MainActor
     private static func withDialogs(_ result: JSONValue, _ page: WebKitPage) -> JSONValue {
+        var result = result
         let dialogs = page.takeDialogs()
-        guard !dialogs.isEmpty else { return result }
-        return ToolResult.appendingNotice("Dialog answered for the page: " + dialogs.joined(separator: "; "), to: result)
+        if !dialogs.isEmpty { result = ToolResult.appendingNotice("Dialog answered for the page: " + dialogs.joined(separator: "; "), to: result) }
+        let blocked = page.takeBlocked()
+        if !blocked.isEmpty { result = ToolResult.appendingNotice("Refused for the page: " + blocked.joined(separator: "; "), to: result) }
+        return result
     }
 
     private static func split(_ document: String) throws -> (Int, Int) {

@@ -75,7 +75,7 @@ _No parameters._
 
 ### `open_url`
 
-Open a URL in a REAL browser the user can see (web link, deep link, or custom scheme like 'myapp://path'). Web links go to the browser named in `browser` (or `app`), otherwise the user's DEFAULT browser — never silently a different one. If the user names a browser ("in Safari", "use Firefox"), pass it. headless:true instead opens the page in a private headless Chromium for scripted testing. BACKGROUND-SAFE BY DEFAULT: a Chrome that publishes a debug port gets the page as a hidden background tab (the user's window, tab and focus do not change); Safari receives it without being activated, as a new tab of its front window, unless that window is full screen or on another Space (it can be neither captured nor resized there): then a fresh normal window is tried in the background, reused by later calls, and the result names its `window` id (if it cannot land on the Space the user is looking at, the result says so and the page goes in as a tab); any other browser receives it without being activated, as a new tab of its front window. Then `snapshot` with app=<that browser> reads the page. With browser:"webkit" the page renders in this app's own off-screen WebKit view: no window on any Space, no focus, no logins from the user's browsers, its own cookie profile. For Safari-like pixels of a local page (light/dark, any width, any pixel ratio) use it; use real Safari only for pages that need the user's logins.
+Open a URL in a REAL browser the user can see (web link, deep link, or custom scheme like 'myapp://path'). Web links go to the browser named in `browser` (or `app`), otherwise the user's DEFAULT browser — never silently a different one. If the user names a browser ("in Safari", "use Firefox"), pass it. headless:true instead opens the page in a private headless Chromium for scripted testing. BACKGROUND-SAFE BY DEFAULT: a Chrome that publishes a debug port gets the page as a hidden background tab (the user's window, tab and focus do not change); Safari receives it without being activated, as a new tab of its front window, unless that window is full screen or on another Space (it can be neither captured nor resized there): then a fresh normal window is tried in the background, reused by later calls, and the result names its `window` id (if it cannot land on the Space the user is looking at, the result says so and the page goes in as a tab); any other browser receives it without being activated, as a new tab of its front window. Then `snapshot` with app=<that browser> reads the page. With browser:"webkit" the page renders in this app's own off-screen WebKit view: no window on any Space, no focus, no logins from the user's browsers, its own cookie profile. For Safari-like pixels of a local page (light/dark, any width, any pixel ratio) use it; use real Safari only for pages that need the user's logins. Only http(s) and about:blank load (file: and data: need allowFile:true); a page's own links, popups and redirects stay on http(s) and nothing downloads.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -88,6 +88,7 @@ Open a URL in a REAL browser the user can see (web link, deep link, or custom sc
 | `height` | number | no | WebKit only: viewport height in CSS pixels (1-8000). Kept until changed. |
 | `colorScheme` | string | no | WebKit only: prefers-color-scheme (default light). Kept until changed. |
 | `deviceScaleFactor` | number | no | WebKit only: device pixel ratio, 0.5-5 (default 2). Kept until changed. |
+| `allowFile` | boolean | no | WebKit only: let this call load a file: or data: URL. Default false: only http(s) and about:blank load, and a page's own links, popups and redirects never leave http(s). A file: page can read the files in its folder. |
 | `settleMs` | number | no | WebKit only: extra milliseconds to wait after the load event for the page's own fetches (default 300). |
 | `reload` | boolean | no | WebKit only: reload even when the page is already showing. |
 
@@ -117,6 +118,7 @@ Snapshot a target into a COMPACT list of elements with stable ids (also availabl
 | `height` | number | no | WebKit only: viewport height in CSS pixels (1-8000). Kept until changed. |
 | `colorScheme` | string | no | WebKit only: prefers-color-scheme (default light). Kept until changed. |
 | `deviceScaleFactor` | number | no | WebKit only: device pixel ratio, 0.5-5 (default 2). Kept until changed. |
+| `allowFile` | boolean | no | WebKit only: let this call load a file: or data: URL. Default false: only http(s) and about:blank load, and a page's own links, popups and redirects never leave http(s). A file: page can read the files in its folder. |
 
 ### `describe_screen`
 
@@ -133,6 +135,7 @@ Alias of 'snapshot': compact, stable-id description. Same auto-routing as snapsh
 | `height` | number | no | WebKit only: viewport height in CSS pixels (1-8000). Kept until changed. |
 | `colorScheme` | string | no | WebKit only: prefers-color-scheme (default light). Kept until changed. |
 | `deviceScaleFactor` | number | no | WebKit only: device pixel ratio, 0.5-5 (default 2). Kept until changed. |
+| `allowFile` | boolean | no | WebKit only: let this call load a file: or data: URL. Default false: only http(s) and about:blank load, and a page's own links, popups and redirects never leave http(s). A file: page can read the files in its folder. |
 
 Both report the `root` they walked: `focusedWindow`, `firstWindow`, or `application`.
 `application` is the degraded case — the app exposed no window at all, so the walk could
@@ -176,6 +179,7 @@ Search for UI elements by role, title, identifier, description, or visible label
 | `height` | number | no | WebKit only: viewport height in CSS pixels (1-8000). Kept until changed. |
 | `colorScheme` | string | no | WebKit only: prefers-color-scheme (default light). Kept until changed. |
 | `deviceScaleFactor` | number | no | WebKit only: device pixel ratio, 0.5-5 (default 2). Kept until changed. |
+| `allowFile` | boolean | no | WebKit only: let this call load a file: or data: URL. Default false: only http(s) and about:blank load, and a page's own links, popups and redirects never leave http(s). A file: page can read the files in its folder. |
 
 ### `get_element_attributes`
 
@@ -221,6 +225,7 @@ Wait for a UI element to appear matching the given criteria (all the standard se
 | `height` | number | no | WebKit only: viewport height in CSS pixels (1-8000). Kept until changed. |
 | `colorScheme` | string | no | WebKit only: prefers-color-scheme (default light). Kept until changed. |
 | `deviceScaleFactor` | number | no | WebKit only: device pixel ratio, 0.5-5 (default 2). Kept until changed. |
+| `allowFile` | boolean | no | WebKit only: let this call load a file: or data: URL. Default false: only http(s) and about:blank load, and a page's own links, popups and redirects never leave http(s). A file: page can read the files in its folder. |
 
 ## Assertions
 
@@ -248,6 +253,7 @@ Assert that an element matching the selector is present. Polls until it appears 
 | `height` | number | no | WebKit only: viewport height in CSS pixels (1-8000). Kept until changed. |
 | `colorScheme` | string | no | WebKit only: prefers-color-scheme (default light). Kept until changed. |
 | `deviceScaleFactor` | number | no | WebKit only: device pixel ratio, 0.5-5 (default 2). Kept until changed. |
+| `allowFile` | boolean | no | WebKit only: let this call load a file: or data: URL. Default false: only http(s) and about:blank load, and a page's own links, popups and redirects never leave http(s). A file: page can read the files in its folder. |
 
 ### `assert_not_visible`
 
@@ -273,6 +279,7 @@ Assert that NO element matches the selector. Polls for the whole window: passes 
 | `height` | number | no | WebKit only: viewport height in CSS pixels (1-8000). Kept until changed. |
 | `colorScheme` | string | no | WebKit only: prefers-color-scheme (default light). Kept until changed. |
 | `deviceScaleFactor` | number | no | WebKit only: device pixel ratio, 0.5-5 (default 2). Kept until changed. |
+| `allowFile` | boolean | no | WebKit only: let this call load a file: or data: URL. Default false: only http(s) and about:blank load, and a page's own links, popups and redirects never leave http(s). A file: page can read the files in its folder. |
 
 ### `assert_value`
 
@@ -323,6 +330,7 @@ Read the text of a single element matched by selector — returns its value/titl
 | `height` | number | no | WebKit only: viewport height in CSS pixels (1-8000). Kept until changed. |
 | `colorScheme` | string | no | WebKit only: prefers-color-scheme (default light). Kept until changed. |
 | `deviceScaleFactor` | number | no | WebKit only: device pixel ratio, 0.5-5 (default 2). Kept until changed. |
+| `allowFile` | boolean | no | WebKit only: let this call load a file: or data: URL. Default false: only http(s) and about:blank load, and a page's own links, popups and redirects never leave http(s). A file: page can read the files in its folder. |
 
 ### `read_all_text`
 
@@ -340,6 +348,7 @@ Read all visible text strings from elements of a given role (default AXStaticTex
 | `height` | number | no | WebKit only: viewport height in CSS pixels (1-8000). Kept until changed. |
 | `colorScheme` | string | no | WebKit only: prefers-color-scheme (default light). Kept until changed. |
 | `deviceScaleFactor` | number | no | WebKit only: device pixel ratio, 0.5-5 (default 2). Kept until changed. |
+| `allowFile` | boolean | no | WebKit only: let this call load a file: or data: URL. Default false: only http(s) and about:blank load, and a page's own links, popups and redirects never leave http(s). A file: page can read the files in its folder. |
 
 ## Input
 
@@ -371,6 +380,7 @@ Click a UI element (AX press action) or at screen coordinates. PREFER `elementId
 | `height` | number | no | WebKit only: viewport height in CSS pixels (1-8000). Kept until changed. |
 | `colorScheme` | string | no | WebKit only: prefers-color-scheme (default light). Kept until changed. |
 | `deviceScaleFactor` | number | no | WebKit only: device pixel ratio, 0.5-5 (default 2). Kept until changed. |
+| `allowFile` | boolean | no | WebKit only: let this call load a file: or data: URL. Default false: only http(s) and about:blank load, and a page's own links, popups and redirects never leave http(s). A file: page can read the files in its folder. |
 
 ### `double_click`
 
@@ -400,6 +410,7 @@ Double-click a UI element or at coordinates. BACKGROUND-SAFE BY DEFAULT: prefers
 | `height` | number | no | WebKit only: viewport height in CSS pixels (1-8000). Kept until changed. |
 | `colorScheme` | string | no | WebKit only: prefers-color-scheme (default light). Kept until changed. |
 | `deviceScaleFactor` | number | no | WebKit only: device pixel ratio, 0.5-5 (default 2). Kept until changed. |
+| `allowFile` | boolean | no | WebKit only: let this call load a file: or data: URL. Default false: only http(s) and about:blank load, and a page's own links, popups and redirects never leave http(s). A file: page can read the files in its folder. |
 
 ### `right_click`
 
@@ -452,6 +463,7 @@ Type text into the focused element, or into a specific element matched by select
 | `height` | number | no | WebKit only: viewport height in CSS pixels (1-8000). Kept until changed. |
 | `colorScheme` | string | no | WebKit only: prefers-color-scheme (default light). Kept until changed. |
 | `deviceScaleFactor` | number | no | WebKit only: device pixel ratio, 0.5-5 (default 2). Kept until changed. |
+| `allowFile` | boolean | no | WebKit only: let this call load a file: or data: URL. Default false: only http(s) and about:blank load, and a page's own links, popups and redirects never leave http(s). A file: page can read the files in its folder. |
 
 ### `perform_action`
 
@@ -503,6 +515,7 @@ Send a keyboard shortcut (e.g. Cmd+S, Cmd+Shift+Z) to the app. BACKGROUND-SAFE B
 | `height` | number | no | WebKit only: viewport height in CSS pixels (1-8000). Kept until changed. |
 | `colorScheme` | string | no | WebKit only: prefers-color-scheme (default light). Kept until changed. |
 | `deviceScaleFactor` | number | no | WebKit only: device pixel ratio, 0.5-5 (default 2). Kept until changed. |
+| `allowFile` | boolean | no | WebKit only: let this call load a file: or data: URL. Default false: only http(s) and about:blank load, and a page's own links, popups and redirects never leave http(s). A file: page can read the files in its folder. |
 
 ### `scroll`
 
@@ -522,6 +535,7 @@ Scroll at a specific position within an app window. Use negative deltaY to scrol
 | `height` | number | no | WebKit only: viewport height in CSS pixels (1-8000). Kept until changed. |
 | `colorScheme` | string | no | WebKit only: prefers-color-scheme (default light). Kept until changed. |
 | `deviceScaleFactor` | number | no | WebKit only: device pixel ratio, 0.5-5 (default 2). Kept until changed. |
+| `allowFile` | boolean | no | WebKit only: let this call load a file: or data: URL. Default false: only http(s) and about:blank load, and a page's own links, popups and redirects never leave http(s). A file: page can read the files in its folder. |
 
 ### `scroll_until_visible`
 
@@ -623,6 +637,7 @@ Get the position and size of an app window Also works on the off-screen WebKit p
 | `height` | number | no | WebKit only: viewport height in CSS pixels (1-8000). Kept until changed. |
 | `colorScheme` | string | no | WebKit only: prefers-color-scheme (default light). Kept until changed. |
 | `deviceScaleFactor` | number | no | WebKit only: device pixel ratio, 0.5-5 (default 2). Kept until changed. |
+| `allowFile` | boolean | no | WebKit only: let this call load a file: or data: URL. Default false: only http(s) and about:blank load, and a page's own links, popups and redirects never leave http(s). A file: page can read the files in its folder. |
 
 ### `set_window_bounds`
 
@@ -640,6 +655,7 @@ Set the position and/or size of an app window. A full-screen Safari window, or o
 | `page` | string | no | WebKit only: which page of the profile (default 'main'); each has its own viewport. |
 | `colorScheme` | string | no | WebKit only: prefers-color-scheme (default light). Kept until changed. |
 | `deviceScaleFactor` | number | no | WebKit only: device pixel ratio, 0.5-5 (default 2). Kept until changed. |
+| `allowFile` | boolean | no | WebKit only: let this call load a file: or data: URL. Default false: only http(s) and about:blank load, and a page's own links, popups and redirects never leave http(s). A file: page can read the files in its folder. |
 
 ### `minimize_window`
 
@@ -680,6 +696,7 @@ Capture a screenshot of a specific app window. Works in the background — the w
 | `height` | number | no | WebKit only: viewport height in CSS pixels (1-8000). Kept until changed. |
 | `colorScheme` | string | no | WebKit only: prefers-color-scheme (default light). Kept until changed. |
 | `deviceScaleFactor` | number | no | WebKit only: device pixel ratio, 0.5-5 (default 2). Kept until changed. |
+| `allowFile` | boolean | no | WebKit only: let this call load a file: or data: URL. Default false: only http(s) and about:blank load, and a page's own links, popups and redirects never leave http(s). A file: page can read the files in its folder. |
 
 Some apps release their window's backing surface while the window is off-screen, and then
 there is nothing to capture. Browsers and GPU-composited apps do it most reliably —
@@ -718,6 +735,7 @@ Capture a screenshot of a specific UI element by cropping its enclosing window t
 | `height` | number | no | WebKit only: viewport height in CSS pixels (1-8000). Kept until changed. |
 | `colorScheme` | string | no | WebKit only: prefers-color-scheme (default light). Kept until changed. |
 | `deviceScaleFactor` | number | no | WebKit only: device pixel ratio, 0.5-5 (default 2). Kept until changed. |
+| `allowFile` | boolean | no | WebKit only: let this call load a file: or data: URL. Default false: only http(s) and about:blank load, and a page's own links, popups and redirects never leave http(s). A file: page can read the files in its folder. |
 
 ### `screenshot_screen`
 
@@ -859,6 +877,7 @@ Run a script on the auto-selected backend: Python in Blender (bpy) when the sock
 | `height` | number | no | WebKit only: viewport height in CSS pixels (1-8000). Kept until changed. |
 | `colorScheme` | string | no | WebKit only: prefers-color-scheme (default light). Kept until changed. |
 | `deviceScaleFactor` | number | no | WebKit only: device pixel ratio, 0.5-5 (default 2). Kept until changed. |
+| `allowFile` | boolean | no | WebKit only: let this call load a file: or data: URL. Default false: only http(s) and about:blank load, and a page's own links, popups and redirects never leave http(s). A file: page can read the files in its folder. |
 
 ## WebKit target
 
@@ -875,4 +894,6 @@ Any tool in the table below also takes `browser:"webkit"` (or `app:"webkit"`, or
 
 Options (on any call that names WebKit; viewport, colour scheme and pixel ratio stay until changed): `profile` (cookie and storage profile, default `default`; its own persistent store, so a login made on a local page survives between calls and restarts), `page` (several views per profile, default `main`), `width` / `height` (default 1440 x 900), `colorScheme` (`light`, `dark`, `system`; default `light`), `deviceScaleFactor` (default 2).
 
-The page sees itself as visible and its timers and animation frames run at full rate, so polling dashboards keep updating. Where the private WebKit calls that make this possible are missing, the result says what degraded. Pages idle for ten minutes are closed (`AGENTCONTROLLER_WEBKIT_IDLE_MINUTES`) and at most six are kept. Plain `http` is allowed for any host. Tools that need a real app (menus, windows list, recording, clipboard, ...) answer "not supported on WebKit targets".
+The page sees itself as visible and its timers and animation frames run at full rate, so polling dashboards keep updating. Where the private WebKit calls that make this possible are missing, the result says what degraded. Pages idle for ten minutes are closed (`AGENTCONTROLLER_WEBKIT_IDLE_MINUTES`) and at most six are kept. Plain `http` is allowed for any host; certificates are still checked and no authentication or TLS challenge is answered by the view.
+
+What a WebKit page may load: the tool caller can start `http(s)` URLs and `about:blank`; `file:` and `data:` need `allowFile:true` on the call (a `file:` page can read the files in its own folder, never above it). Everything the page starts itself is limited to web pages: links, `location` changes, redirects, `window.open` and `target=_blank` go to `http(s)` only (a popup opens in the same view), a jump to `file:`, `data:`, `blob:` or a custom scheme is cancelled and listed as `blocked` in the next result, and a download (an attachment or a response the view cannot show) is refused, never saved. Camera and microphone requests are denied. Web Inspector is off unless `AGENTCONTROLLER_WEBKIT_INSPECTABLE=1`. Tools that need a real app (menus, windows list, recording, clipboard, ...) answer "not supported on WebKit targets".

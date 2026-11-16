@@ -110,6 +110,172 @@ final class WebKitBackendTests: XCTestCase {
         XCTAssertEqual(seen, WebKitRouter.supportedTools)
     }
 
+    // MARK: - What a page may not make this view load
+
+    func testThePolicyLetsAPageGoToTheWebAndNowhereElse() throws {
+        let web = try XCTUnwrap(URL(string: "https://example.com/a?b=1#c"))
+        XCTAssertTrue(WebKitURLPolicy.pageMayNavigate(to: web))
+        XCTAssertTrue(WebKitURLPolicy.popupMayOpen(web))
+        XCTAssertTrue(WebKitURLPolicy.pageMayNavigate(to: try XCTUnwrap(URL(string: "http://127.0.0.1:3231/"))))
+        XCTAssertTrue(WebKitURLPolicy.pageMayNavigate(to: try XCTUnwrap(URL(string: "about:blank"))))
+        XCTAssertFalse(WebKitURLPolicy.popupMayOpen(try XCTUnwrap(URL(string: "about:blank"))))
+        for raw in ["file:///etc/hosts", "data:text/html,<p>x</p>", "blob:http://127.0.0.1/abc", "myapp://open", "javascript:alert(1)", "ftp://example.com/x", "about:config"] {
+            let url = try XCTUnwrap(URL(string: raw), raw)
+            XCTAssertFalse(WebKitURLPolicy.pageMayNavigate(to: url), raw)
+            XCTAssertFalse(WebKitURLPolicy.popupMayOpen(url), raw)
+        }
+        XCTAssertFalse(WebKitURLPolicy.frameMayLoad(try XCTUnwrap(URL(string: "file:///etc/hosts")), topIsFile: false))
+        XCTAssertTrue(WebKitURLPolicy.frameMayLoad(try XCTUnwrap(URL(string: "file:///tmp/a.html")), topIsFile: true))
+        XCTAssertFalse(WebKitURLPolicy.frameMayLoad(try XCTUnwrap(URL(string: "myapp://open")), topIsFile: true))
+    }
+
+    func testAToolCallerNeedsAnOptionForFileAndDataUrls() async throws {
+        let registry = ToolRegistry()
+        for raw in ["file:///etc/hosts", "data:text/html,<p>hello</p>", "about:config", "ftp://example.com/x"] {
+            let reply = try await call(registry, "open_url", ["browser": "webkit", "url": raw, "profile": profile])
+            XCTAssertTrue(reply.isError, "\(raw): \(reply.text)")
+        }
+        let file = try await call(registry, "open_url", ["browser": "webkit", "url": "file:///etc/hosts", "profile": profile])
+        XCTAssertTrue(file.text.contains("allowFile:true"), file.text)
+        XCTAssertNil(WebKitBackend.shared.page(key: WebKitBackend.key(profile: profile, name: "main")), "a refused call must not open a page")
+        let blank = try await call(registry, "open_url", ["browser": "webkit", "url": "about:blank", "profile": profile])
+        XCTAssertFalse(blank.isError, blank.text)
+    }
+
+    func testAFilePageOnlyReadsItsOwnFolder() async throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("ac-webkit-\(UUID().uuidString)")
+        let pageDir = base.appendingPathComponent("page"), otherDir = base.appendingPathComponent("other")
+        try FileManager.default.createDirectory(at: pageDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: otherDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        try "SECRET".write(to: otherDir.appendingPathComponent("secret.txt"), atomically: true, encoding: .utf8)
+        try "NEIGHBOUR".write(to: pageDir.appendingPathComponent("near.txt"), atomically: true, encoding: .utf8)
+        let html = """
+        <!doctype html><title>local</title><p>local page</p><script>
+        window.result = 'pending';
+        const read = (u) => fetch(u).then((r) => r.text()).catch(() => 'blocked');
+        Promise.all([read('near.txt'), read('../other/secret.txt'), read('file:///etc/hosts')]).then((r) => { window.result = r.join('|'); });
+        </script>
+        """
+        try html.write(to: pageDir.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
+        let registry = ToolRegistry()
+        let opened = try await call(registry, "open_url", ["browser": "webkit", "url": pageDir.appendingPathComponent("index.html").absoluteString, "profile": profile, "allowFile": true])
+        XCTAssertFalse(opened.isError, opened.text)
+        try await Task.sleep(nanoseconds: 800_000_000)
+        let seen = try await call(registry, "run_app_code", ["browser": "webkit", "profile": profile, "code": "window.result", "consent": true])
+        XCTAssertFalse(seen.text.contains("SECRET"), "a file page read a file outside its folder: \(seen.text)")
+        XCTAssertFalse(seen.text.contains("localhost"), "a file page read /etc/hosts: \(seen.text)")
+    }
+
+    func testAPopupToFileDataOrAnOddSchemeNeverLoadsButAWebOneDoes() async throws {
+        server.pages["/other"] = .html("<!doctype html><title>other</title><p>the popup target</p>")
+        server.pages["/popups"] = .html("""
+        <!doctype html><title>popups</title>
+        <button id="f" onclick="window.open('file:///etc/hosts')">file</button>
+        <button id="d" onclick="window.open('data:text/html,<p>from data</p>')">data</button>
+        <button id="c" onclick="window.open('myapp://open')">custom</button>
+        <a id="b" target="_blank" href="file:///etc/hosts">blank link</a>
+        <button id="w" onclick="window.open('\(server.url("/other").absoluteString)')">web</button>
+        """)
+        let registry = ToolRegistry()
+        let opened = try await call(registry, "open_url", ["browser": "webkit", "url": server.url("/popups").absoluteString, "profile": profile])
+        XCTAssertFalse(opened.isError, opened.text)
+        let page = try XCTUnwrap(WebKitBackend.shared.page(key: WebKitBackend.key(profile: profile, name: "main")))
+        let snap = try await call(registry, "snapshot", ["browser": "webkit", "profile": profile])
+        func id(_ label: String) throws -> String {
+            try XCTUnwrap((snap.json["elements"]?.arrayValue ?? []).first { $0["label"]?.stringValue == label }?["id"]?.stringValue, "no element \(label)")
+        }
+        var refused = ""
+        for label in ["file", "data", "custom", "blank link"] {
+            let click = try await call(registry, "click", ["browser": "webkit", "profile": profile, "elementId": try id(label)])
+            XCTAssertFalse(click.isError, click.text)
+            try await Task.sleep(nanoseconds: 400_000_000)
+            refused += click.text + "\n" + page.takeBlocked().joined(separator: "\n")
+            XCTAssertTrue(page.currentURL?.hasSuffix("/popups") == true, "\(label) took the view away: \(page.currentURL ?? "nil")")
+        }
+        for _ in 0..<12 where refused.components(separatedBy: "popup refused").count - 1 < 3 {
+            try await Task.sleep(nanoseconds: 250_000_000)
+            refused += "\n" + page.takeBlocked().joined(separator: "\n")
+        }
+        XCTAssertGreaterThanOrEqual(refused.components(separatedBy: "popup refused").count - 1, 3, refused)
+        XCTAssertTrue(refused.contains("popup refused: file:///etc/hosts"), refused)
+        XCTAssertTrue(refused.contains("popup refused: data:text/html"), refused)
+        XCTAssertTrue(refused.contains("popup refused: myapp://open"), refused)
+
+        let web = try await call(registry, "click", ["browser": "webkit", "profile": profile, "elementId": try id("web")])
+        XCTAssertFalse(web.isError, web.text)
+        for _ in 0..<20 where page.currentURL?.hasSuffix("/other") != true { try await Task.sleep(nanoseconds: 250_000_000) }
+        XCTAssertEqual(page.currentURL, server.url("/other").absoluteString, "a web popup opens in the same view")
+    }
+
+    func testAPagesOwnNavigationToFileDataOrACustomSchemeIsCancelled() async throws {
+        server.pages["/nav"] = .html("""
+        <!doctype html><title>nav</title>
+        <button id="f" onclick="location.href='file:///etc/hosts'">file</button>
+        <button id="d" onclick="location.href='data:text/html,<p>x</p>'">data</button>
+        <button id="c" onclick="location.href='myapp://open'">custom</button>
+        <iframe id="frame" src="about:blank"></iframe>
+        <button id="i" onclick="document.getElementById('frame').src='file:///etc/hosts'">frame</button>
+        """)
+        let registry = ToolRegistry()
+        _ = try await call(registry, "open_url", ["browser": "webkit", "url": server.url("/nav").absoluteString, "profile": profile])
+        let page = try XCTUnwrap(WebKitBackend.shared.page(key: WebKitBackend.key(profile: profile, name: "main")))
+        let snap = try await call(registry, "snapshot", ["browser": "webkit", "profile": profile])
+        var refused = ""
+        for label in ["file", "data", "custom", "frame"] {
+            let target = try XCTUnwrap((snap.json["elements"]?.arrayValue ?? []).first { $0["label"]?.stringValue == label }?["id"]?.stringValue)
+            let click = try await call(registry, "click", ["browser": "webkit", "profile": profile, "elementId": target])
+            try await Task.sleep(nanoseconds: 400_000_000)
+            refused += click.text + "\n" + page.takeBlocked().joined(separator: "\n")
+            XCTAssertTrue(page.currentURL?.hasSuffix("/nav") == true, "\(label) navigated the view: \(page.currentURL ?? "nil")")
+        }
+        for _ in 0..<12 where refused.components(separatedBy: "navigation refused").count - 1 < 2 {
+            try await Task.sleep(nanoseconds: 250_000_000)
+            refused += "\n" + page.takeBlocked().joined(separator: "\n")
+        }
+        // WebKit itself drops a web page's jump to file: before the delegate hears of it; data: and a custom scheme reach it.
+        XCTAssertGreaterThanOrEqual(refused.components(separatedBy: "navigation refused").count - 1, 2, refused)
+        let text = try await call(registry, "read_all_text", ["browser": "webkit", "profile": profile])
+        XCTAssertFalse(text.text.contains("localhost"), "the page's own navigation reached /etc/hosts")
+    }
+
+    func testARedirectToFileEndsTheLoadWithAnError() async throws {
+        var redirect = TestPageServer.Page(status: 302, body: "")
+        redirect.headers["Location"] = "file:///etc/hosts"
+        server.pages["/bounce"] = redirect
+        let reply = try await call(ToolRegistry(), "open_url", ["browser": "webkit", "url": server.url("/bounce").absoluteString, "profile": profile])
+        XCTAssertTrue(reply.isError, reply.text)
+        let page = WebKitBackend.shared.page(key: WebKitBackend.key(profile: profile, name: "main"))
+        XCTAssertNotEqual(page?.currentURL?.hasPrefix("file:"), true)
+    }
+
+    func testADownloadIsRefusedNotSaved() async throws {
+        var attachment = TestPageServer.Page.html("<!doctype html><p>file contents</p>")
+        attachment.headers["Content-Disposition"] = "attachment; filename=\"x.html\""
+        server.pages["/download"] = attachment
+        var binary = TestPageServer.Page(body: "PK")
+        binary.contentType = "application/zip"
+        server.pages["/zip"] = binary
+        let registry = ToolRegistry()
+        for path in ["/download", "/zip"] {
+            let reply = try await call(registry, "open_url", ["browser": "webkit", "url": server.url(path).absoluteString, "profile": profile])
+            XCTAssertTrue(reply.isError, "\(path): \(reply.text)")
+            XCTAssertTrue(reply.text.contains("download refused"), reply.text)
+        }
+    }
+
+    func testNothingAnswersAnAuthenticationOrTLSChallengeOnItsOwn() {
+        let page = WebKitBackend.shared.page(profile: profile, name: "probe", options: .init())
+        let selectors = [
+            "webView:didReceiveAuthenticationChallenge:completionHandler:",
+            "webView:authenticationChallenge:shouldAllowDeprecatedTLS:",
+            "webView:navigationAction:didBecomeDownload:",
+            "webView:navigationResponse:didBecomeDownload:",
+        ]
+        for name in selectors { XCTAssertFalse(page.responds(to: NSSelectorFromString(name)), "\(name) would let this view accept a challenge or a download") }
+        XCTAssertFalse(page.web.isInspectable, "Web Inspector is a second way into the page's JavaScript")
+    }
+
     func testIdlePagesAreClosedAndTheNumberIsCapped() {
         let backend = WebKitBackend()
         defer { backend.closeAll() }
@@ -429,6 +595,7 @@ final class TestPageServer: @unchecked Sendable {
         var status = 200
         var contentType = "text/html; charset=utf-8"
         var body: String
+        var headers: [String: String] = [:]
         static func html(_ body: String) -> Page { Page(body: body) }
     }
 
@@ -480,7 +647,8 @@ final class TestPageServer: @unchecked Sendable {
             let page = table[path] ?? (path == "/poll" ? Page(contentType: "text/plain", body: "ok") : Page(status: 404, body: "not found"))
             lock.unlock()
             let body = Data(page.body.utf8)
-            let head = "HTTP/1.1 \(page.status) OK\r\nContent-Type: \(page.contentType)\r\nContent-Length: \(body.count)\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
+            let extra = page.headers.map { "\($0.key): \($0.value)\r\n" }.joined()
+            let head = "HTTP/1.1 \(page.status) OK\r\nContent-Type: \(page.contentType)\r\nContent-Length: \(body.count)\r\nCache-Control: no-store\r\nConnection: close\r\n\(extra)\r\n"
             connection.send(content: Data(head.utf8) + body, completion: .contentProcessed { _ in connection.cancel() })
         }
     }

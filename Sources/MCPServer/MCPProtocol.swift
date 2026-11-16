@@ -228,7 +228,9 @@ public struct MCPProtocolHandler: Sendable {
         The viewport and scheme stay until you change them. It is not Safari: no \
         extensions and none of the user's logins, so use real Safari only for pages \
         that need his logins. Ids from snapshot are refused after a navigation: \
-        snapshot again.
+        snapshot again. Only http(s) and about:blank load; file: and data: need \
+        allowFile:true. A page's own links, popups and redirects stay on http(s) \
+        (refusals are listed as `blocked`), and nothing downloads.
 
         BATCH YOUR STEPS. `snapshot` returns stable element ids, and every interaction \
         tool takes an `elementId` that acts on that exact element with no search. So the \

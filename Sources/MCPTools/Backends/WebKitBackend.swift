@@ -190,6 +190,57 @@ final class WebKitBackend {
     }
 }
 
+// MARK: - What may be loaded
+
+/// Which URLs this view may load, and on whose say-so. An app-initiated load (`WKWebView.load`,
+/// `loadFileURL`) skips the checks WebKit applies to a page's own navigation, so a URL that came from
+/// page content must never reach one: page-initiated navigation, popups and redirects are limited to
+/// web pages, and only the tool caller can start anything else, behind an explicit option.
+enum WebKitURLPolicy {
+    static func isWeb(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased() else { return false }
+        return scheme == "http" || scheme == "https"
+    }
+
+    static func isBlank(_ url: URL) -> Bool { url.absoluteString.lowercased() == "about:blank" }
+
+    /// A page may send its main frame to a web page, or to about:blank, and nowhere else.
+    static func pageMayNavigate(to url: URL) -> Bool { isWeb(url) || isBlank(url) }
+
+    /// A popup (`window.open`, target=_blank) is shown in this view, so it gets the same limit and
+    /// no about:blank: an empty popup would only blank the page the agent is reading.
+    static func popupMayOpen(_ url: URL) -> Bool { isWeb(url) }
+
+    /// Why a tool caller may not start this load, or nil.
+    static func refusal(forAgentLoad url: URL, allowFile: Bool) -> String? {
+        if isWeb(url) || isBlank(url) { return nil }
+        let scheme = url.scheme?.lowercased() ?? ""
+        if allowFile, scheme == "file" || scheme == "data" { return nil }
+        if scheme == "file" || scheme == "data" {
+            return "A \(scheme): URL is refused on a WebKit target unless the call passes allowFile:true (a file: page can read the files next to it). http(s) and about:blank always load."
+        }
+        return "WebKit targets load http(s) URLs and about:blank (and file:/data: with allowFile:true), not \(scheme.isEmpty ? "that" : scheme + ":")."
+    }
+
+    /// Subframes: web, data, blob and srcdoc content is ordinary page content; `file:` only inside a
+    /// file page the agent opened; any other scheme is refused.
+    static func frameMayLoad(_ url: URL, topIsFile: Bool) -> Bool {
+        if isWeb(url) || isBlank(url) { return true }
+        switch url.scheme?.lowercased() {
+        case "data", "blob": return true
+        case "about": return url.absoluteString.lowercased() == "about:srcdoc"
+        case "file": return topIsFile
+        default: return false
+        }
+    }
+
+    static func withoutFragment(_ url: URL) -> String {
+        guard var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url.absoluteString }
+        parts.fragment = nil
+        return parts.string ?? url.absoluteString
+    }
+}
+
 // MARK: - One page
 
 @MainActor
@@ -206,6 +257,10 @@ final class WebKitPage: NSObject {
     private(set) var statusCode: Int?
     private(set) var crashed = false
     private(set) var dialogs: [String] = []
+    /// Navigations, popups and downloads the page asked for and this view refused, for the next result.
+    private(set) var blocked: [String] = []
+    /// The one URL the tool caller started, which is the only non-web URL a main frame may sit on.
+    private var agentStartedURL: String?
     private(set) var occlusionSPI = false
     private(set) var scaleSPI = false
     private(set) var viewport = WebKitBackend.defaultViewport
@@ -227,7 +282,8 @@ final class WebKitPage: NSObject {
         super.init()
         web.navigationDelegate = self
         web.uiDelegate = self
-        web.isInspectable = true
+        // Safari's Web Inspector would be a second way into the page's JavaScript; only on request.
+        web.isInspectable = ProcessInfo.processInfo.environment["AGENTCONTROLLER_WEBKIT_INSPECTABLE"] == "1"
         window.contentView = web
 
         occlusionSPI = WebKitSPI.disableOcclusionDetection(web)
@@ -318,8 +374,11 @@ final class WebKitPage: NSObject {
     }
 
     /// Navigates and waits for the load. A failed load is an error, never a blank page.
-    func load(_ url: URL, timeout: TimeInterval = WebKitBackend.loadTimeout) async -> LoadOutcome {
+    func load(_ url: URL, allowFile: Bool = false, timeout: TimeInterval = WebKitBackend.loadTimeout) async -> LoadOutcome {
         touch()
+        if let refusal = WebKitURLPolicy.refusal(forAgentLoad: url, allowFile: allowFile) {
+            return LoadOutcome(loaded: false, error: refusal, timedOut: false)
+        }
         loaded = false
         loadError = nil
         statusCode = nil
@@ -327,8 +386,12 @@ final class WebKitPage: NSObject {
         pendingLoad?.resume()
         pendingLoad = nil
         if url.isFileURL {
-            web.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
+            // Read access ends at the file's own folder: never an ancestor, never the home folder.
+            let file = url.standardizedFileURL
+            agentStartedURL = WebKitURLPolicy.withoutFragment(file)
+            web.loadFileURL(file, allowingReadAccessTo: file.deletingLastPathComponent())
         } else {
+            agentStartedURL = WebKitURLPolicy.withoutFragment(url)
             web.load(URLRequest(url: url))
         }
         return await waitForLoad(timeout: timeout)
@@ -488,6 +551,11 @@ final class WebKitPage: NSObject {
         defer { dialogs.removeAll() }
         return dialogs
     }
+
+    func takeBlocked() -> [String] {
+        defer { blocked.removeAll() }
+        return blocked
+    }
 }
 
 struct WebKitKey: Sendable {
@@ -580,12 +648,49 @@ enum WebKitSPI {
 // MARK: - Delegates
 
 extension WebKitPage: WKNavigationDelegate, WKUIDelegate {
+    /// Every navigation the page starts passes here. The tool caller's own load is the only way onto a
+    /// non-web URL; everything else is limited to web pages. Downloads are never started.
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                 decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        guard let url = navigationAction.request.url else { decisionHandler(.cancel); return }
+        let mainFrame = navigationAction.targetFrame?.isMainFrame ?? true
+        if navigationAction.shouldPerformDownload {
+            refuse("download", url, mainFrame: mainFrame)
+            decisionHandler(.cancel)
+            return
+        }
+        let allowed: Bool
+        if mainFrame {
+            allowed = WebKitURLPolicy.pageMayNavigate(to: url) || WebKitURLPolicy.withoutFragment(url) == agentStartedURL
+        } else {
+            allowed = WebKitURLPolicy.frameMayLoad(url, topIsFile: webView.url?.isFileURL == true)
+        }
+        if !allowed { refuse("navigation", url, mainFrame: mainFrame) }
+        decisionHandler(allowed ? .allow : .cancel)
+    }
+
     func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,
                  decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+        let attachment = (navigationResponse.response as? HTTPURLResponse)?
+            .value(forHTTPHeaderField: "Content-Disposition")?.lowercased().hasPrefix("attachment") == true
+        if attachment || !navigationResponse.canShowMIMEType, let url = navigationResponse.response.url {
+            refuse("download", url, mainFrame: navigationResponse.isForMainFrame)
+            decisionHandler(.cancel)
+            return
+        }
         if navigationResponse.isForMainFrame, let http = navigationResponse.response as? HTTPURLResponse {
             statusCode = http.statusCode
         }
         decisionHandler(.allow)
+    }
+
+    private func refuse(_ what: String, _ url: URL, mainFrame: Bool) {
+        let text = "\(what) refused: \(url.absoluteString.prefix(120))"
+        blocked.append(text)
+        guard mainFrame, pendingLoad != nil else { return }
+        loaded = false
+        loadError = text
+        resumePendingLoad()
     }
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
@@ -611,6 +716,14 @@ extension WebKitPage: WKNavigationDelegate, WKUIDelegate {
         // A navigation cancelled by the next one is not a failure of the page.
         if nsError.domain == NSURLErrorDomain, nsError.code == NSURLErrorCancelled { return }
         loaded = false
+        // WebKit's answer to a response it cannot show; nothing is ever saved to disk.
+        if nsError.domain == "WebKitErrorDomain", nsError.code == 102 {
+            let text = "download refused: the response is not a page this view can show (\(nsError.localizedDescription))"
+            if !blocked.contains(text) { blocked.append(text) }
+            loadError = text
+            resumePendingLoad()
+            return
+        }
         loadError = "\(nsError.localizedDescription) (\(nsError.domain) \(nsError.code))"
         resumePendingLoad()
     }
@@ -621,11 +734,24 @@ extension WebKitPage: WKNavigationDelegate, WKUIDelegate {
         resumePendingLoad()
     }
 
-    // `target=_blank` and window.open stay in the one view: there is no second window to drive.
+    // `target=_blank` and window.open stay in the one view: there is no second window to drive. The
+    // URL came from page content and the load below is the app's own, so only a web URL may pass.
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                  for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        if navigationAction.targetFrame == nil, let url = navigationAction.request.url { webView.load(URLRequest(url: url)) }
+        guard navigationAction.targetFrame == nil, let url = navigationAction.request.url else { return nil }
+        if WebKitURLPolicy.popupMayOpen(url) {
+            webView.load(URLRequest(url: url))
+        } else {
+            blocked.append("popup refused: \(url.absoluteString.prefix(120))")
+        }
         return nil
+    }
+
+    // Nobody is there to approve a camera or microphone.
+    func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin, initiatedByFrame frame: WKFrameInfo,
+                 type: WKMediaCaptureType, decisionHandler: @escaping (WKPermissionDecision) -> Void) {
+        dialogs.append("camera or microphone request (denied)")
+        decisionHandler(.deny)
     }
 
     // A dialog nobody answers would freeze the page's script for ever: answer it and keep the text.

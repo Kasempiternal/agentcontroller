@@ -45,6 +45,8 @@ Devices: add `mcp__agentcontroller-ios__get_execution_context,scan_ui,tap_elemen
    that need them. `set_window_bounds {app:"webkit", width, height}` resizes the viewport; options persist
    until changed; an id from before a navigation is refused, snapshot again; native `<select>`, file and
    date pickers cannot be opened (type_text on a select picks by option text).
+   Only http(s) and about:blank load; `file:` / `data:` need `allowFile:true`. The page's own links, popups and
+   redirects never leave http(s) (refusals show as `blocked`) and nothing downloads.
 5. After `open_url`, a call that names only the browser (`{app:"Google Chrome"}`) acts on the page
    you just opened.
 

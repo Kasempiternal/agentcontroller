@@ -80,7 +80,7 @@ public final class ToolRegistry: MCPToolProvider, @unchecked Sendable {
         for (key, value) in WebKitTarget.optionSchema where properties[key] == nil { properties[key] = value }
         schema["properties"] = .object(properties)
         let note = tool.name == "open_url"
-            ? " With browser:\"webkit\" the page renders in this app's own off-screen WebKit view: no window on any Space, no focus, no logins from the user's browsers, its own cookie profile. For Safari-like pixels of a local page (light/dark, any width, any pixel ratio) use it; use real Safari only for pages that need the user's logins."
+            ? " With browser:\"webkit\" the page renders in this app's own off-screen WebKit view: no window on any Space, no focus, no logins from the user's browsers, its own cookie profile. For Safari-like pixels of a local page (light/dark, any width, any pixel ratio) use it; use real Safari only for pages that need the user's logins. Only http(s) and about:blank load (file: and data: need allowFile:true); a page's own links, popups and redirects stay on http(s) and nothing downloads."
             : " Also works on the off-screen WebKit page: app:\"webkit\" (or browser:\"webkit\"); see open_url for its options."
         return (tool.description + note, .object(schema))
     }
