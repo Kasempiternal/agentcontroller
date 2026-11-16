@@ -6,6 +6,41 @@ All notable changes to AgentController are documented here. The format follows
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-11-16
+
+### Added
+- **A Safari window that is full screen or on another Space no longer takes the agent's pages.**
+  `open_url` and every call that opens a page by `url` with Safari (`snapshot`, `describe_screen`,
+  `screenshot_window`, `read_all_text`) added the page as a tab of Safari's front window. When that
+  window is full screen or sits on another Space, accessibility still reads it, but ScreenCaptureKit
+  has no surface for it and it cannot be resized, so an agent doing responsive QA could not take a
+  screenshot or set a width. The server now opens a NEW normal Safari window in the background
+  (a scripted `make new document`: a window of its own, not a tab), loads the page there and says
+  so in the result (`window` id, `freshWindow`, and the reason). Focus Guard is told about the hand-off,
+  so a Safari that came forward anyway would be undone and reported. The window is the server's: later pages
+  navigate its current tab instead of opening another window, and `snapshot`, `read_all_text`,
+  `screenshot_window`, `screenshot_element`, `start_recording`, `scroll_until_visible` and
+  `set_window_bounds` on Safari act on it for as long as the user's front window cannot be captured.
+  Detection reads accessibility only: `AXFullScreen`, and absence from `kAXWindows` (which macOS limits
+  to the active Space) for a window that is not minimized. The user's own window is never scripted,
+  closed, resized or taken out of full screen; the only window this code ever closes is one it opened
+  that turned out unusable. While the user is looking at their full-screen Safari, nothing is opened:
+  the call says so instead of risking a Space switch. Safari Technology Preview takes the same path.
+  Chromium browsers are unchanged (a Chrome with a debug port already gets hidden background tabs).
+- **First use asks macOS once for Automation access to Safari.** The window is opened with an Apple Event,
+  so the app now carries `NSAppleEventsUsageDescription` and the `com.apple.security.automation.apple-events`
+  entitlement. Until it is allowed, the call returns the System Settings path to allow it and opens nothing.
+
+### Fixed
+- **`build.sh` bundled a stale binary.** It copied the app from
+  `.build/arm64-apple-macosx/release`, where the current toolchain (macOS SDK 27.2) no longer writes, so a
+  rebuild signed and installed the previous build's code with the new Info.plist. It now asks SwiftPM where the products are
+  (`--show-bin-path`) and stops if the app is not there.
+- **`screenshot_window`, `screenshot_element` and `start_recording` fail at once on a Safari window on
+  another Space, and `set_window_bounds` on a full-screen or off-Space one,** with what to do (call
+  `open_url` or pass `url`), instead of "has no capturable content" or a bare "could not be completed".
+  A full-screen window the user is looking at still captures.
+
 ## [3.1.6] - 2026-10-16
 
 ### Fixed
