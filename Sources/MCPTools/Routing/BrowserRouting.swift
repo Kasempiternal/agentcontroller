@@ -148,6 +148,13 @@ enum BrowserRouting {
     }
 
     static func navigationNotice(page: URL, browser: String, outcome: BrowserNavigator.Outcome) -> String {
+        if let agent = outcome.agentWindow {
+            let state = outcome.loaded
+                ? "loaded in \(outcome.waitedMs)ms"
+                : "NOT confirmed loaded after \(outcome.waitedMs)ms (page reports \(outcome.pageURL ?? "no URL")); re-snapshot if content looks stale"
+            return SafariWindowPolicy.freshNotice(page: page, browser: browser, id: agent.id, because: agent.because, created: agent.created)
+                + " (\(state))."
+        }
         if outcome.reused {
             let notice = "\(page.absoluteString) is already the front tab in \(browser); used as it is, no new tab."
             return outcome.wasFrontmost ? notice + " " + frontmostNotice(browser: browser) : notice

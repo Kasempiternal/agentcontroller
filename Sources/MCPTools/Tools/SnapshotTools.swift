@@ -90,7 +90,9 @@ struct SnapshotTools {
                 let walk: (root: WalkRoot, kept: [Kept], matched: Int) = await AXExecutor.app(pid).run {
                     let app = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
                     let (root, kind): (AXElement, WalkRoot)
-                    if let focused = app.focusedWindow {
+                    if let standIn = SafariWindows.agentStandIn(of: app, pid: pid) {
+                        (root, kind) = (standIn, .focusedWindow)
+                    } else if let focused = app.focusedWindow {
                         (root, kind) = (focused, .focusedWindow)
                     } else if let first = app.windows.first {
                         (root, kind) = (first, .firstWindow)

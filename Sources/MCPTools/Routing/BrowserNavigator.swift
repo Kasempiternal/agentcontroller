@@ -19,6 +19,16 @@ enum BrowserNavigator {
         /// The page was already the front tab of the browser's focused window, so nothing
         /// was opened.
         var reused = false
+        /// The page is in a window this server opened, because the user's was full screen or on
+        /// another Space (`SafariWindows`).
+        var agentWindow: AgentWindowNote?
+    }
+
+    struct AgentWindowNote: Equatable, Sendable {
+        var id: Int
+        /// False when an earlier call's window was reused.
+        var created: Bool
+        var because: SafariWindowUse
     }
 
     /// Pages handed to a browser through LaunchServices, for tests: a page for a Chrome with a
@@ -56,6 +66,9 @@ enum BrowserNavigator {
     /// throwing when the deadline passes, so the caller still gets a snapshot of whatever
     /// rendered (a slow page is not an error, and saying so is better than hanging).
     static func navigate(_ url: URL, in browser: BrowserTarget, timeout: TimeInterval = 10) async throws -> Outcome {
+        // Before anything reads the focused window: a Safari window that cannot be captured must
+        // not be taken for "the page is already showing".
+        if let inAgentWindow = try await SafariWindows.navigate(url, in: browser, timeout: timeout) { return inAgentWindow }
         let wasFrontmost = await MainActor.run {
             NSWorkspace.shared.frontmostApplication?.bundleIdentifier == browser.bundleId
         }
@@ -129,6 +142,11 @@ enum BrowserNavigator {
     private static func webAreaState(pid: pid_t) -> (url: String?, loaded: Bool)? {
         let app = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
         guard let window = app.focusedWindow ?? app.windows.first else { return nil }
+        return webAreaState(in: window)
+    }
+
+    /// The same read for one given window.
+    static func webAreaState(in window: AXElement) -> (url: String?, loaded: Bool)? {
         guard let area = findWebArea(in: window) else { return nil }
         let attrs = area.readAttributes(["AXURL", "AXLoaded"])
         var urlString: String?

@@ -197,7 +197,7 @@ struct AppTools {
 
         registry.register(.init(
             name: "open_url",
-            description: "Open a URL in a REAL browser the user can see (web link, deep link, or custom scheme like 'myapp://path'). Web links go to the browser named in `browser` (or `app`), otherwise the user's DEFAULT browser — never silently a different one. If the user names a browser (\"in Safari\", \"use Firefox\"), pass it. headless:true instead opens the page in a private headless Chromium for scripted testing. BACKGROUND-SAFE BY DEFAULT: a Chrome that publishes a debug port gets the page as a hidden background tab (the user's window, tab and focus do not change); any other browser receives it without being activated, as a new tab of its front window. Then `snapshot` with app=<that browser> reads the page.",
+            description: "Open a URL in a REAL browser the user can see (web link, deep link, or custom scheme like 'myapp://path'). Web links go to the browser named in `browser` (or `app`), otherwise the user's DEFAULT browser — never silently a different one. If the user names a browser (\"in Safari\", \"use Firefox\"), pass it. headless:true instead opens the page in a private headless Chromium for scripted testing. BACKGROUND-SAFE BY DEFAULT: a Chrome that publishes a debug port gets the page as a hidden background tab (the user's window, tab and focus do not change); Safari receives it without being activated, as a new tab of its front window, unless that window is full screen or on another Space (it can be neither captured nor resized there): then a fresh normal window opens in the background, is reused by later calls, and the result names its `window` id; any other browser receives it without being activated, as a new tab of its front window. Then `snapshot` with app=<that browser> reads the page.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
@@ -231,6 +231,22 @@ struct AppTools {
                 // the front anyway is undone by Focus Guard and attributed to this server.
                 if isWeb, let browser = named.flatMap(BrowserResolver.named) ?? BrowserResolver.systemDefault() {
                     do {
+                        // A Safari window that is full screen or on another Space cannot take the page
+                        // as a tab and still be captured: it goes into a normal window of its own.
+                        if !foreground, let inWindow = try await SafariWindows.navigate(url, in: browser, timeout: 0, waitForLoad: false),
+                           let agent = inWindow.agentWindow {
+                            return ToolResult.action(success: true, method: "safari-window", extra: [
+                                "url": .string(urlStr),
+                                "handler": .string(browser.bundleId),
+                                "browser": .string(browser.name),
+                                "activated": .bool(false),
+                                "window": .int(agent.id),
+                                "freshWindow": .bool(agent.created),
+                                "because": .string(agent.because.rawValue),
+                                "note": .string(SafariWindowPolicy.freshNotice(
+                                    page: url, browser: browser.name, id: agent.id, because: agent.because, created: agent.created)),
+                            ])
+                        }
                         let app = try await BrowserNavigator.open(url, in: browser, activates: foreground)
                         return ToolResult.action(success: true, method: "workspace", extra: [
                             "url": .string(urlStr),
@@ -238,6 +254,8 @@ struct AppTools {
                             "browser": .string(browser.name),
                             "activated": .bool(foreground),
                         ])
+                    } catch let error as SafariWindowError {
+                        return ToolResult.error(error.message)
                     } catch {
                         return ToolResult.error("\(browser.name) could not open \(urlStr) (\(error.localizedDescription))")
                     }

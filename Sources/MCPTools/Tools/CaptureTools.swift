@@ -41,7 +41,7 @@ struct CaptureTools {
     static func register(in registry: ToolRegistry) {
         registry.register(.init(
             name: "screenshot_window",
-            description: "Capture a screenshot of a specific app window. Works in the background — the window does NOT need to be frontmost and can be fully covered by other windows (capture reads the window's own backing store). Minimized windows cannot be captured (call restore_window first). Default window is the app's focused window; pick another with windowTitle (windows sharing a title resolve to the focused one if it has that title, else the largest on-screen one) or windowIndex (index into list_windows order, exact even for duplicate titles). Returns a JPEG by default (downscaled to keep payloads small); pass format/maxLongestSide/quality to override.",
+            description: "Capture a screenshot of a specific app window. Works in the background — the window does NOT need to be frontmost and can be fully covered by other windows (capture reads the window's own backing store). Minimized windows cannot be captured (call restore_window first). Default window is the app's focused window; pick another with windowTitle (windows sharing a title resolve to the focused one if it has that title, else the largest on-screen one) or windowIndex (index into list_windows order, exact even for duplicate titles). A full-screen or other-Space Safari window cannot be captured: the call fails at once and says what to do, and with `url` the server opens a fresh normal window in the background and captures that. Returns a JPEG by default (downscaled to keep payloads small); pass format/maxLongestSide/quality to override.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object({
@@ -58,6 +58,12 @@ struct CaptureTools {
             handler: { args in
                 let pid = try args!.resolvePID()
                 let enc = encodingParams(from: args)
+
+                // A window the agent named is its own call; the one picked for it must be capturable.
+                if args?["windowTitle"]?.stringValue == nil, args?["windowIndex"]?.intValue == nil,
+                   let blocked = await SafariWindows.captureBlocker(pid: pid) {
+                    return ToolResult.error(blocked)
+                }
 
                 let hint: WindowHint
                 switch await resolveWindowHint(
@@ -78,7 +84,7 @@ struct CaptureTools {
                     )
                     return ToolResult.image(base64: captured.data.base64EncodedString(), mimeType: captured.mimeType)
                 } catch {
-                    return ToolResult.error(error.localizedDescription)
+                    return ToolResult.error(await SafariWindows.captureFailureMessage(error, pid: pid))
                 }
             }
         ))
@@ -99,6 +105,9 @@ struct CaptureTools {
                 let pid = try args!.resolvePID()
                 guard #available(macOS 15.0, *) else {
                     return ToolResult.error("start_recording requires macOS 15 or later")
+                }
+                if args?["windowTitle"]?.stringValue == nil, let blocked = await SafariWindows.captureBlocker(pid: pid) {
+                    return ToolResult.error(blocked)
                 }
 
                 let hint: WindowHint
@@ -171,6 +180,7 @@ struct CaptureTools {
             handler: { args in
                 let pid = try args!.resolvePID()
                 let enc = encodingParams(from: args)
+                if let blocked = await SafariWindows.captureBlocker(pid: pid) { return ToolResult.error(blocked) }
 
                 let handleId = args?["elementId"]?.stringValue
                 let cached = if let handleId { await ElementHandleStore.shared.resolve(handleId) } else { nil as AXElement? }
@@ -307,7 +317,8 @@ struct CaptureTools {
             if let windowIndex, windowIndex >= 0, windowIndex < windows.count {
                 indexed = WindowHint(title: windows[windowIndex].title, origin: windows[windowIndex].position)
             }
-            let focused = app.focusedWindow.map { WindowHint(title: $0.title, origin: $0.position) }
+            let focused = (SafariWindows.agentStandIn(of: app, pid: pid) ?? app.focusedWindow)
+                .map { WindowHint(title: $0.title, origin: $0.position) }
             return Survey(count: windows.count, allMinimized: allMinimized, indexed: indexed, focused: focused)
         }
 

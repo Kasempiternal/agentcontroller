@@ -207,7 +207,12 @@ public struct MCPProtocolHandler: Sendable {
         user's logins. Never substitute Chrome for a browser the user named. With \
         no browser named, web pages go to the user's default browser. Pass \
         headless:true only for scripted web testing that should not touch a \
-        visible browser (private headless Chromium via CDP, no user logins).
+        visible browser (private headless Chromium via CDP, no user logins). A \
+        Safari window that is full screen or on another Space is never used for \
+        work that needs pixels or a resize: the server opens a fresh normal window \
+        in the background (no focus or Space change), names its window id in the \
+        result, and every Safari tool then acts on it. Use that window; never ask \
+        the user to leave full screen.
 
         BATCH YOUR STEPS. `snapshot` returns stable element ids, and every interaction \
         tool takes an `elementId` that acts on that exact element with no search. So the \

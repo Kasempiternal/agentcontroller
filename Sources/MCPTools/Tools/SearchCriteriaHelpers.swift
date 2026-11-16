@@ -80,6 +80,9 @@ enum SearchScope {
     static func root(pid: pid_t, args: JSONValue?, defaultScope: String) -> AXElement {
         let appElement = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
         let scope = args?["scope"]?.stringValue ?? defaultScope
+        // A Safari window the user has full screen or on another Space is not the page the agent
+        // is working on; its own window is (SafariWindows).
+        if let standIn = SafariWindows.agentStandIn(of: appElement, pid: pid) { return standIn }
         if scope == "app" { return appElement }
         return appElement.focusedWindow ?? appElement
     }

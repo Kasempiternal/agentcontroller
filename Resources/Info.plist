@@ -22,6 +22,8 @@
 	<string>14.0</string>
 	<key>LSUIElement</key>
 	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>AgentController asks Safari to open a page in a window of its own when your Safari window is full screen or on another Space, so the page can be captured and resized without touching your window.</string>
 	<key>NSScreenCaptureUsageDescription</key>
 	<string>AgentController needs screen recording access to capture app window screenshots for AI agents.</string>
 </dict>

@@ -164,7 +164,7 @@ struct ScrollTools {
                     // the same pass so a miss costs one lane hop, not two.
                     last = await AXExecutor.app(pid).run { () -> Visibility in
                         let appElement = AXElement.application(pid: pid, timeout: AXElement.defaultToolTimeout)
-                        let window = appElement.focusedWindow
+                        let window = SafariWindows.agentStandIn(of: appElement, pid: pid) ?? appElement.focusedWindow
                         // An app that never took focus has no focused window but still has
                         // windows; aiming at its first one beats aiming at nothing.
                         let winFrame = (window ?? appElement.windows.first)?.frame

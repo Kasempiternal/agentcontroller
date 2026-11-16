@@ -70,7 +70,14 @@ struct WindowTools {
             ]),
             handler: { args in
                 let pid = try args!.resolvePID()
-                let index = args?["windowIndex"]?.intValue ?? 0
+                let requested = args?["windowIndex"]?.intValue
+                // Reads the window a resize would change, so a get after a set agrees with it.
+                let index: Int
+                if case .index(let target) = await SafariWindows.boundsTarget(pid: pid, requestedIndex: requested) {
+                    index = target
+                } else {
+                    index = requested ?? 0
+                }
                 let bounds = await AXExecutor.app(pid).run { WindowManager.getWindowBounds(pid: pid, windowIndex: index) }
                 guard let b = bounds else {
                     return ToolResult.error("Window not found")
@@ -86,7 +93,7 @@ struct WindowTools {
 
         registry.register(.init(
             name: "set_window_bounds",
-            description: "Set the position and/or size of an app window",
+            description: "Set the position and/or size of an app window. A full-screen Safari window, or one on another Space, is refused with the reason: open_url (or url on a snapshot) gives a normal window that can be resized.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
@@ -101,7 +108,13 @@ struct WindowTools {
             ]),
             handler: { args in
                 let pid = try args!.resolvePID()
-                let index = args?["windowIndex"]?.intValue ?? 0
+                let requested = args?["windowIndex"]?.intValue
+                let index: Int
+                switch await SafariWindows.boundsTarget(pid: pid, requestedIndex: requested) {
+                case .passthrough: index = requested ?? 0
+                case .index(let target): index = target
+                case .blocked(let message): return ToolResult.error(message)
+                }
                 var position: CGPoint? = nil
                 var size: CGSize? = nil
                 if let x = args?["x"]?.doubleValue, let y = args?["y"]?.doubleValue {
