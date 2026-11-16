@@ -6,6 +6,42 @@ All notable changes to AgentController are documented here. The format follows
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-11-16
+
+### Added
+- **`browser:"webkit"`: an off-screen WebKit view inside AgentController, for Safari-like pixels of a
+  local page.** A page loaded with `open_url {url, browser:"webkit"}` renders in a `WKWebView` the app
+  keeps in a borderless, invisible window parked off every display: no window on any Space, no focus,
+  no Dock or menu effect, and no Apple Event to the user's Safari. `snapshot`, `describe_screen`,
+  `find_elements`, `wait_for_element`, `assert_visible` / `assert_not_visible`, `click`, `double_click`,
+  `type_text`, `send_shortcut`, `scroll`, `read_text`, `read_all_text`, `run_app_code`,
+  `screenshot_window`, `screenshot_element` and `set_window_bounds` / `get_window_bounds` (the viewport
+  size) take `browser:"webkit"` (or `app:"webkit"`), alone or as steps of `run_steps`; no new tool names.
+- Options on any call that names WebKit: `width` / `height` (viewport in CSS pixels, default 1440 x 900),
+  `colorScheme` (`light`, `dark`, `system`) so `prefers-color-scheme` follows, `deviceScaleFactor`
+  (default 2), `profile` (its own persistent cookie and storage store, so a login made on a local page
+  survives between calls and restarts) and `page` (several views per profile). They stay until changed.
+- The page reports itself visible (`document.hidden` false) and runs timers and animation frames at full
+  rate, so dashboards that poll keep updating. Measured: WebKit reports `hidden` for any window that is
+  not ordered in or that macOS counts as occluded, so the view is ordered in off screen with occlusion
+  detection switched off through a private WebKit call, and a user script forces visibility where that
+  call is missing (the result says when it had to fall back).
+- While a WebKit page exists the app holds a process activity (no App Nap, no timer coalescing) and
+  says again that each page is visible whenever the Space or display changes, and on every call.
+  Measured on a prototype: a page left running for hours dropped from 10 timer ticks/s to 1 about 20
+  minutes in, while the user moved between full-screen Spaces.
+- Clicks and keys are trusted events sent straight to the view, without moving the cursor or taking key
+  focus. A failed load is an error, never a screenshot of a blank page. Element ids belong to one
+  snapshot of one document and are refused after a navigation ("call snapshot again"). Idle pages are
+  closed after ten minutes and at most six are kept.
+- `NSAllowsArbitraryLoadsInWebContent` in Info.plist so the view can load plain `http` pages beyond
+  loopback; it applies to web content only.
+
+### Changed
+- The server instructions, the Claude block, the skill and the fail-fast messages for a Safari window
+  that is full screen or on another Space now point local pages at `browser:"webkit"`; real Safari
+  stays for pages that need the user's logins.
+
 ## [3.2.1] - 2026-11-16
 
 ### Fixed
