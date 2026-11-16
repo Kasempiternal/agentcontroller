@@ -202,10 +202,13 @@ struct AppTools {
                 "type": .string("object"),
                 "properties": .object([
                     "url": .object(["type": .string("string"), "description": .string("URL to open (e.g. 'https://example.com' or 'myapp://route')")]),
-                    "browser": .object(["type": .string("string"), "description": .string("Browser to open web links in: 'safari', 'chrome', 'firefox', 'edge', 'brave', 'arc', a bundle id, or 'default' (the user's default browser, which is what you get when omitted).")]),
+                    "browser": .object(["type": .string("string"), "description": .string("Browser to open web links in: 'webkit' (WebKit rendered off screen inside this app), 'safari', 'chrome', 'firefox', 'edge', 'brave', 'arc', a bundle id, or 'default' (the user's default browser, which is what you get when omitted).")]),
                     "headless": .object(["type": .string("boolean"), "description": .string("Open in a private headless Chromium (CDP) instead of a visible browser. Only for scripted web testing; it has none of the user's logins.")]),
                     "foreground": .object(["type": .string("boolean"), "description": .string("Default false (handler app stays in the background). When true, activates the handler app.")]),
-                ]),
+                ].merging(WebKitTarget.optionSchema) { current, _ in current }.merging([
+                    "settleMs": .object(["type": .string("number"), "description": .string("WebKit only: extra milliseconds to wait after the load event for the page's own fetches (default 300).")]),
+                    "reload": .object(["type": .string("boolean"), "description": .string("WebKit only: reload even when the page is already showing.")]),
+                ]) { current, _ in current }),
                 "required": .array([.string("url")]),
             ]),
             handler: { args in

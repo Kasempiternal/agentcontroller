@@ -60,13 +60,29 @@ public final class ToolRegistry: MCPToolProvider, @unchecked Sendable {
             if Self.readOnlyTools.contains(tool.name) {
                 annotations["readOnlyHint"] = .bool(true)
             }
+            let (description, schema) = Self.webKitAdvertised(tool)
             return .object([
                 "name": .string(tool.name),
-                "description": .string(tool.description),
-                "inputSchema": tool.inputSchema,
+                "description": .string(description),
+                "inputSchema": schema,
                 "annotations": .object(annotations),
             ])
         }
+    }
+
+    /// Every tool the WebKit backend implements also advertises its options, so the schema of
+    /// the 19 tools is not hand-copied 19 times and cannot drift from what the router reads.
+    private static func webKitAdvertised(_ tool: ToolDefinition) -> (String, JSONValue) {
+        guard WebKitRouter.supportedTools.contains(tool.name) else { return (tool.description, tool.inputSchema) }
+        guard case .object(var schema) = tool.inputSchema, case .object(var properties)? = schema["properties"] else {
+            return (tool.description, tool.inputSchema)
+        }
+        for (key, value) in WebKitTarget.optionSchema where properties[key] == nil { properties[key] = value }
+        schema["properties"] = .object(properties)
+        let note = tool.name == "open_url"
+            ? " With browser:\"webkit\" the page renders in this app's own off-screen WebKit view: no window on any Space, no focus, no logins from the user's browsers, its own cookie profile. For Safari-like pixels of a local page (light/dark, any width, any pixel ratio) use it; use real Safari only for pages that need the user's logins."
+            : " Also works on the off-screen WebKit page: app:\"webkit\" (or browser:\"webkit\"); see open_url for its options."
+        return (tool.description + note, .object(schema))
     }
 
     public func callTool(name: String, arguments: JSONValue?) async throws -> JSONValue {
@@ -95,6 +111,14 @@ public final class ToolRegistry: MCPToolProvider, @unchecked Sendable {
         // steal detected since the last call as an in-band warning — the only
         // feedback path that reaches an agent bypassing us via another tool.
         FocusWatcher.shared.noteDispatch()
+
+        // `browser:"webkit"` (or app/target): the in-app WebKit page. Every tool, before any browser
+        // or app is resolved, so a tool it lacks says so instead of matching a process by name.
+        if let webkit = WebKitTarget.parse(arguments) {
+            var result = await WebKitRouter.handle(name: name, arguments: arguments, target: webkit)
+            if let incident = FocusWatcher.shared.consumeIncident() { result = ToolResult.appendingNotice(incident, to: result) }
+            return result
+        }
 
         // Browser choice happens here, once, before any backend sees the call.
         var browserNotice: String?

@@ -56,7 +56,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// no-op. Resurface the main window when nothing is already visible.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         guard Date().timeIntervalSince(launchedAt) > Self.reopenGrace else { return false }
-        if !flag { showMainWindow() }
+        // The WebKit pages' windows are ordered in (WebKit needs that), so AppKit counts them.
+        let visible = flag && NSApplication.shared.windows.contains { $0.isVisible && !WebKitOffscreenWindow.isOffscreenPage($0) }
+        if !visible { showMainWindow() }
         return true
     }
 

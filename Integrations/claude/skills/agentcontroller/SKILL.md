@@ -30,13 +30,22 @@ Devices: add `mcp__agentcontroller-ios__get_execution_context,scan_ui,tap_elemen
    background (no focus or Space change), returns its window id (`"window":N`) and reuses it for later
    pages; every Safari tool then acts on that window. A new window only lands on the Space the user is
    looking at: while they are in another full-screen Space the result says so, the page goes in as a tab,
-   and `headless:true` is the way to pixels or a width. Never ask the user to leave full screen.
+   and `browser:"webkit"` (or `headless:true`) is the way to pixels or a width. Never ask the user to leave full screen.
 2. ONE `snapshot` → element ids. ONE `run_steps` with the whole sequence (`click`, `type_text`,
    `wait_for_element`, `read_all_text`, `screenshot_window`) against those ids.
 3. Re-snapshot only when the screen changes shape. A stale id → re-snapshot. `screenshot_window`
    works on background windows, but not on a full-screen or off-Space Safari window: `open_url` (or `url`
-   on the call) tries a fresh window; if the result says it could not land, use `headless:true`.
-4. After `open_url`, a call that names only the browser (`{app:"Google Chrome"}`) acts on the page
+   on the call) tries a fresh window; if the result says it could not land, use `browser:"webkit"` (local pages) or `headless:true`.
+4. Pixels of a LOCAL page (his dashboard on 127.0.0.1, a dev server, a file) at a chosen width, light or
+   dark: `open_url {url, browser:"webkit", width:390, height:844, colorScheme:"dark", deviceScaleFactor:2}`,
+   then `snapshot` / `click` / `type_text` / `read_all_text` / `screenshot_window {app:"webkit"}`. Real
+   WebKit renders it inside AgentController, off screen (no window on any Space, no focus), the page sees
+   itself as visible so polling runs, and `profile` keeps its own cookies between calls (a login made on a
+   local page survives). It is not Safari and has none of his logins, so use real Safari only for pages
+   that need them. `set_window_bounds {app:"webkit", width, height}` resizes the viewport; options persist
+   until changed; an id from before a navigation is refused, snapshot again; native `<select>`, file and
+   date pickers cannot be opened (type_text on a select picks by option text).
+5. After `open_url`, a call that names only the browser (`{app:"Google Chrome"}`) acts on the page
    you just opened.
 
 ## 3. Playbooks
@@ -49,7 +58,8 @@ Devices: add `mcp__agentcontroller-ios__get_execution_context,scan_ui,tap_elemen
 | A form, a console setting, a dashboard check | `snapshot` + one `run_steps`; verify with `read_all_text` or `screenshot_window`. |
 | A desktop app (Slack, Telegram/BotFather, Mail, System Settings, Finder, AirDrop) | `launch_app` (background) or target the running app; snapshot; run_steps. |
 | Something on the iPhone or a simulator | `get_execution_context` → `setup_device` once per phone → `scan_ui` / `tap_element` / `get_screenshot`. Never ask the user to look at the phone or tap for you. |
-| Pixels of a public or local page for QA | `screenshot_window {url, headless:true}` (private headless browser, no logins needed). |
+| Pixels of a LOCAL page for QA (width, light/dark, pixel ratio) | `open_url {url, browser:"webkit", width, colorScheme}` then `screenshot_window {app:"webkit"}` (WebKit inside AgentController, off screen, no logins). |
+| Pixels of a public page for QA | `screenshot_window {url, headless:true}` (private headless Chromium, no logins needed). |
 
 ## 4. When the user is genuinely needed
 

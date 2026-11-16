@@ -75,12 +75,21 @@ _No parameters._
 
 ### `open_url`
 
-Open a URL in a REAL browser the user can see (web link, deep link, or custom scheme like 'myapp://path'). Web links go to the browser named in `browser` (or `app`), otherwise the user's DEFAULT browser — never silently a different one. If the user names a browser ("in Safari", "use Firefox"), pass it. headless:true instead opens the page in a private headless Chromium for scripted testing. BACKGROUND-SAFE BY DEFAULT: a Chrome that publishes a debug port gets the page as a hidden background tab (the user's window, tab and focus do not change); Safari receives it without being activated, as a new tab of its front window, unless that window is full screen or on another Space (it can be neither captured nor resized there): then a fresh normal window is tried in the background, reused by later calls, and the result names its `window` id (if it cannot land on the Space the user is looking at, the result says so and the page goes in as a tab); any other browser receives it without being activated, as a new tab of its front window. Then `snapshot` with app=<that browser> reads the page.
+Open a URL in a REAL browser the user can see (web link, deep link, or custom scheme like 'myapp://path'). Web links go to the browser named in `browser` (or `app`), otherwise the user's DEFAULT browser — never silently a different one. If the user names a browser ("in Safari", "use Firefox"), pass it. headless:true instead opens the page in a private headless Chromium for scripted testing. BACKGROUND-SAFE BY DEFAULT: a Chrome that publishes a debug port gets the page as a hidden background tab (the user's window, tab and focus do not change); Safari receives it without being activated, as a new tab of its front window, unless that window is full screen or on another Space (it can be neither captured nor resized there): then a fresh normal window is tried in the background, reused by later calls, and the result names its `window` id (if it cannot land on the Space the user is looking at, the result says so and the page goes in as a tab); any other browser receives it without being activated, as a new tab of its front window. Then `snapshot` with app=<that browser> reads the page. With browser:"webkit" the page renders in this app's own off-screen WebKit view: no window on any Space, no focus, no logins from the user's browsers, its own cookie profile. For Safari-like pixels of a local page (light/dark, any width, any pixel ratio) use it; use real Safari only for pages that need the user's logins.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `url` | string | yes | URL to open (e.g. 'https://example.com' or 'myapp://route') |
 | `foreground` | boolean | no | Default false (handler app stays in the background). When true, activates the handler app. |
+| `browser` | string | no | Browser to open web links in: 'webkit' (WebKit rendered off screen inside this app), 'safari', 'chrome', 'firefox', 'edge', 'brave', 'arc', a bundle id, or 'default' (the user's default browser, which is what you get when omitted). |
+| `profile` | string | no | WebKit only: the cookie and storage profile (default 'default'). A login made on a local page survives between calls and restarts. |
+| `page` | string | no | WebKit only: which page of the profile (default 'main'); each has its own viewport. |
+| `width` | number | no | WebKit only: viewport width in CSS pixels (1-8000). Kept until changed. |
+| `height` | number | no | WebKit only: viewport height in CSS pixels (1-8000). Kept until changed. |
+| `colorScheme` | string | no | WebKit only: prefers-color-scheme (default light). Kept until changed. |
+| `deviceScaleFactor` | number | no | WebKit only: device pixel ratio, 0.5-5 (default 2). Kept until changed. |
+| `settleMs` | number | no | WebKit only: extra milliseconds to wait after the load event for the page's own fetches (default 300). |
+| `reload` | boolean | no | WebKit only: reload even when the page is already showing. |
 
 ### `reset_app_state`
 
@@ -95,23 +104,35 @@ Quit an app to reset its in-memory state, waiting up to 5s for it to actually ex
 
 ### `snapshot`
 
-Snapshot a target into a COMPACT list of elements with stable ids (also available as 'describe_screen'). The server picks the backend from the identity: CDP a11y for a URL or attached Chrome page, bpy scene objects when a Blender socket handshakes, idb/WDA for an iOS simulator UDID, otherwise native AX. Returns [{id, role, label, enabled, frame}] plus backend. mode 'interactive' (default) keeps only controls; 'all' keeps every element. The ids feed interaction tools via elementId.
+Snapshot a target into a COMPACT list of elements with stable ids (also available as 'describe_screen'). The server picks the backend from the identity: CDP a11y for a URL or attached Chrome page, bpy scene objects when a Blender socket handshakes, idb/WDA for an iOS simulator UDID, otherwise native AX. Returns [{id, role, label, enabled, frame}] plus backend. mode 'interactive' (default) keeps only controls; 'all' keeps every element. The ids feed interaction tools via elementId. Also works on the off-screen WebKit page: app:"webkit" (or browser:"webkit"); see open_url for its options.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `app` | string | yes | Bundle ID, app name, PID, URL, or iOS simulator UDID |
 | `maxDepth` | integer | no | Maximum tree depth to walk (default 12) |
 | `mode` | string | no | 'interactive' (default, controls only) or 'all' (every element) |
+| `profile` | string | no | WebKit only: the cookie and storage profile (default 'default'). A login made on a local page survives between calls and restarts. |
+| `page` | string | no | WebKit only: which page of the profile (default 'main'); each has its own viewport. |
+| `width` | number | no | WebKit only: viewport width in CSS pixels (1-8000). Kept until changed. |
+| `height` | number | no | WebKit only: viewport height in CSS pixels (1-8000). Kept until changed. |
+| `colorScheme` | string | no | WebKit only: prefers-color-scheme (default light). Kept until changed. |
+| `deviceScaleFactor` | number | no | WebKit only: device pixel ratio, 0.5-5 (default 2). Kept until changed. |
 
 ### `describe_screen`
 
-Alias of 'snapshot': compact, stable-id description. Same auto-routing as snapshot (CDP / bpy / idb / AX) returning [{id, role, label, enabled, frame}]. mode 'interactive' (default) or 'all'.
+Alias of 'snapshot': compact, stable-id description. Same auto-routing as snapshot (CDP / bpy / idb / AX) returning [{id, role, label, enabled, frame}]. mode 'interactive' (default) or 'all'. Also works on the off-screen WebKit page: app:"webkit" (or browser:"webkit"); see open_url for its options.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `app` | string | yes | Bundle ID, app name, PID, URL, or iOS simulator UDID |
 | `maxDepth` | integer | no | Maximum tree depth to walk (default 12) |
 | `mode` | string | no | 'interactive' (default, controls only) or 'all' (every element) |
+| `profile` | string | no | WebKit only: the cookie and storage profile (default 'default'). A login made on a local page survives between calls and restarts. |
+| `page` | string | no | WebKit only: which page of the profile (default 'main'); each has its own viewport. |
+| `width` | number | no | WebKit only: viewport width in CSS pixels (1-8000). Kept until changed. |
+| `height` | number | no | WebKit only: viewport height in CSS pixels (1-8000). Kept until changed. |
+| `colorScheme` | string | no | WebKit only: prefers-color-scheme (default light). Kept until changed. |
+| `deviceScaleFactor` | number | no | WebKit only: device pixel ratio, 0.5-5 (default 2). Kept until changed. |
 
 Both report the `root` they walked: `focusedWindow`, `firstWindow`, or `application`.
 `application` is the degraded case — the app exposed no window at all, so the walk could
@@ -134,7 +155,7 @@ Get the accessibility UI element tree for an application. Returns a hierarchical
 
 ### `find_elements`
 
-Search for UI elements by role, title, identifier, description, or visible label text. Returns matches with their paths for use with interaction tools. Use labelContains when you can see the text on screen but don't know which AX attribute carries it (SwiftUI varies).
+Search for UI elements by role, title, identifier, description, or visible label text. Returns matches with their paths for use with interaction tools. Use labelContains when you can see the text on screen but don't know which AX attribute carries it (SwiftUI varies). Also works on the off-screen WebKit page: app:"webkit" (or browser:"webkit"); see open_url for its options.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -149,6 +170,12 @@ Search for UI elements by role, title, identifier, description, or visible label
 | `title` | string | no | Exact AXTitle match |
 | `titleContains` | string | no | Partial AXTitle match (case-insensitive) |
 | `value` | string | no | Element AXValue |
+| `profile` | string | no | WebKit only: the cookie and storage profile (default 'default'). A login made on a local page survives between calls and restarts. |
+| `page` | string | no | WebKit only: which page of the profile (default 'main'); each has its own viewport. |
+| `width` | number | no | WebKit only: viewport width in CSS pixels (1-8000). Kept until changed. |
+| `height` | number | no | WebKit only: viewport height in CSS pixels (1-8000). Kept until changed. |
+| `colorScheme` | string | no | WebKit only: prefers-color-scheme (default light). Kept until changed. |
+| `deviceScaleFactor` | number | no | WebKit only: device pixel ratio, 0.5-5 (default 2). Kept until changed. |
 
 ### `get_element_attributes`
 
@@ -171,7 +198,7 @@ Report the element that holds the app's INTERNAL keyboard focus (kAXFocusedUIEle
 
 ### `wait_for_element`
 
-Wait for a UI element to appear matching the given criteria (all the standard selectors: role/title/titleContains/identifier/value/description/descriptionContains/labelContains/index). Polls until found or timeout. Searches the whole app by default; pass scope:'window' for just the focused window.
+Wait for a UI element to appear matching the given criteria (all the standard selectors: role/title/titleContains/identifier/value/description/descriptionContains/labelContains/index). Polls until found or timeout. Searches the whole app by default; pass scope:'window' for just the focused window. Also works on the off-screen WebKit page: app:"webkit" (or browser:"webkit"); see open_url for its options.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -188,12 +215,18 @@ Wait for a UI element to appear matching the given criteria (all the standard se
 | `title` | string | no | Exact AXTitle match |
 | `titleContains` | string | no | Partial AXTitle match (case-insensitive) |
 | `value` | string | no | Element AXValue |
+| `profile` | string | no | WebKit only: the cookie and storage profile (default 'default'). A login made on a local page survives between calls and restarts. |
+| `page` | string | no | WebKit only: which page of the profile (default 'main'); each has its own viewport. |
+| `width` | number | no | WebKit only: viewport width in CSS pixels (1-8000). Kept until changed. |
+| `height` | number | no | WebKit only: viewport height in CSS pixels (1-8000). Kept until changed. |
+| `colorScheme` | string | no | WebKit only: prefers-color-scheme (default light). Kept until changed. |
+| `deviceScaleFactor` | number | no | WebKit only: device pixel ratio, 0.5-5 (default 2). Kept until changed. |
 
 ## Assertions
 
 ### `assert_visible`
 
-Assert that an element matching the selector is present. Polls until it appears or the timeout elapses. PASS → {passed:true}; FAIL → isError result naming the selector. Use for QA checkpoints (e.g. confirm a dialog/label showed up). Searches the whole app by default; pass scope:'window' to check only the focused window (faster).
+Assert that an element matching the selector is present. Polls until it appears or the timeout elapses. PASS → {passed:true}; FAIL → isError result naming the selector. Use for QA checkpoints (e.g. confirm a dialog/label showed up). Searches the whole app by default; pass scope:'window' to check only the focused window (faster). Also works on the off-screen WebKit page: app:"webkit" (or browser:"webkit"); see open_url for its options.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -209,10 +242,16 @@ Assert that an element matching the selector is present. Polls until it appears 
 | `title` | string | no | Exact AXTitle match |
 | `titleContains` | string | no | Partial AXTitle match (case-insensitive) |
 | `value` | string | no | Element AXValue |
+| `profile` | string | no | WebKit only: the cookie and storage profile (default 'default'). A login made on a local page survives between calls and restarts. |
+| `page` | string | no | WebKit only: which page of the profile (default 'main'); each has its own viewport. |
+| `width` | number | no | WebKit only: viewport width in CSS pixels (1-8000). Kept until changed. |
+| `height` | number | no | WebKit only: viewport height in CSS pixels (1-8000). Kept until changed. |
+| `colorScheme` | string | no | WebKit only: prefers-color-scheme (default light). Kept until changed. |
+| `deviceScaleFactor` | number | no | WebKit only: device pixel ratio, 0.5-5 (default 2). Kept until changed. |
 
 ### `assert_not_visible`
 
-Assert that NO element matches the selector. Polls for the whole window: passes as soon as the element is absent; fails only if it stays present the entire time. Use to confirm something dismissed (spinner gone, dialog closed). Searches the whole app by default; pass scope:'window' to check only the focused window.
+Assert that NO element matches the selector. Polls for the whole window: passes as soon as the element is absent; fails only if it stays present the entire time. Use to confirm something dismissed (spinner gone, dialog closed). Searches the whole app by default; pass scope:'window' to check only the focused window. Also works on the off-screen WebKit page: app:"webkit" (or browser:"webkit"); see open_url for its options.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -228,6 +267,12 @@ Assert that NO element matches the selector. Polls for the whole window: passes 
 | `title` | string | no | Exact AXTitle match |
 | `titleContains` | string | no | Partial AXTitle match (case-insensitive) |
 | `value` | string | no | Element AXValue |
+| `profile` | string | no | WebKit only: the cookie and storage profile (default 'default'). A login made on a local page survives between calls and restarts. |
+| `page` | string | no | WebKit only: which page of the profile (default 'main'); each has its own viewport. |
+| `width` | number | no | WebKit only: viewport width in CSS pixels (1-8000). Kept until changed. |
+| `height` | number | no | WebKit only: viewport height in CSS pixels (1-8000). Kept until changed. |
+| `colorScheme` | string | no | WebKit only: prefers-color-scheme (default light). Kept until changed. |
+| `deviceScaleFactor` | number | no | WebKit only: device pixel ratio, 0.5-5 (default 2). Kept until changed. |
 
 ### `assert_value`
 
@@ -257,7 +302,7 @@ Find an element by selector and assert its value/state. Provide one or more of: 
 
 ### `read_text`
 
-Read the text of a single element matched by selector — returns its value/title/label as {text:...}. Errors if no element matches. Use to grab a label, field contents, or status line without a screenshot. Searches the whole app by default; pass scope:'window' for just the focused window.
+Read the text of a single element matched by selector — returns its value/title/label as {text:...}. Errors if no element matches. Use to grab a label, field contents, or status line without a screenshot. Searches the whole app by default; pass scope:'window' for just the focused window. Also works on the off-screen WebKit page: app:"webkit" (or browser:"webkit"); see open_url for its options.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -272,10 +317,16 @@ Read the text of a single element matched by selector — returns its value/titl
 | `title` | string | no | Exact AXTitle match |
 | `titleContains` | string | no | Partial AXTitle match (case-insensitive) |
 | `value` | string | no | Element AXValue |
+| `profile` | string | no | WebKit only: the cookie and storage profile (default 'default'). A login made on a local page survives between calls and restarts. |
+| `page` | string | no | WebKit only: which page of the profile (default 'main'); each has its own viewport. |
+| `width` | number | no | WebKit only: viewport width in CSS pixels (1-8000). Kept until changed. |
+| `height` | number | no | WebKit only: viewport height in CSS pixels (1-8000). Kept until changed. |
+| `colorScheme` | string | no | WebKit only: prefers-color-scheme (default light). Kept until changed. |
+| `deviceScaleFactor` | number | no | WebKit only: device pixel ratio, 0.5-5 (default 2). Kept until changed. |
 
 ### `read_all_text`
 
-Read all visible text strings from elements of a given role (default AXStaticText), in tree order, dropping empties. Returns {count, texts:[...]}. Use to verify on-screen content cheaply (e.g. confirm a paragraph or list rendered) instead of a screenshot. Searches the whole app by default; pass scope:'window' for just the focused window.
+Read all visible text strings from elements of a given role (default AXStaticText), in tree order, dropping empties. Returns {count, texts:[...]}. Use to verify on-screen content cheaply (e.g. confirm a paragraph or list rendered) instead of a screenshot. Searches the whole app by default; pass scope:'window' for just the focused window. Also works on the off-screen WebKit page: app:"webkit" (or browser:"webkit"); see open_url for its options.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -283,12 +334,18 @@ Read all visible text strings from elements of a given role (default AXStaticTex
 | `maxResults` | integer | no | Max strings to return (default 200) |
 | `role` | string | no | AX role to collect (default 'AXStaticText') |
 | `scope` | string (`window` \| `app`) | no | Search scope: 'window' (focused window only — faster) or 'app' (all windows + menu bar). Default 'app'. |
+| `profile` | string | no | WebKit only: the cookie and storage profile (default 'default'). A login made on a local page survives between calls and restarts. |
+| `page` | string | no | WebKit only: which page of the profile (default 'main'); each has its own viewport. |
+| `width` | number | no | WebKit only: viewport width in CSS pixels (1-8000). Kept until changed. |
+| `height` | number | no | WebKit only: viewport height in CSS pixels (1-8000). Kept until changed. |
+| `colorScheme` | string | no | WebKit only: prefers-color-scheme (default light). Kept until changed. |
+| `deviceScaleFactor` | number | no | WebKit only: device pixel ratio, 0.5-5 (default 2). Kept until changed. |
 
 ## Input
 
 ### `click`
 
-Click a UI element (AX press action) or at screen coordinates. PREFER `elementId` from a prior snapshot/describe_screen — it acts on that exact element with no tree search, and it is both faster and more reliable than a selector. Fall back to selectors only for elements you have not snapshotted: role+title/identifier when known, labelContains when you see the text on-screen but don't know which AX attribute carries it (common with SwiftUI buttons that stash labels in AXDescription); a selector matching nothing in a rendered UI fails fast; one that may just not have rendered yet retries until `timeout`. Element searches default to the focused window (scope:'window'); pass scope:'app' to search every window of the app. The menu bar is NOT searched even then (closed menu items would match every 'Save'/'Close'): add includeMenus:true, or use an AXMenu* role, or use navigate_menu. Issuing several clicks? Send them as one `run_steps` call rather than one call each. BACKGROUND-SAFE BY DEFAULT: the element path uses AXPress and the coordinate path posts to the target PID — neither moves the user's mouse cursor, brings the app forward, nor steals keyboard focus. Set foreground:true ONLY for apps that ignore targeted events (Electron/games) — that activates the app and injects a global click (moves the real cursor). Auto-routes: CDP click for web refs, bpy select for Blender scene ids, idb tap for iOS; you do not pick the backend.
+Click a UI element (AX press action) or at screen coordinates. PREFER `elementId` from a prior snapshot/describe_screen — it acts on that exact element with no tree search, and it is both faster and more reliable than a selector. Fall back to selectors only for elements you have not snapshotted: role+title/identifier when known, labelContains when you see the text on-screen but don't know which AX attribute carries it (common with SwiftUI buttons that stash labels in AXDescription); a selector matching nothing in a rendered UI fails fast; one that may just not have rendered yet retries until `timeout`. Element searches default to the focused window (scope:'window'); pass scope:'app' to search every window of the app. The menu bar is NOT searched even then (closed menu items would match every 'Save'/'Close'): add includeMenus:true, or use an AXMenu* role, or use navigate_menu. Issuing several clicks? Send them as one `run_steps` call rather than one call each. BACKGROUND-SAFE BY DEFAULT: the element path uses AXPress and the coordinate path posts to the target PID — neither moves the user's mouse cursor, brings the app forward, nor steals keyboard focus. Set foreground:true ONLY for apps that ignore targeted events (Electron/games) — that activates the app and injects a global click (moves the real cursor). Auto-routes: CDP click for web refs, bpy select for Blender scene ids, idb tap for iOS; you do not pick the backend. Also works on the off-screen WebKit page: app:"webkit" (or browser:"webkit"); see open_url for its options.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -308,10 +365,16 @@ Click a UI element (AX press action) or at screen coordinates. PREFER `elementId
 | `value` | string | no | Element AXValue |
 | `x` | number | no | X coordinate (screen points) for coordinate click |
 | `y` | number | no | Y coordinate (screen points) for coordinate click |
+| `profile` | string | no | WebKit only: the cookie and storage profile (default 'default'). A login made on a local page survives between calls and restarts. |
+| `page` | string | no | WebKit only: which page of the profile (default 'main'); each has its own viewport. |
+| `width` | number | no | WebKit only: viewport width in CSS pixels (1-8000). Kept until changed. |
+| `height` | number | no | WebKit only: viewport height in CSS pixels (1-8000). Kept until changed. |
+| `colorScheme` | string | no | WebKit only: prefers-color-scheme (default light). Kept until changed. |
+| `deviceScaleFactor` | number | no | WebKit only: device pixel ratio, 0.5-5 (default 2). Kept until changed. |
 
 ### `double_click`
 
-Double-click a UI element or at coordinates. BACKGROUND-SAFE BY DEFAULT: prefers two AX press actions; the coordinate fallback posts to the target PID (no cursor move, no activation, no focus steal). Accepts the same matchers as click (role/title/identifier/description/labelContains) plus `elementId` and `scope`. Set foreground:true only for apps that ignore PID-targeted events (activates + global double-click, moves the real cursor).
+Double-click a UI element or at coordinates. BACKGROUND-SAFE BY DEFAULT: prefers two AX press actions; the coordinate fallback posts to the target PID (no cursor move, no activation, no focus steal). Accepts the same matchers as click (role/title/identifier/description/labelContains) plus `elementId` and `scope`. Set foreground:true only for apps that ignore PID-targeted events (activates + global double-click, moves the real cursor). Also works on the off-screen WebKit page: app:"webkit" (or browser:"webkit"); see open_url for its options.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -331,6 +394,12 @@ Double-click a UI element or at coordinates. BACKGROUND-SAFE BY DEFAULT: prefers
 | `value` | string | no | Element AXValue |
 | `x` | number | no | X coordinate |
 | `y` | number | no | Y coordinate |
+| `profile` | string | no | WebKit only: the cookie and storage profile (default 'default'). A login made on a local page survives between calls and restarts. |
+| `page` | string | no | WebKit only: which page of the profile (default 'main'); each has its own viewport. |
+| `width` | number | no | WebKit only: viewport width in CSS pixels (1-8000). Kept until changed. |
+| `height` | number | no | WebKit only: viewport height in CSS pixels (1-8000). Kept until changed. |
+| `colorScheme` | string | no | WebKit only: prefers-color-scheme (default light). Kept until changed. |
+| `deviceScaleFactor` | number | no | WebKit only: device pixel ratio, 0.5-5 (default 2). Kept until changed. |
 
 ### `right_click`
 
@@ -357,7 +426,7 @@ Right-click a UI element (AX showMenu) or at coordinates to open a context menu.
 
 ### `type_text`
 
-Type text into the focused element, or into a specific element matched by selector/elementId. BACKGROUND-SAFE BY DEFAULT: for AXTextField/AXTextArea the value is set directly via AX (replaces the field, no keystrokes, no focus steal); a search field additionally gets its action fired, because setting the string alone changes the text without running the search. When AX-set is rejected (e.g. some SwiftUI fields) the keyboard fallback focuses the control via AX (kAXFocusedAttribute, no app activation) and delivers keystrokes to the target PID — the user's keyboard focus and cursor are never disturbed. THE WRITE IS THEN READ BACK: `verified:true` means the text is observably in the field, an error means it demonstrably is not, and `verified:false` means the element exposes no readable value so you must confirm with read_text/assert_value (common for web content). By default the fallback CLEARS the field first (Cmd+A then forward-delete) so re-running does not double the text — pass append:true to keep existing content and append instead. Set foreground:true only for apps that ignore PID-targeted keys (activates the app and types via the global HID stream).
+Type text into the focused element, or into a specific element matched by selector/elementId. BACKGROUND-SAFE BY DEFAULT: for AXTextField/AXTextArea the value is set directly via AX (replaces the field, no keystrokes, no focus steal); a search field additionally gets its action fired, because setting the string alone changes the text without running the search. When AX-set is rejected (e.g. some SwiftUI fields) the keyboard fallback focuses the control via AX (kAXFocusedAttribute, no app activation) and delivers keystrokes to the target PID — the user's keyboard focus and cursor are never disturbed. THE WRITE IS THEN READ BACK: `verified:true` means the text is observably in the field, an error means it demonstrably is not, and `verified:false` means the element exposes no readable value so you must confirm with read_text/assert_value (common for web content). By default the fallback CLEARS the field first (Cmd+A then forward-delete) so re-running does not double the text — pass append:true to keep existing content and append instead. Set foreground:true only for apps that ignore PID-targeted keys (activates the app and types via the global HID stream). Also works on the off-screen WebKit page: app:"webkit" (or browser:"webkit"); see open_url for its options.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -377,6 +446,12 @@ Type text into the focused element, or into a specific element matched by select
 | `title` | string | no | Exact AXTitle match |
 | `titleContains` | string | no | Partial AXTitle match (case-insensitive) |
 | `value` | string | no | Element AXValue |
+| `profile` | string | no | WebKit only: the cookie and storage profile (default 'default'). A login made on a local page survives between calls and restarts. |
+| `page` | string | no | WebKit only: which page of the profile (default 'main'); each has its own viewport. |
+| `width` | number | no | WebKit only: viewport width in CSS pixels (1-8000). Kept until changed. |
+| `height` | number | no | WebKit only: viewport height in CSS pixels (1-8000). Kept until changed. |
+| `colorScheme` | string | no | WebKit only: prefers-color-scheme (default light). Kept until changed. |
+| `deviceScaleFactor` | number | no | WebKit only: device pixel ratio, 0.5-5 (default 2). Kept until changed. |
 
 ### `perform_action`
 
@@ -414,7 +489,7 @@ error instead of a no-op that reports success — the same trap
 
 ### `send_shortcut`
 
-Send a keyboard shortcut (e.g. Cmd+S, Cmd+Shift+Z) to the app. BACKGROUND-SAFE BY DEFAULT: the chord is delivered to the target PID via postToPid, so it lands in that app's queue WITHOUT bringing it forward, moving the cursor, or stealing the user's keyboard focus. CAVEAT: clipboard/responder-chain chords (Cmd+C/V/X, Select All) need an ACTIVE app and silently no-op in background apps — verify content with read_text/assert_value instead, or activate_app first for paste flows. Set foreground:true only for system-wide hotkeys or apps that ignore PID-targeted chords — that activates the app and posts to the global HID stream.
+Send a keyboard shortcut (e.g. Cmd+S, Cmd+Shift+Z) to the app. BACKGROUND-SAFE BY DEFAULT: the chord is delivered to the target PID via postToPid, so it lands in that app's queue WITHOUT bringing it forward, moving the cursor, or stealing the user's keyboard focus. CAVEAT: clipboard/responder-chain chords (Cmd+C/V/X, Select All) need an ACTIVE app and silently no-op in background apps — verify content with read_text/assert_value instead, or activate_app first for paste flows. Set foreground:true only for system-wide hotkeys or apps that ignore PID-targeted chords — that activates the app and posts to the global HID stream. Also works on the off-screen WebKit page: app:"webkit" (or browser:"webkit"); see open_url for its options.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -422,10 +497,16 @@ Send a keyboard shortcut (e.g. Cmd+S, Cmd+Shift+Z) to the app. BACKGROUND-SAFE B
 | `key` | string | yes | Key name (e.g. 's', 'z', 'return', 'tab', 'f5') |
 | `foreground` | boolean | no | Default false (background-safe). When true, activates the app and posts the chord to the global HID stream — use for system-wide hotkeys or apps that ignore PID-targeted chords. |
 | `modifiers` | array | no | Modifier keys: 'cmd', 'shift', 'opt'/'alt', 'ctrl' |
+| `profile` | string | no | WebKit only: the cookie and storage profile (default 'default'). A login made on a local page survives between calls and restarts. |
+| `page` | string | no | WebKit only: which page of the profile (default 'main'); each has its own viewport. |
+| `width` | number | no | WebKit only: viewport width in CSS pixels (1-8000). Kept until changed. |
+| `height` | number | no | WebKit only: viewport height in CSS pixels (1-8000). Kept until changed. |
+| `colorScheme` | string | no | WebKit only: prefers-color-scheme (default light). Kept until changed. |
+| `deviceScaleFactor` | number | no | WebKit only: device pixel ratio, 0.5-5 (default 2). Kept until changed. |
 
 ### `scroll`
 
-Scroll at a specific position within an app window. Use negative deltaY to scroll down, positive to scroll up. BACKGROUND-SAFE BY DEFAULT: the scroll-wheel event is delivered to the target PID with no cursor warp and no app activation — the user's mouse and focus are untouched. Set foreground:true only for apps that ignore PID-targeted scrolls (activates the app, warps the real cursor to the point, and scrolls via the global HID stream).
+Scroll at a specific position within an app window. Use negative deltaY to scroll down, positive to scroll up. BACKGROUND-SAFE BY DEFAULT: the scroll-wheel event is delivered to the target PID with no cursor warp and no app activation — the user's mouse and focus are untouched. Set foreground:true only for apps that ignore PID-targeted scrolls (activates the app, warps the real cursor to the point, and scrolls via the global HID stream). Also works on the off-screen WebKit page: app:"webkit" (or browser:"webkit"); see open_url for its options.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -435,6 +516,12 @@ Scroll at a specific position within an app window. Use negative deltaY to scrol
 | `y` | number | yes | Y coordinate |
 | `deltaX` | number | no | Horizontal scroll amount (default 0) |
 | `foreground` | boolean | no | Default false (background-safe). When true, activates the app and scrolls via the global HID stream (moves the real cursor). |
+| `profile` | string | no | WebKit only: the cookie and storage profile (default 'default'). A login made on a local page survives between calls and restarts. |
+| `page` | string | no | WebKit only: which page of the profile (default 'main'); each has its own viewport. |
+| `width` | number | no | WebKit only: viewport width in CSS pixels (1-8000). Kept until changed. |
+| `height` | number | no | WebKit only: viewport height in CSS pixels (1-8000). Kept until changed. |
+| `colorScheme` | string | no | WebKit only: prefers-color-scheme (default light). Kept until changed. |
+| `deviceScaleFactor` | number | no | WebKit only: device pixel ratio, 0.5-5 (default 2). Kept until changed. |
 
 ### `scroll_until_visible`
 
@@ -524,16 +611,22 @@ replaced was reporting zero windows for an app whose window the user is looking 
 
 ### `get_window_bounds`
 
-Get the position and size of an app window
+Get the position and size of an app window Also works on the off-screen WebKit page: app:"webkit" (or browser:"webkit"); see open_url for its options.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `app` | string | yes | Bundle ID, app name, or PID |
 | `windowIndex` | integer | no | Window index (default 0) |
+| `profile` | string | no | WebKit only: the cookie and storage profile (default 'default'). A login made on a local page survives between calls and restarts. |
+| `page` | string | no | WebKit only: which page of the profile (default 'main'); each has its own viewport. |
+| `width` | number | no | WebKit only: viewport width in CSS pixels (1-8000). Kept until changed. |
+| `height` | number | no | WebKit only: viewport height in CSS pixels (1-8000). Kept until changed. |
+| `colorScheme` | string | no | WebKit only: prefers-color-scheme (default light). Kept until changed. |
+| `deviceScaleFactor` | number | no | WebKit only: device pixel ratio, 0.5-5 (default 2). Kept until changed. |
 
 ### `set_window_bounds`
 
-Set the position and/or size of an app window. A full-screen Safari window, or one on another Space, is refused with the reason: open_url (or url on a snapshot) tries a normal window that can be resized.
+Set the position and/or size of an app window. A full-screen Safari window, or one on another Space, is refused with the reason: open_url (or url on a snapshot) tries a normal window that can be resized. Also works on the off-screen WebKit page: app:"webkit" (or browser:"webkit"); see open_url for its options.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -543,6 +636,10 @@ Set the position and/or size of an app window. A full-screen Safari window, or o
 | `windowIndex` | integer | no | Window index (default 0) |
 | `x` | number | no | X position |
 | `y` | number | no | Y position |
+| `profile` | string | no | WebKit only: the cookie and storage profile (default 'default'). A login made on a local page survives between calls and restarts. |
+| `page` | string | no | WebKit only: which page of the profile (default 'main'); each has its own viewport. |
+| `colorScheme` | string | no | WebKit only: prefers-color-scheme (default light). Kept until changed. |
+| `deviceScaleFactor` | number | no | WebKit only: device pixel ratio, 0.5-5 (default 2). Kept until changed. |
 
 ### `minimize_window`
 
@@ -566,7 +663,7 @@ Restore a minimized window from the Dock
 
 ### `screenshot_window`
 
-Capture a screenshot of a specific app window. Works in the background — the window does NOT need to be frontmost and can be fully covered by other windows (capture reads the window's own backing store). Minimized windows cannot be captured (call restore_window first). Default window is the app's focused window; pick another with windowTitle (windows sharing a title resolve to the focused one if it has that title, else the largest on-screen one) or windowIndex (index into list_windows order, exact even for duplicate titles). A full-screen or other-Space Safari window cannot be captured: the call fails at once and says what to do, and with `url` the server tries a fresh normal window in the background and captures that. Returns a JPEG by default (downscaled to keep payloads small); pass format/maxLongestSide/quality to override.
+Capture a screenshot of a specific app window. Works in the background — the window does NOT need to be frontmost and can be fully covered by other windows (capture reads the window's own backing store). Minimized windows cannot be captured (call restore_window first). Default window is the app's focused window; pick another with windowTitle (windows sharing a title resolve to the focused one if it has that title, else the largest on-screen one) or windowIndex (index into list_windows order, exact even for duplicate titles). A full-screen or other-Space Safari window cannot be captured: the call fails at once and says what to do, and with `url` the server tries a fresh normal window in the background and captures that. Returns a JPEG by default (downscaled to keep payloads small); pass format/maxLongestSide/quality to override. Also works on the off-screen WebKit page: app:"webkit" (or browser:"webkit"); see open_url for its options.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -577,6 +674,12 @@ Capture a screenshot of a specific app window. Works in the background — the w
 | `quality` | number | no | JPEG quality 0-1. Default 0.7. Ignored for PNG. |
 | `windowIndex` | integer | no | Window index in the app's AX window order (same as list_windows), for windows with duplicate/empty titles |
 | `windowTitle` | string | no | Specific window title (optional; default = most plausible main window) |
+| `profile` | string | no | WebKit only: the cookie and storage profile (default 'default'). A login made on a local page survives between calls and restarts. |
+| `page` | string | no | WebKit only: which page of the profile (default 'main'); each has its own viewport. |
+| `width` | number | no | WebKit only: viewport width in CSS pixels (1-8000). Kept until changed. |
+| `height` | number | no | WebKit only: viewport height in CSS pixels (1-8000). Kept until changed. |
+| `colorScheme` | string | no | WebKit only: prefers-color-scheme (default light). Kept until changed. |
+| `deviceScaleFactor` | number | no | WebKit only: device pixel ratio, 0.5-5 (default 2). Kept until changed. |
 
 Some apps release their window's backing surface while the window is off-screen, and then
 there is nothing to capture. Browsers and GPU-composited apps do it most reliably —
@@ -597,7 +700,7 @@ shows nothing. `CGWindowListCreateImage` is unavailable from the macOS 15 SDK on
 
 ### `screenshot_element`
 
-Capture a screenshot of a specific UI element by cropping its enclosing window to the element's bounds. Returns a JPEG by default.
+Capture a screenshot of a specific UI element by cropping its enclosing window to the element's bounds. Returns a JPEG by default. Also works on the off-screen WebKit page: app:"webkit" (or browser:"webkit"); see open_url for its options.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -609,6 +712,12 @@ Capture a screenshot of a specific UI element by cropping its enclosing window t
 | `quality` | number | no | JPEG quality 0-1. Default 0.7. Ignored for PNG. |
 | `role` | string | no | AX role of the element |
 | `title` | string | no | Title of the element |
+| `profile` | string | no | WebKit only: the cookie and storage profile (default 'default'). A login made on a local page survives between calls and restarts. |
+| `page` | string | no | WebKit only: which page of the profile (default 'main'); each has its own viewport. |
+| `width` | number | no | WebKit only: viewport width in CSS pixels (1-8000). Kept until changed. |
+| `height` | number | no | WebKit only: viewport height in CSS pixels (1-8000). Kept until changed. |
+| `colorScheme` | string | no | WebKit only: prefers-color-scheme (default light). Kept until changed. |
+| `deviceScaleFactor` | number | no | WebKit only: device pixel ratio, 0.5-5 (default 2). Kept until changed. |
 
 ### `screenshot_screen`
 
@@ -733,7 +842,7 @@ Probe a target (bundle ID, PID, URL, or iOS simulator UDID) and return the best 
 
 ### `run_app_code`
 
-Run a script on the auto-selected backend: Python in Blender (bpy) when the socket handshakes, JavaScript in a CDP page, otherwise an error pointing at AX run_steps. One script is the batch — do not issue one MCP call per primitive. First use per backend requires consent:true (RCE inside the app). Returns {backend, result}.
+Run a script on the auto-selected backend: Python in Blender (bpy) when the socket handshakes, JavaScript in a CDP page, otherwise an error pointing at AX run_steps. One script is the batch — do not issue one MCP call per primitive. First use per backend requires consent:true (RCE inside the app). Returns {backend, result}. Also works on the off-screen WebKit page: app:"webkit" (or browser:"webkit"); see open_url for its options.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -744,4 +853,26 @@ Run a script on the auto-selected backend: Python in Blender (bpy) when the sock
 | `code` | string | yes | Python (Blender) or JavaScript (CDP) to execute |
 | `language` | string | no | Optional hint: python or javascript. Default is the backend's native language. |
 | `consent` | boolean | no | Required the first time per backend; persists after that. |
+| `profile` | string | no | WebKit only: the cookie and storage profile (default 'default'). A login made on a local page survives between calls and restarts. |
+| `page` | string | no | WebKit only: which page of the profile (default 'main'); each has its own viewport. |
+| `width` | number | no | WebKit only: viewport width in CSS pixels (1-8000). Kept until changed. |
+| `height` | number | no | WebKit only: viewport height in CSS pixels (1-8000). Kept until changed. |
+| `colorScheme` | string | no | WebKit only: prefers-color-scheme (default light). Kept until changed. |
+| `deviceScaleFactor` | number | no | WebKit only: device pixel ratio, 0.5-5 (default 2). Kept until changed. |
 
+## WebKit target
+
+Any tool in the table below also takes `browser:"webkit"` (or `app:"webkit"`, or `app:"webkit:<url>"`) and then acts on a page that WebKit renders inside AgentController itself, off screen: no window on any Space, no focus, no Dock or menu effect, and none of the user's browser logins. It is meant for Safari-like pixels of a local page (a dashboard on 127.0.0.1, a dev server, a file) at a chosen width, in light or dark, at a chosen pixel ratio.
+
+| Call | On a WebKit target |
+|---|---|
+| `open_url` | Loads the page (waits for the load event, then `settleMs`, default 300 ms). A failed load is an error, never a screenshot of a blank page. The same URL is not reloaded unless `reload:true`. |
+| `snapshot`, `describe_screen`, `find_elements`, `wait_for_element`, `assert_visible`, `assert_not_visible` | Element ids from the page's DOM (links, buttons, inputs, ARIA widgets, shadow roots, pointer-cursor controls). An id from before a navigation or a later snapshot is refused with "call snapshot again". |
+| `click`, `double_click`, `type_text`, `send_shortcut`, `scroll` | Trusted mouse and key events sent straight to the view, so a page that checks `isTrusted` still works. `type_text` replaces the field's content (empty text deletes it, `\n` presses Return) and picks a `<select>` option by its text. Native select menus, file pickers and date pickers cannot be opened off screen. |
+| `read_text`, `read_all_text`, `run_app_code` | Page text and a JavaScript evaluator (`consent:true` the first time). |
+| `screenshot_window`, `screenshot_element` | A real WebKit snapshot at `deviceScaleFactor`, viewport only or `fullPage:true`. |
+| `set_window_bounds`, `get_window_bounds` | The viewport size in CSS pixels. |
+
+Options (on any call that names WebKit; viewport, colour scheme and pixel ratio stay until changed): `profile` (cookie and storage profile, default `default`; its own persistent store, so a login made on a local page survives between calls and restarts), `page` (several views per profile, default `main`), `width` / `height` (default 1440 x 900), `colorScheme` (`light`, `dark`, `system`; default `light`), `deviceScaleFactor` (default 2).
+
+The page sees itself as visible and its timers and animation frames run at full rate, so polling dashboards keep updating. Where the private WebKit calls that make this possible are missing, the result says what degraded. Pages idle for ten minutes are closed (`AGENTCONTROLLER_WEBKIT_IDLE_MINUTES`) and at most six are kept. Plain `http` is allowed for any host. Tools that need a real app (menus, windows list, recording, clipboard, ...) answer "not supported on WebKit targets".

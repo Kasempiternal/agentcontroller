@@ -87,6 +87,8 @@ public enum BackendRouter {
             return try await performBlender(name: name, arguments: arguments, ref: ref)
         case .ios:
             return try await performIOS(name: name, arguments: arguments, ref: ref)
+        case .webkit:
+            return await WebKitRouter.handle(name: name, arguments: arguments, ref: ref)
         }
     }
 
@@ -103,6 +105,8 @@ public enum BackendRouter {
             return try await performBlenderTool(name: name, arguments: arguments, capability: capability)
         case .iosSim:
             return try await performIOSTool(name: name, arguments: arguments, capability: capability)
+        case .webkit:
+            return ToolResult.error("WebKit targets are routed by name before the probe")
         case .ax, .hid:
             return ToolResult.error("Router asked to handle an AX target")
         }

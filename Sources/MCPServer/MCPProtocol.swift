@@ -213,8 +213,22 @@ public struct MCPProtocolHandler: Sendable {
         in the background (no focus or Space change), names its window id in the \
         result, and every Safari tool then acts on it. A new window only lands on \
         the Space the user is looking at; if they are in another full-screen Space \
-        the result says so, the page goes in as a tab, and headless:true is the way \
-        to pixels. Never ask the user to leave full screen.
+        the result says so, the page goes in as a tab, and browser:"webkit" or \
+        headless:true is the way to pixels. Never ask the user to leave full screen.
+
+        WEBKIT — for Safari-like pixels of a LOCAL page (a dashboard on \
+        127.0.0.1, a dev server, a file) pass browser:"webkit" on open_url, or \
+        app:"webkit" on snapshot/read_all_text/click/type_text/screenshot_window/\
+        set_window_bounds/run_steps. The page renders in real WebKit inside this \
+        app, off screen: no window on any Space, no focus, no Dock or menu effect, \
+        and the page sees itself as visible so polling keeps running. Options: \
+        width/height (viewport in CSS pixels), colorScheme light|dark, \
+        deviceScaleFactor (default 2), profile (its own persistent cookies, so a \
+        login made on a local page survives), page (several views per profile). \
+        The viewport and scheme stay until you change them. It is not Safari: no \
+        extensions and none of the user's logins, so use real Safari only for pages \
+        that need his logins. Ids from snapshot are refused after a navigation: \
+        snapshot again.
 
         BATCH YOUR STEPS. `snapshot` returns stable element ids, and every interaction \
         tool takes an `elementId` that acts on that exact element with no search. So the \

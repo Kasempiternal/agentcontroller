@@ -11,6 +11,7 @@ public struct CapabilityRecord: Equatable, Sendable {
         case blenderLab = "bpy-lab"
         case blenderWS = "bpy-ws"
         case iosSim = "ios-sim"
+        case webkit
         case hid
 
         /// What this backend actually implements. `routableTools` is only the set of tools
@@ -31,6 +32,8 @@ public struct CapabilityRecord: Equatable, Sendable {
                 return ["snapshot", "describe_screen", "click", "run_app_code"]
             case .iosSim:
                 return ["snapshot", "describe_screen", "click", "type_text"]
+            case .webkit:
+                return WebKitRouter.supportedTools
             case .ax, .hid:
                 return []
             }
@@ -41,6 +44,7 @@ public struct CapabilityRecord: Equatable, Sendable {
             case .cdp: return "web"
             case .blenderLab, .blenderWS: return "Blender"
             case .iosSim: return "iOS simulator"
+            case .webkit: return "WebKit"
             case .ax, .hid: return "native"
             }
         }
@@ -112,6 +116,7 @@ public struct CapabilityRecord: Equatable, Sendable {
         switch backend {
         case .cdp: escape = " For anything else, run_app_code runs JavaScript in the page."
         case .blenderLab, .blenderWS: escape = " For anything else, run_app_code runs Python in Blender."
+        case .webkit: escape = " For anything else, run_app_code runs JavaScript in the page."
         default: escape = ""
         }
         return "\(tool) is not supported on \(backend.targetNoun) targets. Supported: \(supported).\(escape)"

@@ -13,6 +13,14 @@ public enum CapabilityProbe {
                 headless: true
             )
         }
+        if identity.bundleHint?.lowercased() == WebKitTarget.name {
+            return CapabilityRecord(
+                target: identity.raw,
+                backend: .webkit,
+                reason: "WebKit page rendered off screen inside AgentController: no window on any Space, no focus; a persistent store per profile.",
+                headless: true
+            )
+        }
         if identity.kind == .iosSimulator {
             return CapabilityRecord(
                 target: identity.raw,
@@ -67,6 +75,8 @@ public enum CapabilityProbe {
             record = await probeBlender(seed: record)
         case .iosSim:
             record = await probeIOS(identity, seed: record)
+        case .webkit:
+            break
         case .ax, .hid:
             record = enrichAX(identity, seed: record)
         }
@@ -198,7 +208,7 @@ actor ProbeCache {
     static func lifetime(for backend: CapabilityRecord.Backend) -> TimeInterval {
         switch backend {
         case .blenderLab, .blenderWS, .iosSim: return 30
-        case .cdp, .ax, .hid: return 2
+        case .cdp, .ax, .hid, .webkit: return 2
         }
     }
 

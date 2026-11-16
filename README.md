@@ -54,6 +54,7 @@ The three desktop backends register the same 52-tool contract. Windows and Linux
 ## Highlights
 
 - **52 desktop MCP tools** covering app control, AX inspection, input, assertions, screenshots, video recording, menus, clipboard, windows, replayable flows, and a dynamic backend router (`inspect_capabilities`, `run_app_code`) — see the full [Tool Reference](docs/TOOLS.md) — plus a **36-tool iOS backend** for simulators and physical iPhones ([iOS guide](iOS/README.md)).
+- **An off-screen WebKit view for local pages** — `browser:"webkit"` renders a page in real WebKit inside the app: no window on any Space, no focus, light or dark, any width and pixel ratio, its own cookie profile. See [WebKit target](docs/TOOLS.md#webkit-target).
 - **One surface, auto-routed backends** — pass a bundle ID, PID, URL, or simulator UDID. The server handshakes and picks CDP (web), bpy (Blender), idb/WDA (iOS sim), or native AX. Agents do not choose Playwright vs AX.
 - **Background by default** — apps launch without activating, input is delivered per-process (`CGEvent.postToPid`) or via pure AX actions, menus are resolved by *reading* the AX tree, and screenshots read the window's own backing store (works even fully covered or hidden).
 - **Real assertions** — `assert_visible` / `assert_not_visible` / `assert_value` poll until satisfied and return MCP `isError` on failure, so an agent's control loop gets an unambiguous PASS/FAIL instead of parsing prose.

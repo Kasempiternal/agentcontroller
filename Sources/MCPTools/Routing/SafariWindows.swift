@@ -120,7 +120,7 @@ enum SafariWindowPolicy {
 
     static func holdOffMessage(browser: String) -> String {
         "The user is looking at their full-screen \(browser) window right now, and a window opened for you could pull them out of "
-            + "that Space. Nothing was opened. Retry in a minute, or use another browser (Chrome with a debug port, or headless:true "
+            + "that Space. Nothing was opened. Retry in a minute, or use another browser (Chrome with a debug port, or browser:\"webkit\" / headless:true "
             + "for a page that needs no login). Do not ask the user to leave full screen."
     }
 
@@ -129,14 +129,14 @@ enum SafariWindowPolicy {
         "The \(browser) window is \(because.phrase), so macOS gives it no capturable surface and it cannot be resized. Nothing was changed. "
             + "Call open_url {url, browser:\"\(browser)\"} (or pass `url` to this tool): the server tries a fresh normal window in the "
             + "background. A new window can only be captured when it lands on the Space the user is looking at; while they are in "
-            + "another full-screen Space it cannot, and then headless:true is the way to get pixels or a width. "
+            + "another full-screen Space it cannot, and then browser:\"webkit\" (this app's own off-screen WebKit, any width, light or dark) or headless:true is the way to get pixels or a width. "
             + "Do not ask the user to leave full screen or switch Space."
     }
 
     /// The fresh window could not be used, so the page went the usual way.
     static func fellBackNotice(_ reason: String, browser: String) -> String {
         "No window of its own was used for this page: \(reason) The page went in the usual way, as a tab of the user's \(browser) "
-            + "window, which cannot be captured or resized from here. Read it with snapshot or read_all_text; use headless:true when you "
+            + "window, which cannot be captured or resized from here. Read it with snapshot or read_all_text; use browser:\"webkit\" or headless:true when you "
             + "need pixels or a width."
     }
 
@@ -152,7 +152,7 @@ enum SafariWindowPolicy {
     static func notAllowedMessage(browser: String) -> String {
         "AgentController is not allowed to control \(browser), which it needs to open a window of its own while the user's window is "
             + "full screen or on another Space. Allow it once in System Settings > Privacy & Security > Automation > AgentController "
-            + "> \(browser). Nothing was opened. Meanwhile use another browser, or headless:true for a page that needs no login."
+            + "> \(browser). Nothing was opened. Meanwhile use another browser, or browser:\"webkit\" / headless:true for a page that needs no login."
     }
 
     static func timedOutMessage(browser: String) -> String {

@@ -11,6 +11,9 @@ public enum RoutedRef: Sendable, Equatable {
     /// exact Blender instead of re-handshaking and re-picking.
     case blender(name: String, kind: String, endpoint: BlenderEndpoint)
     case ios(udid: String, identifier: String, role: String, label: String, x: Double, y: Double, width: Double, height: Double)
+    /// `document` is "<navigation epoch>.<snapshot generation>": either changing retires the id
+    /// (`WebKitBackend`).
+    case webkit(page: String, document: String, index: Int, role: String, label: String)
 
     /// The backend a handle belongs to; decides which tools may act on it.
     public var backend: CapabilityRecord.Backend {
@@ -18,6 +21,7 @@ public enum RoutedRef: Sendable, Equatable {
         case .cdp: return .cdp
         case .blender(_, _, let endpoint): return endpoint.kind
         case .ios: return .iosSim
+        case .webkit: return .webkit
         }
     }
 }
@@ -27,6 +31,7 @@ public enum RoutedScope: Sendable, Hashable {
     case cdp(String)
     case blender(String)
     case ios(String)
+    case webkit(String)
 }
 
 public actor RoutedHandleStore {
